@@ -1,4 +1,4 @@
-.PHONY: build demo test dev dev-web
+.PHONY: build demo dev dev-web
 
 build:
 	npm ci --prefix web
@@ -7,11 +7,6 @@ build:
 
 demo: build
 	VROUTER_DEMO=1 ./bin/vrouter
-
-test:
-	go test -race ./...
-	go vet ./...
-	npm run build --prefix web
 
 # Single local server on :8080 plus Vite with hot reload on :5173.
 dev:

@@ -1,4 +1,4 @@
-// Management API client. Kept free of React and DOM imports so node can test it.
+// Management API client.
 
 export type APIRequest = <T>(
   path: string,

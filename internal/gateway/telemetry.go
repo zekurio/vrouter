@@ -30,8 +30,12 @@ type telemetryRecord struct {
 	CachedTokens int64     `json:"cachedTokens"`
 	TotalTokens  int64     `json:"totalTokens"`
 	UsageKnown   bool      `json:"usageKnown"`
-	Stream       bool      `json:"stream"`
-	Outcome      string    `json:"outcome"`
+	// UsagePartial is set when counts were observed but the provider never
+	// delivered a trustworthy final usage report (a stream cut short, a
+	// terminal event without usage). The token fields are then partial.
+	UsagePartial bool   `json:"usagePartial,omitempty"`
+	Stream       bool   `json:"stream"`
+	Outcome      string `json:"outcome"`
 }
 
 const (
@@ -88,9 +92,12 @@ func (m *manager) telemetry(gatewayID string) telemetryResponse {
 	for i := len(records) - 1; i >= 0; i-- {
 		record := records[i]
 		response.Requests = append(response.Requests, record)
-		response.Totals.InputTokens += record.InputTokens
-		response.Totals.OutputTokens += record.OutputTokens
-		response.Totals.TotalTokens += record.TotalTokens
+		if !record.UsageKnown {
+			continue
+		}
+		response.Totals.InputTokens = clampTokenCount(saturatingAdd(response.Totals.InputTokens, record.InputTokens))
+		response.Totals.OutputTokens = clampTokenCount(saturatingAdd(response.Totals.OutputTokens, record.OutputTokens))
+		response.Totals.TotalTokens = clampTokenCount(saturatingAdd(response.Totals.TotalTokens, record.TotalTokens))
 	}
 	return response
 }
@@ -136,11 +143,12 @@ type inferenceAttempt struct {
 }
 
 // usageTrusted reports whether the provider response was delivered to a
-// terminal state. A stream that ends early or a truncated body may carry
-// partial usage, so its numbers must not reopen a measured token budget.
+// terminal state carrying a usable final usage report. A stream that ends
+// early, a terminal event without usage, or a truncated body may carry stale
+// or partial usage, so its numbers must not reopen a measured token budget.
 func (a *inferenceAttempt) usageTrusted() bool {
 	if a.stream {
-		return a.usage.terminal && !a.usage.terminalFailure
+		return a.usage.terminal && !a.usage.terminalFailure && (a.usage.terminalUsage || a.usage.finalUsage)
 	}
 	return a.bodyComplete
 }
@@ -196,7 +204,7 @@ func (m *manager) reserve(principal inferenceKey) (bool, int, string) {
 			}
 		}
 		key.InFlight++
-		key.UsedRequests++
+		key.UsedRequests = clampTokenCount(saturatingAdd(key.UsedRequests, 1))
 		return nil
 	})
 	if errors.Is(err, errRegistryNoChange) {
@@ -236,9 +244,9 @@ func (m *manager) settle(principal inferenceKey, record telemetryRecord, totals 
 	})
 	if err != nil {
 		m.degraded.Store(true)
-		// Only a poisoned forwarded attempt justifies distrusting the key; a
-		// denied or never-forwarded attempt must not.
-		if poison {
+		// Release only this admitted request after a failed write. Require
+		// owner acknowledgement before trusting its token budget again.
+		if reserved {
 			m.registry.markUncertain(principal.KeyID)
 		}
 	}
@@ -249,6 +257,7 @@ func (m *manager) settle(principal inferenceKey, record telemetryRecord, totals 
 
 const (
 	maxUsageLineBytes    = 1 << 20 // one SSE line; usage events are far smaller
+	maxUsageEventBytes   = 2 << 20 // joined data of one SSE event
 	maxUsageCaptureBytes = 2 << 20 // non-stream JSON body captured for usage
 	// maxTokenCount bounds every token counter so registry validation can
 	// never fail from an absurd provider value.
@@ -274,15 +283,15 @@ type usagePayload struct {
 	} `json:"input_tokens_details"`
 }
 
-type usageEnvelope struct {
+type rawUsageEnvelope struct {
 	Type    string          `json:"type"`
-	Usage   *usagePayload   `json:"usage"`
+	Usage   json.RawMessage `json:"usage"`
 	Error   json.RawMessage `json:"error"`
 	Message *struct {
-		Usage *usagePayload `json:"usage"`
+		Usage json.RawMessage `json:"usage"`
 	} `json:"message"`
 	Response *struct {
-		Usage  *usagePayload   `json:"usage"`
+		Usage  json.RawMessage `json:"usage"`
 		Error  json.RawMessage `json:"error"`
 		Status string          `json:"status"`
 	} `json:"response"`
@@ -293,23 +302,32 @@ type usageEnvelope struct {
 // tolerates events split across reads, treats cumulative events as maxima
 // (never sums), and keeps cached tokens as a subset of input tokens.
 type usageParser struct {
-	stream   bool
-	started  bool
-	line     []byte
-	dropping bool
-	capture  *bytes.Buffer
-	captured int64
-	overflow bool
-	input    int64
-	output   int64
-	cached   int64
-	total    int64
-	known    bool
+	stream        bool
+	started       bool
+	line          []byte
+	dropping      bool
+	eventData     []byte
+	eventOverflow bool
+	capture       *bytes.Buffer
+	captured      int64
+	overflow      bool
+	input         int64
+	output        int64
+	cached        int64
+	total         int64
+	known         bool
+	hasInput      bool
 	// terminal records that the provider reported a final event
 	// (message_stop, response.completed/incomplete/failed, [DONE]). A stream
 	// that ends without one delivered only a partial response.
 	terminal        bool
 	terminalFailure bool
+	// terminalUsage records that the terminal event itself carried a usable
+	// usage report (Codex response.completed/incomplete). finalUsage records a
+	// Claude message_delta, which carries the final cumulative counts before
+	// message_stop. Only these make stream usage trustworthy.
+	terminalUsage bool
+	finalUsage    bool
 	// providerIncomplete marks a terminal response.incomplete event: the
 	// provider stopped the response early, so it is not a success.
 	providerIncomplete bool
@@ -335,8 +353,8 @@ func (u *usageParser) observe(data []byte) {
 	u.captureJSON(data)
 }
 
-// complete flushes a trailing partial line and parses a captured JSON body.
-// It is idempotent and safe to call after the provider body has ended.
+// complete flushes a trailing partial line and event, and parses a captured
+// JSON body. It is idempotent and safe to call after the provider body ended.
 func (u *usageParser) complete() {
 	if !u.started {
 		return
@@ -346,6 +364,7 @@ func (u *usageParser) complete() {
 			u.processSSELine(u.line)
 			u.line = nil
 		}
+		u.flushEvent()
 		return
 	}
 	if u.capture != nil && !u.overflow {
@@ -386,6 +405,8 @@ func (u *usageParser) observeSSE(data []byte) {
 			// Bound memory even for hostile or oversized frames: the rest of
 			// this line is discarded, later lines are still parsed.
 			u.line = nil
+			u.eventOverflow = true
+			u.invalidateUsage()
 			u.dropping = true
 			continue
 		}
@@ -396,7 +417,7 @@ func (u *usageParser) observeSSE(data []byte) {
 func (u *usageParser) processSSELine(line []byte) {
 	line = bytes.TrimSuffix(line, []byte("\r"))
 	if len(line) == 0 {
-		u.lastEvent = ""
+		u.flushEvent()
 		return
 	}
 	colon := bytes.IndexByte(line, ':')
@@ -411,12 +432,40 @@ func (u *usageParser) processSSELine(line []byte) {
 			u.lastEvent = string(value)
 		}
 	case "data":
-		if string(value) == "[DONE]" {
-			u.terminal = true
+		if u.eventOverflow {
 			return
 		}
-		u.parseJSON(value)
+		if len(u.eventData)+len(value)+1 > maxUsageEventBytes {
+			u.eventData = nil
+			u.eventOverflow = true
+			u.invalidateUsage()
+			return
+		}
+		if len(u.eventData) > 0 {
+			u.eventData = append(u.eventData, '\n')
+		}
+		u.eventData = append(u.eventData, value...)
 	}
+}
+
+// flushEvent joins the data lines of one SSE event, as the protocol requires,
+// and parses the result. A stream that never reaches a terminal event leaves
+// the response incomplete.
+func (u *usageParser) flushEvent() {
+	event := u.lastEvent
+	if len(u.eventData) > 0 && !u.eventOverflow {
+		if bytes.Equal(bytes.TrimSpace(u.eventData), []byte("[DONE]")) {
+			u.terminal = true
+		} else {
+			u.parseJSON(u.eventData)
+		}
+	}
+	if event == "message_stop" {
+		u.terminal = true
+	}
+	u.eventData = u.eventData[:0]
+	u.eventOverflow = false
+	u.lastEvent = ""
 }
 
 func (u *usageParser) captureJSON(data []byte) {
@@ -436,23 +485,33 @@ func (u *usageParser) captureJSON(data []byte) {
 }
 
 func (u *usageParser) parseJSON(data []byte) {
-	var envelope usageEnvelope
+	var envelope rawUsageEnvelope
 	if json.Unmarshal(data, &envelope) != nil {
+		// Unreadable final usage must not leave earlier counts trusted.
+		u.invalidateUsage()
 		return
 	}
-	u.applyUsage(envelope.Usage)
+	usable := u.applyRawUsage(envelope.Usage)
 	if envelope.Message != nil {
-		u.applyUsage(envelope.Message.Usage)
+		usable = u.applyRawUsage(envelope.Message.Usage) || usable
 	}
 	if envelope.Response != nil {
-		u.applyUsage(envelope.Response.Usage)
+		usable = u.applyRawUsage(envelope.Response.Usage) || usable
 	}
 	switch envelope.Type {
-	case "message_stop", "response.completed":
+	case "message_stop":
 		u.terminal = true
+	case "response.completed":
+		u.terminal = true
+		u.terminalUsage = usable && envelope.Response != nil && finalUsageReport(envelope.Response.Usage, true)
 	case "response.incomplete":
 		u.terminal = true
 		u.providerIncomplete = true
+		u.terminalUsage = usable && envelope.Response != nil && finalUsageReport(envelope.Response.Usage, true)
+	case "message_delta":
+		// Claude reports its final cumulative output count here, just before
+		// message_stop.
+		u.finalUsage = usable && u.hasInput && finalUsageReport(envelope.Usage, false)
 	case "error", "response.failed":
 		u.terminal = true
 		u.terminalFailure = true
@@ -475,14 +534,48 @@ func (u *usageParser) parseJSON(data []byte) {
 	}
 }
 
-// applyUsage folds one cumulative usage sample into the maxima. Claude counts
-// cache reads and cache writes apart from input_tokens, so they are added to
-// input while cached reads stay a subset of it. A sample with any negative or
-// absurd count is discarded whole: invalid numbers must never look like a
-// trustworthy zero.
-func (u *usageParser) applyUsage(sample *usagePayload) {
+func finalUsageReport(raw json.RawMessage, requireInput bool) bool {
+	var sample usagePayload
+	return json.Unmarshal(raw, &sample) == nil && sample.OutputTokens != nil && (!requireInput || sample.InputTokens != nil)
+}
+
+// applyRawUsage decodes one usage object leniently and reports whether it
+// contributed usable counts. An object that cannot be decoded, or that carries
+// no recognizable token field after earlier counts were seen, invalidates all
+// accumulated usage: a final cumulative report must never leave stale partial
+// numbers looking trustworthy.
+func (u *usageParser) applyRawUsage(raw json.RawMessage) bool {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return false
+	}
+	var sample usagePayload
+	if err := json.Unmarshal(raw, &sample); err != nil {
+		u.invalidateUsage()
+		return false
+	}
+	return u.applyUsage(&sample)
+}
+
+// invalidateUsage discards all accumulated counts and marks the usage
+// unknown. It is used when a later cumulative sample is unusable.
+func (u *usageParser) invalidateUsage() {
+	u.input, u.output, u.cached, u.total = 0, 0, 0, 0
+	u.known = false
+	u.hasInput = false
+	u.terminalUsage = false
+	u.finalUsage = false
+}
+
+// applyUsage folds one cumulative usage sample into the maxima and reports
+// whether it contributed usable counts. Claude counts cache reads and cache
+// writes apart from input_tokens, so they are added to input while cached
+// reads stay a subset of it. A sample with any negative or absurd count is
+// discarded whole, and a sample with no usable fields after earlier counts
+// were seen invalidates those earlier counts: invalid numbers must never look
+// like a trustworthy zero.
+func (u *usageParser) applyUsage(sample *usagePayload) bool {
 	if sample == nil {
-		return
+		return false
 	}
 	counts := []*int64{sample.InputTokens, sample.OutputTokens, sample.TotalTokens, sample.CacheReadInputTokens, sample.CacheCreationInputTokens}
 	if sample.InputTokensDetails != nil {
@@ -490,11 +583,13 @@ func (u *usageParser) applyUsage(sample *usagePayload) {
 	}
 	for _, count := range counts {
 		if count != nil && (*count < 0 || *count > maxTokenCount) {
-			return
+			u.invalidateUsage()
+			return false
 		}
 	}
 	seen := false
 	if sample.InputTokens != nil {
+		u.hasInput = true
 		seen = true
 		input := *sample.InputTokens
 		if sample.CacheReadInputTokens != nil {
@@ -531,9 +626,14 @@ func (u *usageParser) applyUsage(sample *usagePayload) {
 			u.total = total
 		}
 	}
-	if seen {
-		u.known = true
+	if !seen {
+		if u.known {
+			u.invalidateUsage()
+		}
+		return false
 	}
+	u.known = true
+	return true
 }
 
 func saturatingAdd(a, b int64) int64 {

@@ -112,13 +112,13 @@ Select a gateway, then open API keys to create a named key. The full secret is r
 
 A supported inference POST consumes one request when it is admitted, including attempts that later fail. Admission is persisted before forwarding and serialized across concurrent calls. Catalog reads do not consume this allowance. A request cap is enforced before the next request is forwarded.
 
-Token limits use usage reported by the provider after the response. The request that reaches a limit can exceed it. A token-limited key permits only one inference request at a time; concurrent requests receive HTTP 429. If a forwarded request ends without usable accounting, further requests on that token-limited key are blocked rather than treating the unknown usage as zero. These limits are not a hard monetary spending cap.
+Token limits use usage reported by the provider after the response. The request that reaches a limit can exceed it. A token-limited key permits only one inference request at a time; concurrent requests receive HTTP 429. If a forwarded request ends without usable accounting, further requests on that token-limited key are blocked rather than treating the unknown usage as zero. Change its token limit or replace the key to acknowledge the missing accounting and resume access. A restart treats unfinished requests the same way. Keys without token limits keep working, with a warning that their recorded token total is incomplete. These limits are not a hard monetary spending cap.
 
 Revocation and deletion block new requests immediately. A response already in progress can finish. Deleting a key does not remove earlier telemetry. The legacy `VROUTER_API_KEY` is controlled through the environment rather than the key-management UI.
 
 The request history shows the requested and routed model, provider, selected account, key, HTTP status, duration and reported tokens. Streaming Responses and Messages usage is recorded as events arrive. A stream can return HTTP 200 and still end with an error or incomplete outcome; inspect the outcome as well as the status. Missing usage appears as unknown.
 
-Request history retains the latest 1,000 records per gateway. History totals cover retained records; key usage counters are lifetime totals. Telemetry excludes prompts, generated content, cookies and credentials. Input and output token counts follow provider reporting, and cached input is reported separately without adding it twice to total tokens.
+Request history retains the latest 1,000 records per gateway. The registry has a 64 MiB storage limit; writes that exceed it fail rather than saving a file the next startup cannot read. Gateway deletion and a telemetry cleanup UI are not yet available. History totals cover retained records; key usage counters are lifetime totals. Telemetry excludes prompts, generated content, cookies and credentials. Input and output token counts follow provider reporting, and cached input is reported separately without adding it twice to total tokens.
 
 Management integrations use `GET/POST /api/gateways`, `GET/POST /api/keys`, `PATCH/DELETE /api/keys/{id}` and `GET /api/telemetry`. Send `X-Vrouter-Gateway` for gateway-scoped management endpoints, including existing account, OAuth and model-setting routes. OIDC deployments require an explicit selection. Inference always selects its gateway from the API key, regardless of that header.
 
@@ -134,7 +134,7 @@ Experimental ChatGPT sign-in has been removed because its credentials cannot que
 
 When the browser runs on another machine, paste the complete callback address into the connection dialog. vrouter validates its exact address and state and never fetches a pasted URL. Sessions expire after five minutes; cancellation closes their listeners. Tokens are exchanged and stored on the server, not in browser storage.
 
-State is stored in `state.json` with mode `0600`, beneath a mode `0700` directory. Writes replace the file atomically. A process lock prevents two vrouter instances from using the same credential store. Credentials are protected by file permissions, not encrypted at rest. Keep backups private.
+The default gateway keeps its existing `state.json`. Additional gateways use `gateways/<id>/state.json`. Ownership, hashed keys, quota counters and recent telemetry are stored in `registry.json`. These files use mode `0600`, beneath mode `0700` directories. Writes replace the file atomically. A process lock prevents two vrouter instances from using the same credential store. Credentials are protected by file permissions, not encrypted at rest. Keep backups private.
 
 Removing an account deletes its local credentials and stops new routing to it. It does not revoke the app at the provider.
 
@@ -203,16 +203,14 @@ The Accounts page shows available reset counts only when the provider reports th
 
 Claude reports its subscription separately at `/api/oauth/profile`. vrouter reads that profile alongside usage, displays the reported plan and Max multiplier when available, and keeps the last known plan for disabled accounts or temporary profile failures. A failed profile request does not hide valid usage windows.
 
-## Development and checks
+## Development
 
 ```sh
 make dev
-make test
+make build
 ```
 
 `make dev` starts the native server on port 8080 and Vite on port 5173. Rebuild the UI before rebuilding a release binary. `make demo` builds and starts an isolated fixture view.
-
-Tests use temporary stores and mock providers. They cover storage locking and atomic writes, import, token verification, OAuth callback validation and replay, serialized refresh, credential separation, account and model policy, and streaming behavior. They do not authorize a real account or make paid inference calls. A completed browser consent flow and successful provider inference still require live verification.
 
 `cmd/vrouter` owns startup and import commands. `internal/gateway` holds routing, provider adapters, OAuth, storage and management handlers. `web/src` contains the React app. Gateway ownership, login, API key limits and request accounting are implemented in the gateway package. Protocol translation is not implemented.
 

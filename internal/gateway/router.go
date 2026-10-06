@@ -31,9 +31,11 @@ type router struct {
 
 func newRouter(cfg Config, assets fs.FS, auth authenticator) (*router, error) {
 	if cfg.Demo {
+		_ = closeIfPossible(auth)
 		return nil, errors.New("demo mode cannot be combined with OIDC sign-in")
 	}
 	if cfg.DataDir == "" {
+		_ = closeIfPossible(auth)
 		return nil, errors.New("set VROUTER_DATA_DIR for multi-user mode: home directory is unavailable")
 	}
 	root, err := newGateway(cfg, assets)

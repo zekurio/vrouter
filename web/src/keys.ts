@@ -1,4 +1,4 @@
-// Gateway API key rules shared by the Keys page and its tests.
+// Gateway API key limits and status.
 
 export type APIKey = {
   id: string;
@@ -20,7 +20,7 @@ export type KeyState =
 // The first reason a call with this key would be refused, if any.
 export function keyState(key: APIKey): KeyState {
   if (key.revokedAt) return "revoked";
-  if (key.usageUncertain) return "uncertain";
+  if (key.usageUncertain && key.limitTokens > 0) return "uncertain";
   if (key.limitRequests > 0 && key.usedRequests >= key.limitRequests)
     return "requests-spent";
   if (key.limitTokens > 0 && key.usedTokens >= key.limitTokens)

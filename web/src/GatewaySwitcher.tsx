@@ -99,7 +99,7 @@ export function CreateGatewayDialog({
             id="gateway-name"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            maxLength={80}
+            maxLength={64}
             required
             autoFocus
             autoComplete="off"

@@ -133,7 +133,13 @@ func (s *server) finishAttempt(attempt *inferenceAttempt, recorder *attemptWrite
 	// rejection or a provider HTTP error must not poison a measured budget.
 	dispatched := attempt.provider != ""
 	forwarded := dispatched && status >= 200 && status < 300
-	usageAccepted := forwarded && totals.Known && attempt.usageTrusted()
+	trusted := attempt.usageTrusted()
+	// usageKnown means trustworthy final counts. Counts observed without a
+	// trustworthy final report are marked partial instead of pretending to be
+	// complete or silently dropping what was seen.
+	usageKnown := totals.Known && trusted
+	usagePartial := totals.Known && !trusted
+	usageAccepted := forwarded && usageKnown
 	// An ambiguous dispatch may have consumed tokens we never saw, and a
 	// forwarded response whose usage is missing or partial may understate the
 	// real spend. Both must block a token-limited key instead of silently
@@ -156,7 +162,8 @@ func (s *server) finishAttempt(attempt *inferenceAttempt, recorder *attemptWrite
 		OutputTokens: totals.Output,
 		CachedTokens: totals.Cached,
 		TotalTokens:  totals.Total,
-		UsageKnown:   totals.Known,
+		UsageKnown:   usageKnown,
+		UsagePartial: usagePartial,
 		Stream:       attempt.stream,
 		Outcome:      outcome,
 	}

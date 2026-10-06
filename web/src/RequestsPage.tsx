@@ -128,7 +128,7 @@ export function RequestsPage({ request, demo, reloadKey }: Props) {
             holds at most {number(data.retentionLimit)}. Lifetime counts are on
             each key under <a href="#keys">API keys</a>.
             {unknown > 0 &&
-              ` ${number(unknown)} ${unknown === 1 ? "request" : "requests"} reported no usage and ${unknown === 1 ? "adds" : "add"} nothing to the token totals.`}
+              ` ${number(unknown)} ${unknown === 1 ? "request" : "requests"} lack a complete usage report and ${unknown === 1 ? "adds" : "add"} nothing to the token totals.`}
           </p>
           <div className="section-toolbar">
             <div className="tabs" role="group" aria-label="Filter by result">
@@ -239,9 +239,15 @@ function Row({ record: r }: { record: RequestRecord }) {
         <td
           className="numeric usage-unknown"
           colSpan={3}
-          title="The provider sent no usage for this request. This is not a count of zero."
+          title={
+            r.usagePartial
+              ? "The response ended without complete accounting. Partial counts are excluded from totals."
+              : "The provider sent no usable usage report. This is not a count of zero."
+          }
         >
-          Usage not reported
+          {r.usagePartial
+            ? `Incomplete usage (${number(r.totalTokens)} tokens observed)`
+            : "Usage not reported"}
         </td>
       )}
     </tr>

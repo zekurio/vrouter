@@ -372,8 +372,11 @@ func registryValidate(state diskRegistry) error {
 		if strings.TrimSpace(key.Name) == "" || len(key.Name) > 128 {
 			return fmt.Errorf("gateway: key %d has an invalid name", i)
 		}
-		if key.LimitRequests < 0 || key.LimitTokens < 0 || key.UsedRequests < 0 || key.UsedTokens < 0 {
-			return fmt.Errorf("gateway: key %d has negative counters", i)
+		if key.LimitRequests < 0 || key.LimitRequests > maxKeyLimit || key.LimitTokens < 0 || key.LimitTokens > maxKeyLimit {
+			return fmt.Errorf("gateway: key %d has an invalid limit", i)
+		}
+		if key.UsedRequests < 0 || key.UsedRequests > maxTokenCount || key.UsedTokens < 0 || key.UsedTokens > maxTokenCount {
+			return fmt.Errorf("gateway: key %d has invalid counters", i)
 		}
 		if key.InFlight < 0 {
 			return fmt.Errorf("gateway: key %d has a negative in-flight count", i)

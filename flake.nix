@@ -17,12 +17,10 @@
     {
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
-          # gcc is only needed for `go test -race`; release builds use CGO_ENABLED=0.
           packages = with pkgs; [
             go
             gopls
             nodejs_24
-            gcc
             gnumake
             librsvg
           ];

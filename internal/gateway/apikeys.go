@@ -55,6 +55,12 @@ func (k keyRecord) view() keyView {
 
 const keySecretPrefix = "vr_"
 
+// maxKeyLimit is the largest accepted lifetime limit. It stays inside the
+// JavaScript safe-integer range so the UI can round-trip it exactly, and it is
+// far below the internal counter clamp so a measured counter can always reach
+// an accepted limit.
+const maxKeyLimit = int64(1)<<53 - 1
+
 // secureID returns a short URL-safe random identifier.
 func secureID() (string, error) {
 	var raw [16]byte
@@ -132,12 +138,12 @@ func (s *server) createKey(w http.ResponseWriter, r *http.Request) {
 	}
 	limitRequests, ok := keyLimit(input.LimitRequests)
 	if !ok {
-		writeJSON(w, 400, map[string]string{"error": "Request limits must be 0 or a positive whole number"})
+		writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("Request limits must be 0 or a whole number up to %d", maxKeyLimit)})
 		return
 	}
 	limitTokens, ok := keyLimit(input.LimitTokens)
 	if !ok {
-		writeJSON(w, 400, map[string]string{"error": "Token limits must be 0 or a positive whole number"})
+		writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("Token limits must be 0 or a whole number up to %d", maxKeyLimit)})
 		return
 	}
 	secret, hash, err := secureKeySecret()
@@ -195,12 +201,12 @@ func (s *server) patchKey(w http.ResponseWriter, r *http.Request) {
 	}
 	limitRequests, ok := keyLimit(input.LimitRequests)
 	if !ok {
-		writeJSON(w, 400, map[string]string{"error": "Request limits must be 0 or a positive whole number"})
+		writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("Request limits must be 0 or a whole number up to %d", maxKeyLimit)})
 		return
 	}
 	limitTokens, ok := keyLimit(input.LimitTokens)
 	if !ok {
-		writeJSON(w, 400, map[string]string{"error": "Token limits must be 0 or a positive whole number"})
+		writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("Token limits must be 0 or a whole number up to %d", maxKeyLimit)})
 		return
 	}
 	revoked := input.Revoked != nil && *input.Revoked
@@ -274,12 +280,12 @@ func (s *server) deleteKey(w http.ResponseWriter, r *http.Request) {
 }
 
 // keyLimit decodes an optional lifetime limit. A missing or zero value means
-// unlimited; negative and fractional values are rejected.
+// unlimited; negative, fractional and out-of-range values are rejected.
 func keyLimit(value *int64) (int64, bool) {
 	if value == nil {
 		return 0, true
 	}
-	if *value < 0 {
+	if *value < 0 || *value > maxKeyLimit {
 		return 0, false
 	}
 	return *value, true

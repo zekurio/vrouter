@@ -222,6 +222,13 @@ export function KeysPage({
                     <Trash2 size={15} />
                   </button>
                 </div>
+                {key.usageUncertain && key.limitTokens === 0 && !dead && (
+                  <p className="key-state">
+                    Some token usage could not be measured. This key can still
+                    make requests because it has no token limit. Its recorded
+                    total is incomplete.
+                  </p>
+                )}
                 {state !== "active" && (
                   <p className={`key-state ${state}`}>
                     <strong>{stateLabel[state]}.</strong>{" "}
@@ -472,7 +479,7 @@ function KeyDialog({
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Who or what uses this key"
-            maxLength={80}
+            maxLength={64}
             required
             autoFocus
             autoComplete="off"

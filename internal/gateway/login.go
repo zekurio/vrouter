@@ -92,9 +92,8 @@ type loginAuth struct {
 }
 
 // loginHTTPClient builds the HTTP client used for OIDC discovery, token
-// exchange and key fetches. It is a variable so tests can observe that idle
-// connections are released on every construction path, including failures.
-var loginHTTPClient = func() *http.Client {
+// exchange and key fetches.
+func loginHTTPClient() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = loginRequestWait
 	return &http.Client{

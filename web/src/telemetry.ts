@@ -1,4 +1,4 @@
-// Request log shapes and formatting shared by the Requests page and its tests.
+// Request log shapes and formatting.
 
 export type RequestRecord = {
   id: string;
@@ -19,6 +19,7 @@ export type RequestRecord = {
   // False when the provider reported no usage. The token fields are then
   // placeholders, not a measured zero.
   usageKnown: boolean;
+  usagePartial?: boolean;
   stream: boolean;
   outcome: "success" | "error" | "incomplete";
 };

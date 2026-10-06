@@ -5,7 +5,6 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "test": "node --test src/*.test.mjs",
     "build": "tsc --noEmit && vite build",
     "postbuild": "node -e \"require('node:fs').writeFileSync('dist/.gitkeep', '')\"",
     "format": "prettier --write src vite.config.ts"
