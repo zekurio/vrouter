@@ -1,0 +1,373 @@
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { LogIn, Plus, Trash2 } from "lucide-react";
+import { ConnectDialog, connectable } from "./ConnectDialog";
+import { ProviderBrand, providerColor } from "./ProviderBrand";
+import { Private, usePrivateLabel } from "./Privacy";
+import { isDialogBackdropClick } from "./dialog";
+import type { APIRequest } from "./api";
+
+export type { APIRequest };
+export type Account = {
+  id: string;
+  name: string;
+  provider: string;
+  status: string;
+  plan: string;
+  remaining: number | null;
+  window: string;
+  reset: string;
+  email?: string;
+  statusMessage?: string;
+  createdAt?: string;
+  manageable: boolean;
+  reconnectable?: boolean;
+  authMode?: string;
+  windows?: {
+    id: string;
+    label: string;
+    remaining: number;
+    resetAt?: string;
+  }[];
+  quotaUpdatedAt?: string;
+  quotaError?: string;
+  availableResets?: number;
+};
+type Props = {
+  accounts: Account[];
+  request: APIRequest;
+  live: boolean;
+  // null is closed, "" asks which provider, otherwise the provider to sign in to.
+  connect: string | null;
+  setConnect: (provider: string | null) => void;
+  onChanged: () => void;
+  notify: (message: string) => void;
+};
+
+export function resetTime(value?: string) {
+  if (!value) return "Reset not reported";
+  const minutes = Math.ceil((new Date(value).getTime() - Date.now()) / 60000);
+  if (minutes <= 0) return "Reset due";
+  const days = Math.floor(minutes / 1440),
+    hours = Math.floor(minutes / 60) % 24;
+  return days
+    ? `Resets in ${days}d ${hours}h`
+    : hours
+      ? `Resets in ${hours}h ${minutes % 60}m`
+      : `Resets in ${minutes}m`;
+}
+const message = (err: unknown, fallback: string) =>
+  err instanceof Error ? err.message : fallback;
+
+export function AccountsPage({
+  accounts,
+  request,
+  live,
+  connect,
+  setConnect,
+  onChanged,
+  notify,
+}: Props) {
+  // Switch positions that were saved but are not yet in the refreshed account list.
+  const [saved, setSaved] = useState<Record<string, boolean>>({});
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const [removing, setRemoving] = useState<Account | null>(null);
+  const [removeError, setRemoveError] = useState("");
+  // Account being reconnected. Cleared whenever the connect dialog closes.
+  const [reauth, setReauth] = useState<Account | null>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const label = usePrivateLabel();
+  useEffect(() => setSaved({}), [accounts]);
+  useEffect(() => {
+    if (connect === null) setReauth(null);
+  }, [connect]);
+  useEffect(() => {
+    if (removing) dialog.current?.showModal();
+    else dialog.current?.close();
+  }, [removing]);
+
+  const providers = [
+    ...new Set([...connectable, ...accounts.map((a) => a.provider)]),
+  ];
+  const enabled = (a: Account) => saved[a.id] ?? a.status !== "disabled";
+
+  async function toggle(account: Account) {
+    const next = !enabled(account);
+    setBusy(account.id);
+    setError("");
+    try {
+      await request("/api/accounts", "PATCH", {
+        id: account.id,
+        enabled: next,
+      });
+      setSaved((current) => ({ ...current, [account.id]: next }));
+      notify(next ? "Account enabled" : "Account disabled");
+      onChanged();
+    } catch (err) {
+      setError(message(err, "Could not update the account."));
+    } finally {
+      setBusy("");
+    }
+  }
+  async function remove() {
+    if (!removing) return;
+    setBusy(removing.id);
+    setRemoveError("");
+    try {
+      await request("/api/accounts", "DELETE", { id: removing.id });
+      setRemoving(null);
+      notify("Account removed");
+      onChanged();
+    } catch (err) {
+      setRemoveError(message(err, "Could not remove the account."));
+    } finally {
+      setBusy("");
+    }
+  }
+  const closeRemove = () => {
+    if (busy) return;
+    setRemoving(null);
+    setRemoveError("");
+  };
+
+  return (
+    <>
+      {error && (
+        <div className="notice error" role="alert">
+          {error}
+        </div>
+      )}
+      {providers.map((provider) => {
+        const pool = accounts.filter((a) => a.provider === provider);
+        const canConnect = connectable.includes(provider);
+        return (
+          <section
+            className="account-pool"
+            key={provider}
+            style={{ "--provider": providerColor(provider) } as CSSProperties}
+            aria-labelledby={`pool-${provider}`}
+          >
+            <div className="model-group-heading">
+              <ProviderBrand provider={provider} />
+              <h2 id={`pool-${provider}`}>{provider}</h2>
+              <span>
+                {pool.length} {pool.length === 1 ? "account" : "accounts"}
+              </span>
+              {canConnect && (
+                <button
+                  className="secondary"
+                  disabled={!live}
+                  onClick={() => {
+                    setReauth(null);
+                    setConnect(provider.toLowerCase());
+                  }}
+                >
+                  <Plus size={14} /> Add account
+                </button>
+              )}
+            </div>
+            {pool.length === 0 ? (
+              <p className="account-pool-empty">
+                No {provider} accounts yet.{" "}
+                {live
+                  ? "Sign in to add one to the pool."
+                  : "Sign-in is disabled in demo mode."}
+              </p>
+            ) : (
+              <ul>
+                {pool.map((a, i) => {
+                  const on = enabled(a);
+                  const name = label(a.name, `${provider} account ${i + 1}`);
+                  const locked = !live || !a.manageable;
+                  return (
+                    <li
+                      className={`account-row ${on ? "" : "is-off"}`}
+                      key={a.id}
+                    >
+                      <button
+                        className="switch"
+                        role="switch"
+                        aria-checked={on}
+                        aria-label={`Route requests through ${name}`}
+                        title={
+                          live && !a.manageable
+                            ? "This account cannot be changed here"
+                            : undefined
+                        }
+                        disabled={locked || busy === a.id}
+                        onClick={() => void toggle(a)}
+                      />
+                      <div className="account-identity">
+                        <h3>
+                          <Private peek>{a.name}</Private>
+                        </h3>
+                        {a.email && a.email !== a.name && (
+                          <p>
+                            <Private peek>{a.email}</Private>
+                          </p>
+                        )}
+                        {live && !a.manageable && (
+                          <p>This account cannot be changed here.</p>
+                        )}
+                        {a.availableResets !== undefined && (
+                          <p>
+                            {a.availableResets} usage{" "}
+                            {a.availableResets === 1 ? "reset" : "resets"}{" "}
+                            available
+                          </p>
+                        )}
+                        {!on ? (
+                          <p>Disabled. Requests skip this account.</p>
+                        ) : (
+                          a.status === "unavailable" && (
+                            <p className="account-warning">
+                              <Private>
+                                {a.statusMessage ||
+                                  "Unavailable. vrouter is not routing to it right now."}
+                              </Private>
+                            </p>
+                          )
+                        )}
+                      </div>
+                      <span className="plan account-plan">{a.plan}</span>
+                      <div className="account-windows">
+                        {a.windows?.length ? (
+                          a.windows.map((w) => (
+                            <div key={w.id} data-window={w.id}>
+                              <div className="account-allowance">
+                                <span>{w.label}</span>
+                                <strong>{w.remaining}% left</strong>
+                              </div>
+                              <div className="progress">
+                                <span style={{ width: `${w.remaining}%` }} />
+                              </div>
+                              {w.resetAt && (
+                                <p title={new Date(w.resetAt).toLocaleString()}>
+                                  {resetTime(w.resetAt)}
+                                </p>
+                              )}
+                            </div>
+                          ))
+                        ) : a.remaining !== null ? (
+                          <div
+                            data-window={
+                              a.window === "Weekly window"
+                                ? "weekly"
+                                : undefined
+                            }
+                          >
+                            <div className="account-allowance">
+                              <span>{a.window}</span>
+                              <strong>{a.remaining}% left</strong>
+                            </div>
+                            <div className="progress">
+                              <span style={{ width: `${a.remaining}%` }} />
+                            </div>
+                            {a.reset && <p>Resets in {a.reset}</p>}
+                          </div>
+                        ) : (
+                          <p className={a.quotaError ? "quota-error" : ""}>
+                            <Private>
+                              {a.quotaError || "Allowance not reported"}
+                            </Private>
+                          </p>
+                        )}
+                      </div>
+                      <div className="account-row-actions">
+                        {a.reconnectable && (
+                          <button
+                            className="icon-button"
+                            aria-label={`Reconnect ${name}`}
+                            title={`Reconnect ${name}`}
+                            disabled={!live || busy === a.id}
+                            onClick={() => {
+                              setReauth(a);
+                              setConnect(provider.toLowerCase());
+                            }}
+                          >
+                            <LogIn size={14} />
+                          </button>
+                        )}
+                        <button
+                          className="icon-button is-danger"
+                          aria-label={`Remove ${name}`}
+                          disabled={locked}
+                          onClick={() => setRemoving(a)}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+        );
+      })}
+      <dialog
+        ref={dialog}
+        className="confirm-dialog"
+        onCancel={(e) => {
+          e.preventDefault();
+          closeRemove();
+        }}
+        onClick={(e) => {
+          if (isDialogBackdropClick(e)) closeRemove();
+        }}
+        aria-labelledby="remove-title"
+      >
+        {removing && (
+          <>
+            <h2 id="remove-title">
+              Remove <Private>{removing.name}</Private>?
+            </h2>
+            <p>
+              vrouter deletes the stored {removing.provider} sign-in and stops
+              routing requests to it. To use the account again, sign in from Add
+              account.
+            </p>
+            {removeError && (
+              <div className="notice error" role="alert">
+                {removeError}
+              </div>
+            )}
+            <div className="dialog-actions">
+              <button
+                className="secondary"
+                disabled={!!busy}
+                onClick={closeRemove}
+              >
+                Keep account
+              </button>
+              <button
+                className="primary danger"
+                disabled={!!busy}
+                onClick={() => void remove()}
+              >
+                {busy ? "Removing" : "Remove account"}
+              </button>
+            </div>
+          </>
+        )}
+      </dialog>
+      {connect !== null && (
+        <ConnectDialog
+          key={reauth?.id ?? "new"}
+          provider={connect}
+          accountId={reauth?.id}
+          request={request}
+          choose={(next) => {
+            setReauth(null);
+            setConnect(next);
+          }}
+          onClose={() => {
+            setReauth(null);
+            setConnect(null);
+          }}
+          onConnected={onChanged}
+        />
+      )}
+    </>
+  );
+}
