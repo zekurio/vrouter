@@ -32,7 +32,7 @@ for (const arg of process.argv.slice(2)) {
 }
 
 if (!fs.existsSync(binary)) {
-  console.error('bin/vrouter is missing. Build it first with: make build');
+  console.error('bin/vrouter is missing. Build it first with: just build');
   process.exit(1);
 }
 

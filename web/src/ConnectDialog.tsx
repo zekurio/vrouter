@@ -12,6 +12,8 @@ type Connection = {
   url: string;
   expiresAt: string;
   redirectUri?: string;
+  flow: "loopback" | "code" | "device";
+  userCode?: string;
 };
 type Props = {
   // "" shows the provider choice; a provider ID starts sign-in right away.
@@ -54,6 +56,8 @@ export function ConnectDialog({
   const name = connectable.find((p) => p.toLowerCase() === provider) || "";
   // Only a live session may be linked. Controls without one keep their space.
   const ready = phase === "pending" ? session : null;
+  const manualCode = session?.flow === "code";
+  const deviceCode = session?.flow === "device";
   const action = `Open ${name} sign-in`;
 
   // Clear the old session in the same render so its link cannot be clicked.
@@ -105,6 +109,7 @@ export function ConnectDialog({
           return;
         }
         live.current = next;
+        setNow(Date.now());
         setSession(next);
         setPhase("pending");
       })
@@ -171,14 +176,21 @@ export function ConnectDialog({
     setSubmitting(true);
     setCallbackError("");
     try {
-      await request(`/api/oauth/sessions/${ready.id}/callback`, "POST", {
-        redirectUrl: callback.trim(),
-      });
+      await request(
+        `/api/oauth/sessions/${ready.id}/callback`,
+        "POST",
+        manualCode
+          ? { code: callback.trim() }
+          : { redirectUrl: callback.trim() },
+      );
       setCallback("");
       setSubmitted(true);
     } catch (err) {
       setCallbackError(
-        message(err, "Could not finish sign-in. Check the URL and try again."),
+        message(
+          err,
+          "Could not finish sign-in. Check what you pasted and try again.",
+        ),
       );
     } finally {
       setSubmitting(false);
@@ -227,8 +239,7 @@ export function ConnectDialog({
       {!name ? (
         <>
           <p className="dialog-lead">
-            Choose where to sign in. vrouter keeps the resulting tokens on the
-            server. They never pass through this browser.
+            Tokens stay on the server and never pass through this browser.
           </p>
           <div className="provider-choice">
             {connectable.map((p) => (
@@ -251,8 +262,8 @@ export function ConnectDialog({
       ) : phase === "connected" ? (
         <>
           <p className="dialog-lead connect-done">
-            <Check size={16} /> Connection saved to the {name} pool. vrouter has
-            not sent a test request, so confirm with a client call.
+            <Check size={16} /> Added to the {name} pool. vrouter hasn't sent a
+            test request, so confirm with a client call.
           </p>
           <div className="dialog-actions">
             <button className="secondary" onClick={() => restart("")}>
@@ -283,9 +294,15 @@ export function ConnectDialog({
             <li>
               <h3>Sign in with {name}</h3>
               <p>
-                The official sign-in page opens in a new tab. Use the account
-                you want to add.
+                {deviceCode
+                  ? "Open sign-in and enter this one-time code."
+                  : "Opens in a new tab."}
               </p>
+              {deviceCode && ready?.userCode && (
+                <div className="copy-field">
+                  <code>{ready.userCode}</code>
+                </div>
+              )}
               {ready ? (
                 <a
                   className="primary"
@@ -303,20 +320,23 @@ export function ConnectDialog({
             </li>
             <li>
               <h3>Approve access</h3>
-              <p>
-                Approve access in the sign-in tab. This dialog updates
-                automatically when vrouter receives the result.
-              </p>
+              {manualCode && (
+                <p>
+                  Copy the authorization code shown by Claude and paste it
+                  below.
+                </p>
+              )}
+              {deviceCode && (
+                <p>This dialog finishes automatically after you approve.</p>
+              )}
               <p
                 className={ready ? "connect-wait" : "connect-wait unavailable"}
                 role={ready ? "status" : undefined}
                 inert={!ready}
               >
                 <RefreshCw size={13} className="spinning" />
-                {submitted
-                  ? "URL accepted. Finishing sign-in."
-                  : "Waiting for sign-in."}{" "}
-                Link expires in {countdown}.
+                {submitted ? "Finishing sign-in." : "Waiting for sign-in."} Link
+                expires in {countdown}.
               </p>
             </li>
           </ol>
@@ -325,63 +345,77 @@ export function ConnectDialog({
               {error}
             </div>
           )}
-          <section
-            className={ready ? "connect-manual" : "connect-manual unavailable"}
-            inert={!ready}
-            aria-labelledby="callback-label"
-          >
-            <label id="callback-label" htmlFor="callback-url">
-              Paste the return URL
-            </label>
-            <p id="callback-help">
-              If sign-in doesn't finish here, copy the full URL from the sign-in
-              tab after approving access and paste it below. This works even if
-              that page can't load.
-            </p>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                void submit();
-              }}
+          {!deviceCode && (
+            <section
+              className={
+                ready ? "connect-manual" : "connect-manual unavailable"
+              }
+              inert={!ready}
+              aria-labelledby="callback-label"
             >
-              <input
-                id="callback-url"
-                type="url"
-                value={callback}
-                onChange={(e) => {
-                  setCallback(e.target.value);
-                  setCallbackError("");
-                }}
-                placeholder={`${ready?.redirectUri || "http://localhost/…"}?code=…&state=…`}
-                aria-describedby={
-                  callbackError
-                    ? "callback-help callback-error"
-                    : "callback-help"
-                }
-                aria-invalid={!!callbackError}
-                required
-                autoComplete="off"
-                spellCheck={false}
-                disabled={submitting || submitted}
-              />
-              <button
-                className="secondary"
-                type="submit"
-                disabled={submitting || submitted || !callback.trim()}
-              >
-                {submitted
-                  ? "URL accepted"
-                  : submitting
-                    ? "Connecting…"
-                    : "Finish sign-in"}
-              </button>
-            </form>
-            {callbackError && (
-              <p id="callback-error" className="connect-url-error" role="alert">
-                {callbackError}
+              <label id="callback-label" htmlFor="callback-url">
+                {manualCode
+                  ? "Paste the authorization code"
+                  : "Paste the return URL"}
+              </label>
+              <p id="callback-help">
+                {manualCode
+                  ? "Paste the complete code, including # and the text after it."
+                  : "If sign-in doesn't finish here, paste the sign-in tab's full URL. This works even if that page can't load."}
               </p>
-            )}
-          </section>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void submit();
+                }}
+              >
+                <input
+                  id="callback-url"
+                  type={manualCode ? "text" : "url"}
+                  value={callback}
+                  onChange={(e) => {
+                    setCallback(e.target.value);
+                    setCallbackError("");
+                  }}
+                  placeholder={
+                    manualCode
+                      ? "code#state"
+                      : `${ready?.redirectUri || "http://localhost/…"}?code=…&state=…`
+                  }
+                  aria-describedby={
+                    callbackError
+                      ? "callback-help callback-error"
+                      : "callback-help"
+                  }
+                  aria-invalid={!!callbackError}
+                  required
+                  autoComplete="off"
+                  spellCheck={false}
+                  disabled={submitting || submitted}
+                />
+                <button
+                  className="secondary"
+                  type="submit"
+                  disabled={submitting || submitted || !callback.trim()}
+                >
+                  {submitted
+                    ? "Accepted"
+                    : submitting
+                      ? "Connecting…"
+                      : "Finish sign-in"}
+                </button>
+              </form>
+              {callbackError && (
+                <p
+                  id="callback-error"
+                  className="connect-url-error"
+                  role="alert"
+                >
+                  {callbackError}
+                </p>
+              )}
+            </section>
+          )}
         </>
       )}
     </dialog>

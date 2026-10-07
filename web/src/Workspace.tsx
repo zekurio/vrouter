@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Plus, RefreshCw } from "lucide-react";
-import { AccountsPage, resetTime, type Account } from "./AccountsPage";
+import {
+  AccountsPage,
+  accountLabel,
+  resetTime,
+  type Account,
+} from "./AccountsPage";
 import {
   createClient,
   errorMessage,
@@ -8,7 +13,6 @@ import {
   statusOf,
   type AuthMode,
   type Gateway,
-  type User,
 } from "./api";
 import { KeysPage } from "./KeysPage";
 import { ModelsPage, type Model } from "./ModelsPage";
@@ -17,25 +21,22 @@ import {
   ProviderBrand as Brand,
   providerColor as color,
 } from "./ProviderBrand";
-import { RequestsPage } from "./RequestsPage";
-import { SettingsPage, type Engine, type Theme } from "./SettingsPage";
+import { UsagePage } from "./UsagePage";
 
 type State = {
-  mode: "demo" | "live" | "unconfigured";
+  mode: "live" | "unconfigured";
   connected: boolean;
   observedAt: string;
   models: Model[];
   accounts: Account[];
   warnings: string[];
-  engine: Engine;
 };
 export const pages = [
   "Overview",
   "Models",
   "Accounts",
   "Keys",
-  "Requests",
-  "Settings",
+  "Usage",
 ] as const;
 export type Page = (typeof pages)[number];
 const titles: Partial<Record<Page, string>> = {
@@ -48,18 +49,13 @@ type Props = {
   page: Page;
   navigate: (page: Page) => void;
   token: () => string;
-  user: User | null;
   authMode: AuthMode;
-  canSignOut: boolean;
-  onSignOut: () => void;
+  publicUrl: string;
   onUnauthorized: () => void;
   // The server no longer has this gateway, or no longer lets this user open it.
   onGone: () => void;
-  onMode: (mode: State["mode"]) => void;
   copy: (value: string) => Promise<boolean>;
   notify: (text: string) => void;
-  theme: Theme;
-  setTheme: (theme: Theme) => void;
 };
 
 // Everything that belongs to one gateway. The app mounts it with the gateway ID
@@ -69,20 +65,15 @@ export function Workspace({
   page,
   navigate,
   token,
-  user,
   authMode,
-  canSignOut,
-  onSignOut,
+  publicUrl,
   onUnauthorized,
   onGone,
-  onMode,
   copy,
   notify,
-  theme,
-  setTheme,
 }: Props) {
-  const handlers = useRef({ onUnauthorized, onGone, onMode });
-  handlers.current = { onUnauthorized, onGone, onMode };
+  const handlers = useRef({ onUnauthorized, onGone });
+  handlers.current = { onUnauthorized, onGone };
   const [client] = useState(() =>
     createClient({
       gateway: gateway.id,
@@ -95,8 +86,9 @@ export function Workspace({
   const [error, setError] = useState("");
   const refreshSequence = useRef(0);
   const refreshPending = useRef(false);
-  const [pool, setPool] = useState("All pools");
+  const [pool, setPool] = useState("");
   const [connect, setConnect] = useState<string | null>(null);
+  const [creatingKey, setCreatingKey] = useState(false);
 
   async function refresh(background = false) {
     if (background && refreshPending.current) return;
@@ -108,7 +100,6 @@ export function Workspace({
       const next = await client.request<State>("/api/state");
       if (sequence !== refreshSequence.current) return;
       setState(next);
-      handlers.current.onMode(next.mode);
     } catch (err) {
       if (sequence !== refreshSequence.current || isStale(err)) return;
       const status = statusOf(err);
@@ -148,13 +139,14 @@ export function Workspace({
   const providers = [
     ...new Set((state?.accounts || []).map((a) => a.provider)),
   ];
+  // The pool columns double as the filter. An empty filter shows every pool.
+  const filter = providers.length > 1 && providers.includes(pool) ? pool : "";
   const visibleAccounts = (state?.accounts || []).filter(
-    (a) => pool === "All pools" || a.provider === pool,
+    (a) => !filter || a.provider === filter,
   );
-  const demo = state?.mode === "demo";
   const live = state?.mode === "live";
   // One address for every gateway. The API key picks the gateway.
-  const endpoint = `${location.origin}/v1`;
+  const endpoint = `${publicUrl || location.origin}/v1`;
 
   return (
     <>
@@ -166,6 +158,15 @@ export function Workspace({
           {page === "Overview" && (
             <button className="secondary" disabled={!live} onClick={addAccount}>
               <Plus size={14} /> Add account
+            </button>
+          )}
+          {page === "Keys" && (
+            <button
+              className="secondary"
+              disabled={!live}
+              onClick={() => setCreatingKey(true)}
+            >
+              <Plus size={14} /> Create key
             </button>
           )}
           <button
@@ -188,18 +189,13 @@ export function Workspace({
           {error} <button onClick={() => void refresh()}>Try again</button>
         </div>
       )}
-      {demo && (
-        <div className="notice">
-          Demo data. Accounts, API keys and gateways can't be changed.
-        </div>
-      )}
       {state?.warnings.map((w) => (
         <div className="notice" key={w}>
           {w}
         </div>
       ))}
       {loading && !state && (
-        <div className="empty">
+        <div className="loading">
           <RefreshCw size={22} className="spinning" />
         </div>
       )}
@@ -216,13 +212,30 @@ export function Workspace({
                 );
                 return (
                   <article
-                    className="provider-column"
+                    className={`provider-column ${filter && filter !== p ? "dimmed" : ""}`}
                     key={p}
                     style={{ "--provider": color(p) } as CSSProperties}
                   >
                     <div className="provider-title">
                       <Brand provider={p} />
-                      <h2>{p}</h2>
+                      <h2>
+                        {providers.length > 1 ? (
+                          <button
+                            className="pool-toggle"
+                            aria-pressed={filter === p}
+                            title={
+                              filter === p
+                                ? "Show all pools"
+                                : `Show only ${p} accounts`
+                            }
+                            onClick={() => setPool(filter === p ? "" : p)}
+                          >
+                            {p}
+                          </button>
+                        ) : (
+                          p
+                        )}
+                      </h2>
                       <span>
                         {accounts.length}{" "}
                         {accounts.length === 1 ? "account" : "accounts"}
@@ -264,32 +277,10 @@ export function Workspace({
               })}
             </section>
           ) : (
-            <div className="empty">
-              <h2>No accounts connected</h2>
-            </div>
+            <div className="empty">No accounts yet</div>
           )}
           {providers.length > 0 && (
             <>
-              <div className="section-toolbar">
-                <div className="tabs" aria-label="Filter account pools">
-                  {["All pools", ...providers].map((p) => (
-                    <button
-                      aria-pressed={pool === p}
-                      className={pool === p ? "selected" : ""}
-                      key={p}
-                      onClick={() => setPool(p)}
-                    >
-                      {p !== "All pools" && (
-                        <span
-                          className="tiny-dot"
-                          style={{ background: color(p) }}
-                        />
-                      )}
-                      {p}
-                    </button>
-                  ))}
-                </div>
-              </div>
               <section className="account-grid">
                 {visibleAccounts.map((a) => (
                   <article
@@ -300,16 +291,16 @@ export function Workspace({
                     <div className="account-heading">
                       <div>
                         <h3>
-                          <span
-                            className={`account-state ${a.status}`}
-                            title={a.status === "ready" ? "Active" : a.status}
-                            aria-label={
-                              a.status === "ready" ? "Active" : a.status
-                            }
-                          />
-                          <Private>{a.name}</Private>
+                          <Private peek>{accountLabel(a)}</Private>
                         </h3>
                         <span className="plan">{a.plan || a.provider}</span>
+                        {a.status !== "ready" && (
+                          <span className={`account-state ${a.status}`}>
+                            {a.status === "disabled"
+                              ? "Disabled"
+                              : "Unavailable"}
+                          </span>
+                        )}
                       </div>
                       <Brand provider={a.provider} small />
                     </div>
@@ -395,36 +386,15 @@ export function Workspace({
         <KeysPage
           request={client.request}
           live={state.mode === "live"}
-          demo={state.mode === "demo"}
           reloadKey={state.observedAt}
-          endpoint={endpoint}
+          creating={creatingKey}
+          onCreateClose={() => setCreatingKey(false)}
           copy={copy}
           notify={notify}
         />
       )}
-      {page === "Requests" && state && (
-        <RequestsPage
-          request={client.request}
-          demo={state.mode === "demo"}
-          reloadKey={state.observedAt}
-        />
-      )}
-      {page === "Settings" && state && (
-        <SettingsPage
-          mode={state.mode}
-          engine={state.engine}
-          models={state.models.length}
-          accounts={state.accounts.length}
-          endpoint={endpoint}
-          copy={(value) => void copy(value)}
-          theme={theme}
-          setTheme={setTheme}
-          gateway={gateway}
-          user={user}
-          authMode={authMode}
-          canSignOut={canSignOut}
-          onSignOut={onSignOut}
-        />
+      {page === "Usage" && state && (
+        <UsagePage request={client.request} reloadKey={state.observedAt} />
       )}
     </>
   );

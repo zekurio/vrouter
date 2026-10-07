@@ -18,7 +18,15 @@ import (
 )
 
 func main() {
-	cfg := gateway.Config{DataDir: os.Getenv("VROUTER_DATA_DIR"), APIKey: os.Getenv("VROUTER_API_KEY"), AdminToken: os.Getenv("VROUTER_ADMIN_TOKEN"), Demo: os.Getenv("VROUTER_DEMO") == "1"}
+	cfg := gateway.Config{
+		DataDir:         os.Getenv("VROUTER_DATA_DIR"),
+		APIKey:          os.Getenv("VROUTER_API_KEY"),
+		AdminToken:      os.Getenv("VROUTER_ADMIN_TOKEN"),
+		PublicURL:       os.Getenv("VROUTER_PUBLIC_URL"),
+		ExternalAuth:    os.Getenv("VROUTER_EXTERNAL_AUTH") == "1",
+		StartWindows:    true,
+		WindowSkipPlans: os.Getenv("VROUTER_WINDOW_SKIP_PLANS"),
+	}
 	if len(os.Args) > 1 {
 		if os.Args[1] != "import" || len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "Usage: vrouter [import credential.json ...]")
@@ -40,25 +48,19 @@ func main() {
 	if addr == "" {
 		addr = "127.0.0.1:8080"
 	}
-	identity, err := gateway.LoadIdentityConfigFromEnv()
-	if err != nil {
-		slog.Error("configuration error", "error", err)
-		os.Exit(1)
-	}
-	cfg.Identity = identity
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		slog.Error("invalid listen address", "error", err)
 		os.Exit(1)
 	}
 	ip := net.ParseIP(host)
-	if (ip == nil || !ip.IsLoopback()) && cfg.AdminToken == "" && len(identity.Providers) == 0 {
-		slog.Error("VROUTER_ADMIN_TOKEN or VROUTER_OAUTH_PROVIDERS is required when listening outside loopback")
+	if (ip == nil || !ip.IsLoopback()) && cfg.AdminToken == "" && !cfg.ExternalAuth {
+		slog.Error("VROUTER_ADMIN_TOKEN or VROUTER_EXTERNAL_AUTH=1 is required when listening outside loopback")
 		os.Exit(1)
 	}
 	assets := web.Assets()
 	if _, err := fs.Stat(assets, "index.html"); err != nil {
-		slog.Error("frontend build missing; run npm ci --prefix web and npm run build --prefix web before building Go")
+		slog.Error("frontend build missing; run pnpm --dir web install --frozen-lockfile and pnpm --dir web build before building Go")
 		os.Exit(1)
 	}
 	handler, err := gateway.New(cfg, assets)
@@ -80,7 +82,7 @@ func main() {
 		defer cancel()
 		_ = server.Shutdown(shutdown)
 	}()
-	slog.Info("vrouter listening", "address", addr, "demo", cfg.Demo)
+	slog.Info("vrouter listening", "address", addr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		slog.Error("server stopped", "error", err)
 		os.Exit(1)

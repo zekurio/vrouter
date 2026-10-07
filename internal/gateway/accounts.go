@@ -89,19 +89,9 @@ func applyAccountQuota(account *Account, q quotaCache) {
 	}
 }
 
-func (s *server) oauthReady(w http.ResponseWriter) bool {
-	if s.cfg.Demo || s.store == nil {
-		writeJSON(w, 503, map[string]string{"error": "Account management is disabled in demo mode"})
-		return false
-	}
-	return true
-}
 func (s *server) updateAccount(w http.ResponseWriter, r *http.Request) { s.changeAccount(w, r, false) }
 func (s *server) removeAccount(w http.ResponseWriter, r *http.Request) { s.changeAccount(w, r, true) }
 func (s *server) changeAccount(w http.ResponseWriter, r *http.Request, remove bool) {
-	if !s.oauthReady(w) {
-		return
-	}
 	var body struct {
 		ID      string `json:"id"`
 		Enabled *bool  `json:"enabled"`
@@ -189,6 +179,7 @@ func (s *server) nativeQuota(ctx context.Context, a storedAccount) quotaCache {
 		q.Error = "Provider usage unavailable. Refresh or reconnect this account."
 		q.Windows = nil
 	}
+	q.ReportedWindows = append([]QuotaWindow(nil), q.Windows...)
 	q = currentQuota(q, time.Now())
 	if profilePlan != nil {
 		q.Plan = <-profilePlan

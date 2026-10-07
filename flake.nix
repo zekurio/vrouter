@@ -1,30 +1,36 @@
 {
-  description = "vrouter development environment";
+  description = "vrouter model gateway and NixOS service";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs =
-    { nixpkgs, ... }:
+    { self, nixpkgs }:
     let
       systems = [
         "x86_64-linux"
         "aarch64-linux"
-        "x86_64-darwin"
         "aarch64-darwin"
       ];
-      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+      forAllSystems = nixpkgs.lib.genAttrs systems;
     in
     {
-      devShells = forAllSystems (pkgs: {
-        default = pkgs.mkShell {
-          packages = with pkgs; [
-            go
-            gopls
-            nodejs_24
-            gnumake
-            librsvg
-          ];
-        };
+      packages = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          vrouter = pkgs.callPackage ./nix/package.nix { };
+          default = self.packages.${system}.vrouter;
+        }
+      );
+
+      nixosModules.vrouter = import ./nix/module.nix;
+      nixosModules.default = self.nixosModules.vrouter;
+
+      formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixfmt);
+      checks = forAllSystems (system: {
+        package = self.packages.${system}.vrouter;
       });
     };
 }

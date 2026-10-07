@@ -20,11 +20,15 @@ import (
 
 type Config struct {
 	DataDir, APIKey, AdminToken string
-	Demo                        bool
-	// Identity carries the OIDC sign-in configuration. When at least one
-	// provider is configured the public New builds the multi-tenant facade
-	// instead of the single legacy gateway.
-	Identity IdentityConfig
+	// PublicURL is the browser-facing HTTP(S) origin, without a path.
+	PublicURL string
+	// ExternalAuth delegates dashboard authentication to a trusted reverse proxy.
+	ExternalAuth bool
+	// StartWindows keeps a 5-hour window running on subscription accounts.
+	StartWindows bool
+	// WindowSkipPlans lists plans that never get a window trigger, as
+	// comma-separated "plan" or "provider:plan". Empty skips the Codex Pro plans.
+	WindowSkipPlans string
 }
 type Model struct {
 	ID                 string   `json:"id"`
@@ -81,28 +85,33 @@ type Engine struct {
 }
 
 type server struct {
-	cfg          Config
-	handler      http.Handler
-	mux          *http.ServeMux
-	mgmt         *http.ServeMux
-	manager      *manager
-	auth         authenticator
-	gatewayID    string
-	store        *accountStore
-	client       *http.Client
-	streamClient *http.Client
-	quotaMu      sync.Mutex
-	quotas       map[string]quotaCache
-	quotaPending map[string]chan struct{}
-	oauthMu      sync.Mutex
-	oauth        map[string]oauthSession
-	callbacks    map[string][]*http.Server
-	modelMu      sync.Mutex
-	catalogMu    sync.Mutex
-	catalogs     map[string]catalogCache
-	refreshMu    sync.Mutex
-	resetMu      sync.Mutex
-	sequence     atomic.Uint64
+	cfg             Config
+	handler         http.Handler
+	mux             *http.ServeMux
+	mgmt            *http.ServeMux
+	manager         *manager
+	gatewayID       string
+	store           *accountStore
+	client          *http.Client
+	streamClient    *http.Client
+	quotaMu         sync.Mutex
+	quotas          map[string]quotaCache
+	quotaPending    map[string]chan struct{}
+	oauthMu         sync.Mutex
+	oauth           map[string]oauthSession
+	callbacks       map[string][]*http.Server
+	modelMu         sync.Mutex
+	catalogMu       sync.Mutex
+	catalogs        map[string]catalogCache
+	refreshMu       sync.Mutex
+	windowMu        sync.Mutex
+	windowWatch     map[string]windowWatch
+	stopWindows     context.CancelFunc
+	windowsDone     chan struct{}
+	claudeUsageGate sync.RWMutex
+	codexUsageGate  sync.RWMutex
+	resetMu         sync.Mutex
+	sequence        atomic.Uint64
 }
 
 func DefaultDataDir() string {
@@ -116,54 +125,49 @@ func DefaultDataDir() string {
 	return filepath.Join(home, ".local", "state", "vrouter")
 }
 func New(cfg Config, assets fs.FS) (http.Handler, error) {
+	publicURL, err := parsePublicURL(cfg.PublicURL)
+	if err != nil {
+		return nil, err
+	}
+	cfg.PublicURL = publicURL
 	if cfg.APIKey != "" && cfg.AdminToken != "" && tokenEqual(cfg.APIKey, cfg.AdminToken) {
 		return nil, errors.New("VROUTER_API_KEY and VROUTER_ADMIN_TOKEN must differ")
 	}
 	if cfg.DataDir == "" {
 		cfg.DataDir = DefaultDataDir()
-		if cfg.DataDir == "" && !cfg.Demo {
+		if cfg.DataDir == "" {
 			return nil, errors.New("set VROUTER_DATA_DIR: home directory is unavailable")
 		}
 	}
-	auth, err := newLoginAuth(cfg.Identity, cfg.AdminToken)
-	if err != nil {
-		return nil, err
-	}
-	if auth.mode() == "oidc" {
-		return newRouter(cfg, assets, auth)
-	}
 	s, err := newGateway(cfg, assets)
 	if err != nil {
-		_ = auth.Close()
 		return nil, err
 	}
-	s.auth = auth
-	auth.register(s.mux)
-	if !cfg.Demo {
-		if _, err := openManager(s, assets); err != nil {
-			_ = s.Close()
-			return nil, err
-		}
+	s.mux.HandleFunc("GET /api/auth", s.authStatus)
+	if _, err := openManager(s, assets); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	if cfg.StartWindows {
+		var ctx context.Context
+		ctx, s.stopWindows = context.WithCancel(context.Background())
+		s.windowsDone = make(chan struct{})
+		go s.watchWindows(ctx)
 	}
 	return s, nil
 }
 
-// newGateway builds one isolated gateway engine. The legacy deployment uses
-// it directly as the public handler; tenant mode builds one per gateway with
-// its own data directory. The returned muxes are intentionally split: mux is
-// the standalone surface (management authorization included) while mgmt holds
-// the same handlers unwrapped for a facade that has already authorized.
+// newGateway builds an account store and its handlers. The root authorizes
+// management once and can dispatch to preserved gateway stores via mgmt.
 func newGateway(cfg Config, assets fs.FS) (*server, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = 60 * time.Second
 	noRedirect := func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-	s := &server{cfg: cfg, gatewayID: defaultGatewayID, client: &http.Client{Transport: transport, Timeout: 12 * time.Second, CheckRedirect: noRedirect}, streamClient: &http.Client{Transport: transport, CheckRedirect: noRedirect}, quotas: map[string]quotaCache{}, oauth: map[string]oauthSession{}, catalogs: map[string]catalogCache{}}
-	if !cfg.Demo {
-		var err error
-		s.store, err = openStore(cfg.DataDir)
-		if err != nil {
-			return nil, err
-		}
+	s := &server{cfg: cfg, gatewayID: defaultGatewayID, client: &http.Client{Transport: transport, Timeout: 12 * time.Second, CheckRedirect: noRedirect}, streamClient: &http.Client{Transport: transport, CheckRedirect: noRedirect}, quotas: map[string]quotaCache{}, oauth: map[string]oauthSession{}, catalogs: map[string]catalogCache{}, windowWatch: map[string]windowWatch{}}
+	var err error
+	s.store, err = openStore(cfg.DataDir)
+	if err != nil {
+		return nil, err
 	}
 	mux := http.NewServeMux()
 	s.mux = mux
@@ -188,7 +192,6 @@ func newGateway(cfg Config, assets fs.FS) (*server, error) {
 		{"DELETE /api/keys/{id}", s.deleteKey},
 		{"GET /api/telemetry", s.telemetryHandler},
 		{"GET /api/gateways", s.gateways},
-		{"POST /api/gateways", s.gateways},
 	}
 	for _, route := range management {
 		mux.HandleFunc(route.pattern, s.authorize(s.legacyDispatch))
@@ -214,6 +217,10 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.handler.ServeHTTP(w, r)
 }
 func (s *server) Close() error {
+	if s.stopWindows != nil {
+		s.stopWindows()
+		<-s.windowsDone
+	}
 	s.oauthMu.Lock()
 	for _, servers := range s.callbacks {
 		for _, srv := range servers {
@@ -237,7 +244,7 @@ func (s *server) Close() error {
 	if s.manager != nil && s.manager.root == s {
 		err = errors.Join(err, s.manager.close())
 	}
-	return errors.Join(err, closeIfPossible(s.auth))
+	return err
 }
 func tokenEqual(a, b string) bool {
 	x, y := sha256.Sum256([]byte(a)), sha256.Sum256([]byte(b))
@@ -249,7 +256,7 @@ func (s *server) authorize(next http.HandlerFunc) http.HandlerFunc {
 		w.Header().Set("Cache-Control", "no-store")
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			origin, err := url.Parse(r.Header.Get("Origin"))
-			if r.Header.Get("Sec-Fetch-Site") == "cross-site" || (r.Header.Get("Origin") != "" && (err != nil || origin.Host != r.Host || (origin.Scheme != "http" && origin.Scheme != "https"))) {
+			if r.Header.Get("Sec-Fetch-Site") == "cross-site" || (r.Header.Get("Origin") != "" && (err != nil || origin.Host != r.Host || (origin.Scheme != "http" && origin.Scheme != "https") || (s.cfg.PublicURL != "" && r.Header.Get("Origin") != s.cfg.PublicURL))) {
 				writeJSON(w, 403, map[string]string{"error": "Cross-origin management requests are not allowed"})
 				return
 			}
@@ -260,7 +267,7 @@ func (s *server) authorize(next http.HandlerFunc) http.HandlerFunc {
 				writeJSON(w, 401, map[string]string{"error": "Sign in with your vrouter admin token"})
 				return
 			}
-		} else {
+		} else if !s.cfg.ExternalAuth {
 			// Both the socket peer and Host must be local to prevent DNS rebinding.
 			peer, _, _ := net.SplitHostPort(r.RemoteAddr)
 			host := r.Host
@@ -285,12 +292,6 @@ func (s *server) hasClientKey() bool {
 }
 
 func (s *server) state(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.Demo {
-		state := demoState()
-		state.Engine.AdminToken = s.cfg.AdminToken != ""
-		writeJSON(w, 200, state)
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
 	state := State{Mode: "live", Connected: true, ObservedAt: time.Now().UTC(), Models: []Model{}, Accounts: []Account{}, Warnings: []string{}, Engine: Engine{Version: "native", Storage: "local", Catalog: "ok", Management: "ok", AdminToken: s.cfg.AdminToken != "", ClientKey: s.hasClientKey()}}

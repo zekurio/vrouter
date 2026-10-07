@@ -51,17 +51,29 @@ type verifiedIdentity struct {
 // signature, then checks the issuer, audience, lifetime, and nonce. Errors
 // never contain the token or any claim value.
 //
-// The nonce check is strict for every flow, the native Codex flow included:
-// vrouter requests a nonce, so a token that omits the claim is refused rather
-// than accepted on the assumption the provider ignored the request. If live
-// evidence ever shows the native protocol drops requested nonces, that is a
-// deliberate protocol decision to make here, not a silent fallback.
+// Browser sign-in always requires the requested nonce. Device authorization
+// uses a separate entry point because that protocol does not accept a nonce.
 //
 // The JWKS is fetched for each sign-in attempt. A bounded cache can replace
 // this later if sign-in volume makes the extra request matter.
 func (s *server) verifyIDToken(ctx context.Context, token, clientID, nonce string) (verifiedIdentity, error) {
 	if clientID == "" || nonce == "" {
 		return verifiedIdentity{}, errors.New("id token verification requires an expected client ID and nonce")
+	}
+	return s.verifyOpenAIIDToken(ctx, token, clientID, &nonce)
+}
+
+// Only for tokens exchanged from the fixed device endpoint, bound to the
+// pending device_auth_id and provider-issued PKCE verifier. Browser-submitted
+// callbacks cannot reach this path. Signature, issuer, audience, lifetime and
+// the saved workspace/subject binding are still checked.
+func (s *server) verifyDeviceIDToken(ctx context.Context, token, clientID string) (verifiedIdentity, error) {
+	return s.verifyOpenAIIDToken(ctx, token, clientID, nil)
+}
+
+func (s *server) verifyOpenAIIDToken(ctx context.Context, token, clientID string, nonce *string) (verifiedIdentity, error) {
+	if clientID == "" {
+		return verifiedIdentity{}, errors.New("id token verification requires an expected client ID")
 	}
 	if token == "" || len(token) > maxIDTokenBytes {
 		return verifiedIdentity{}, errors.New("id token is malformed")
@@ -109,7 +121,7 @@ func (s *server) verifyIDToken(ctx context.Context, token, clientID, nonce strin
 	if err := rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], signature); err != nil {
 		return verifiedIdentity{}, errors.New("id token signature is invalid")
 	}
-	return validateIDTokenClaims(claimsJSON, clientID, nonce)
+	return validateOpenAIIDTokenClaims(claimsJSON, clientID, nonce)
 }
 
 // fetchIDTokenKeys returns the raw JWKS body from the fixed OpenAI endpoint.
@@ -173,9 +185,15 @@ type idTokenAuthClaims struct {
 }
 
 // validateIDTokenClaims checks the claims of a token whose signature already
-// verified and returns the identity to store. The nonce claim is required and
-// must match for every flow.
+// verified and returns the identity to store. Browser flows require a nonce.
 func validateIDTokenClaims(payload []byte, clientID, nonce string) (verifiedIdentity, error) {
+	if clientID == "" || nonce == "" {
+		return verifiedIdentity{}, errors.New("id token verification requires an expected client ID and nonce")
+	}
+	return validateOpenAIIDTokenClaims(payload, clientID, &nonce)
+}
+
+func validateOpenAIIDTokenClaims(payload []byte, clientID string, nonce *string) (verifiedIdentity, error) {
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	var claims idTokenClaims
 	if err := decoder.Decode(&claims); err != nil {
@@ -233,7 +251,7 @@ func validateIDTokenClaims(payload []byte, clientID, nonce string) (verifiedIden
 			return verifiedIdentity{}, errors.New("id token is not valid yet")
 		}
 	}
-	if claims.Nonce == "" || subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(nonce)) != 1 {
+	if nonce != nil && (claims.Nonce == "" || subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(*nonce)) != 1) {
 		return verifiedIdentity{}, errors.New("id token nonce does not match")
 	}
 	auth := parseIDTokenAuthClaims(claims.Auth)

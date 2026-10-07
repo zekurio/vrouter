@@ -16,12 +16,13 @@ type QuotaWindow struct {
 }
 
 type quotaCache struct {
-	Windows    []QuotaWindow
-	Plan       string
-	ObservedAt time.Time
-	Error      string
-	Allowed    *bool
-	Resets     *resetStatus
+	ReportedWindows []QuotaWindow
+	Windows         []QuotaWindow
+	Plan            string
+	ObservedAt      time.Time
+	Error           string
+	Allowed         *bool
+	Resets          *resetStatus
 }
 
 func parseQuota(provider string, body []byte, now time.Time) ([]QuotaWindow, string, error) {

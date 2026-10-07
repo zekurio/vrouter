@@ -43,6 +43,10 @@ type Props = {
   notify: (message: string) => void;
 };
 
+export function accountLabel(account: Account) {
+  return account.email || `${account.provider} account`;
+}
+
 export function resetTime(value?: string) {
   if (!value) return "Reset not reported";
   const minutes = Math.ceil((new Date(value).getTime() - Date.now()) / 60000);
@@ -153,31 +157,31 @@ export function AccountsPage({
               <span>
                 {pool.length} {pool.length === 1 ? "account" : "accounts"}
               </span>
-              {canConnect && (
-                <button
-                  className="secondary"
-                  disabled={!live}
-                  onClick={() => {
-                    setReauth(null);
-                    setConnect(provider.toLowerCase());
-                  }}
-                >
-                  <Plus size={14} /> Add account
-                </button>
-              )}
+              <div className="pool-actions">
+                {canConnect && (
+                  <button
+                    className="secondary"
+                    disabled={!live}
+                    onClick={() => {
+                      setReauth(null);
+                      setConnect(provider.toLowerCase());
+                    }}
+                  >
+                    <Plus size={14} /> Add account
+                  </button>
+                )}
+              </div>
             </div>
             {pool.length === 0 ? (
-              <p className="account-pool-empty">
-                No {provider} accounts yet.{" "}
-                {live
-                  ? "Sign in to add one to the pool."
-                  : "Sign-in is disabled in demo mode."}
-              </p>
+              <p className="empty">No accounts yet</p>
             ) : (
               <ul>
                 {pool.map((a, i) => {
                   const on = enabled(a);
-                  const name = label(a.name, `${provider} account ${i + 1}`);
+                  const name = label(
+                    accountLabel(a),
+                    `${provider} account ${i + 1}`,
+                  );
                   const locked = !live || !a.manageable;
                   return (
                     <li
@@ -199,13 +203,8 @@ export function AccountsPage({
                       />
                       <div className="account-identity">
                         <h3>
-                          <Private peek>{a.name}</Private>
+                          <Private peek>{accountLabel(a)}</Private>
                         </h3>
-                        {a.email && a.email !== a.name && (
-                          <p>
-                            <Private peek>{a.email}</Private>
-                          </p>
-                        )}
                         {live && !a.manageable && (
                           <p>This account cannot be changed here.</p>
                         )}
@@ -320,7 +319,7 @@ export function AccountsPage({
         {removing && (
           <>
             <h2 id="remove-title">
-              Remove <Private>{removing.name}</Private>?
+              Remove <Private>{accountLabel(removing)}</Private>?
             </h2>
             <p>
               vrouter deletes the stored {removing.provider} sign-in and stops

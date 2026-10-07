@@ -1,58 +1,56 @@
-// Gateway API key limits and status.
+// Gateway API key expiry and status.
 
+export type PercentQuota = { fiveHour?: number; sevenDay?: number };
 export type APIKey = {
+  providerQuotas?: Record<string, PercentQuota>;
+  providerUsage?: Record<
+    string,
+    { fiveHour: number; sevenDay: number; uncertain: boolean }
+  >;
   id: string;
   name: string;
   prefix: string;
   createdAt: string;
   revokedAt?: string;
-  // 0 means no limit. Limits are lifetime totals.
-  limitRequests: number;
-  limitTokens: number;
+  // Absent means the key never expires.
+  expiresAt?: string;
   usedRequests: number;
   usedTokens: number;
-  // Set when a token-limited call finished without a usage report.
-  usageUncertain?: boolean;
 };
-export type KeyState =
-  "active" | "revoked" | "uncertain" | "requests-spent" | "tokens-spent";
+export type KeyState = "active" | "revoked" | "expired";
 
 // The first reason a call with this key would be refused, if any.
-export function keyState(key: APIKey): KeyState {
+export function keyState(key: APIKey, now = Date.now()): KeyState {
   if (key.revokedAt) return "revoked";
-  if (key.usageUncertain && key.limitTokens > 0) return "uncertain";
-  if (key.limitRequests > 0 && key.usedRequests >= key.limitRequests)
-    return "requests-spent";
-  if (key.limitTokens > 0 && key.usedTokens >= key.limitTokens)
-    return "tokens-spent";
+  if (key.expiresAt && new Date(key.expiresAt).getTime() <= now)
+    return "expired";
   return "active";
 }
 
 export const stateLabel: Record<KeyState, string> = {
   active: "Active",
   revoked: "Revoked",
-  uncertain: "Blocked, usage unknown",
-  "requests-spent": "Request limit reached",
-  "tokens-spent": "Token limit reached",
+  expired: "Expired",
 };
 
-// Share of a limit used, as a bar width. Token usage can pass its limit because
-// vrouter counts tokens after the response, so the bar stops at full.
-export const usedShare = (used: number, limit: number) =>
-  limit > 0 ? Math.min(100, Math.max(0, (used / limit) * 100)) : 0;
-
-// Reads a limit field. Blank means no limit, which the API writes as 0.
-export function parseLimit(
-  text: string,
-): { value: number } | { error: string } {
-  const digits = text.trim().replace(/[\s,_]/g, "");
-  if (!digits) return { value: 0 };
-  if (!/^\d+$/.test(digits))
-    return { error: "Enter a whole number, or leave it blank for no limit." };
-  const value = Number(digits);
-  if (!Number.isSafeInteger(value))
-    return { error: "That number is too large." };
-  return { value };
+// An expiry as the value of a datetime-local input, in the browser's zone.
+export function expiryText(expiresAt?: string) {
+  if (!expiresAt) return "";
+  const date = new Date(expiresAt);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-export const limitText = (limit: number) => (limit > 0 ? String(limit) : "");
+// Reads the expiry field. Blank means the key never expires, which the API
+// writes as null.
+export function parseExpiry(
+  text: string,
+  now = Date.now(),
+): { value: string | null } | { error: string } {
+  if (!text) return { value: null };
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime()))
+    return { error: "Enter a date and time, or leave it blank." };
+  if (date.getTime() <= now) return { error: "Pick a time in the future." };
+  return { value: date.toISOString() };
+}

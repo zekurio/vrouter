@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -17,49 +18,55 @@ import (
 // keyRecord is one gateway API key. Only the SHA-256 hash of the secret is
 // stored; the full key is shown once at creation and never persisted.
 type keyRecord struct {
-	ID             string     `json:"id"`
-	GatewayID      string     `json:"gatewayId"`
-	Name           string     `json:"name"`
-	Prefix         string     `json:"prefix"`
-	Hash           string     `json:"hash"`
-	CreatedAt      time.Time  `json:"createdAt"`
-	RevokedAt      *time.Time `json:"revokedAt,omitempty"`
-	LimitRequests  int64      `json:"limitRequests"`
-	LimitTokens    int64      `json:"limitTokens"`
-	UsedRequests   int64      `json:"usedRequests"`
-	UsedTokens     int64      `json:"usedTokens"`
-	UsageUncertain bool       `json:"usageUncertain,omitempty"`
+	ProviderQuotas   map[string]providerPercentQuota `json:"providerQuotas,omitempty"`
+	PercentCharges   []percentCharge                 `json:"percentCharges,omitempty"`
+	PercentUncertain map[string]bool                 `json:"percentUncertain,omitempty"`
+	ID               string                          `json:"id"`
+	GatewayID        string                          `json:"gatewayId"`
+	Name             string                          `json:"name"`
+	Prefix           string                          `json:"prefix"`
+	Hash             string                          `json:"hash"`
+	CreatedAt        time.Time                       `json:"createdAt"`
+	RevokedAt        *time.Time                      `json:"revokedAt,omitempty"`
+	// ExpiresAt is when the key stops authorizing requests. Nil never expires.
+	ExpiresAt    *time.Time `json:"expiresAt,omitempty"`
+	UsedRequests int64      `json:"usedRequests"`
+	UsedTokens   int64      `json:"usedTokens"`
 	// InFlight counts reservations that have not settled yet. It is persisted
 	// so a crash cannot hide unfinished work: on load, any nonzero count turns
-	// into UsageUncertain and is cleared.
+	// into PercentUncertain and is cleared.
 	InFlight int `json:"inFlight,omitempty"`
+	// Lifetime limits were replaced by ExpiresAt. These fields only let a
+	// registry written by an older build load; registryNormalize drops them.
+	LegacyLimitRequests  *int64 `json:"limitRequests,omitempty"`
+	LegacyLimitTokens    *int64 `json:"limitTokens,omitempty"`
+	LegacyUsageUncertain *bool  `json:"usageUncertain,omitempty"`
+}
+
+// expired reports whether the key's expiry has passed.
+func (k keyRecord) expired(now time.Time) bool {
+	return k.ExpiresAt != nil && !now.Before(*k.ExpiresAt)
 }
 
 // keyView is the public metadata shape. It never contains the hash or secret.
 type keyView struct {
-	ID             string     `json:"id"`
-	Name           string     `json:"name"`
-	Prefix         string     `json:"prefix"`
-	CreatedAt      time.Time  `json:"createdAt"`
-	RevokedAt      *time.Time `json:"revokedAt,omitempty"`
-	LimitRequests  int64      `json:"limitRequests"`
-	LimitTokens    int64      `json:"limitTokens"`
-	UsedRequests   int64      `json:"usedRequests"`
-	UsedTokens     int64      `json:"usedTokens"`
-	UsageUncertain bool       `json:"usageUncertain"`
+	ProviderQuotas map[string]providerPercentQuota `json:"providerQuotas"`
+	ProviderUsage  map[string]percentSummary       `json:"providerUsage"`
+	ID             string                          `json:"id"`
+	Name           string                          `json:"name"`
+	Prefix         string                          `json:"prefix"`
+	CreatedAt      time.Time                       `json:"createdAt"`
+	RevokedAt      *time.Time                      `json:"revokedAt,omitempty"`
+	ExpiresAt      *time.Time                      `json:"expiresAt,omitempty"`
+	UsedRequests   int64                           `json:"usedRequests"`
+	UsedTokens     int64                           `json:"usedTokens"`
 }
 
 func (k keyRecord) view() keyView {
-	return keyView{ID: k.ID, Name: k.Name, Prefix: k.Prefix, CreatedAt: k.CreatedAt, RevokedAt: k.RevokedAt, LimitRequests: k.LimitRequests, LimitTokens: k.LimitTokens, UsedRequests: k.UsedRequests, UsedTokens: k.UsedTokens, UsageUncertain: k.UsageUncertain}
+	return keyView{ProviderQuotas: k.ProviderQuotas, ProviderUsage: keyPercentUsage(k, time.Now()), ID: k.ID, Name: k.Name, Prefix: k.Prefix, CreatedAt: k.CreatedAt, RevokedAt: k.RevokedAt, ExpiresAt: k.ExpiresAt, UsedRequests: k.UsedRequests, UsedTokens: k.UsedTokens}
 }
 
 const keySecretPrefix = "vr_"
-
-// maxKeyLimit is the largest accepted lifetime limit. It stays inside the
-// JavaScript safe-integer range so the UI can round-trip it exactly, and it is
-// far below the internal counter clamp so a measured counter can always reach
-// an accepted limit.
-const maxKeyLimit = int64(1)<<53 - 1
 
 // secureID returns a short URL-safe random identifier.
 func secureID() (string, error) {
@@ -89,20 +96,7 @@ func keyPrefix(secret string) string {
 	return secret
 }
 
-// keysUnavailable answers demo requests. Key management has no meaning
-// without durable storage, so it fails with 409 instead of pretending.
-func (s *server) keysUnavailable(w http.ResponseWriter) bool {
-	if s.manager == nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "Key management is unavailable in demo mode"})
-		return true
-	}
-	return false
-}
-
 func (s *server) listKeys(w http.ResponseWriter, r *http.Request) {
-	if s.keysUnavailable(w) {
-		return
-	}
 	keys := []keyView{}
 	for _, key := range s.manager.registry.snapshot().Keys {
 		if key.GatewayID == s.gatewayID {
@@ -119,31 +113,34 @@ func (s *server) listKeys(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) createKey(w http.ResponseWriter, r *http.Request) {
-	if s.keysUnavailable(w) {
-		return
-	}
 	var input struct {
-		Name          string `json:"name"`
-		LimitRequests *int64 `json:"limitRequests"`
-		LimitTokens   *int64 `json:"limitTokens"`
+		ProviderQuotas *map[string]providerPercentQuota `json:"providerQuotas"`
+		Name           string                           `json:"name"`
+		ExpiresAt      json.RawMessage                  `json:"expiresAt"`
 	}
-	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&input) != nil {
-		writeJSON(w, 400, map[string]string{"error": "Enter a key name and lifetime limits"})
+	if decodeKeyInput(w, r, &input) != nil {
+		writeJSON(w, 400, map[string]string{"error": "Enter a key name and an optional expiry"})
 		return
+	}
+	if input.ProviderQuotas != nil {
+		if err := validatePercentQuotas(*input.ProviderQuotas); err != nil {
+			writeJSON(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 	name := strings.TrimSpace(input.Name)
 	if name == "" || len(name) > keyNameMax {
 		writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("Key names must be 1 to %d characters", keyNameMax)})
 		return
 	}
-	limitRequests, ok := keyLimit(input.LimitRequests)
+	now := time.Now().UTC()
+	expiresAt, ok := keyExpiry(input.ExpiresAt)
 	if !ok {
-		writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("Request limits must be 0 or a whole number up to %d", maxKeyLimit)})
+		writeJSON(w, 400, map[string]string{"error": keyExpiryFormatMessage})
 		return
 	}
-	limitTokens, ok := keyLimit(input.LimitTokens)
-	if !ok {
-		writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("Token limits must be 0 or a whole number up to %d", maxKeyLimit)})
+	if expiresAt != nil && !expiresAt.After(now) {
+		writeJSON(w, 400, map[string]string{"error": keyExpiryPastMessage})
 		return
 	}
 	secret, hash, err := secureKeySecret()
@@ -156,7 +153,10 @@ func (s *server) createKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": "Secure random source unavailable"})
 		return
 	}
-	key := keyRecord{ID: id, GatewayID: s.gatewayID, Name: name, Prefix: keyPrefix(secret), Hash: hash, CreatedAt: time.Now().UTC(), LimitRequests: limitRequests, LimitTokens: limitTokens}
+	key := keyRecord{ID: id, GatewayID: s.gatewayID, Name: name, Prefix: keyPrefix(secret), Hash: hash, CreatedAt: now, ExpiresAt: expiresAt}
+	if input.ProviderQuotas != nil {
+		key.ProviderQuotas = *input.ProviderQuotas
+	}
 	err = s.manager.update(func(registry *diskRegistry) error {
 		registry.Keys = append(registry.Keys, key)
 		return nil
@@ -169,26 +169,29 @@ func (s *server) createKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) patchKey(w http.ResponseWriter, r *http.Request) {
-	if s.keysUnavailable(w) {
-		return
-	}
 	var input struct {
-		Revoked       *bool   `json:"revoked"`
-		Name          *string `json:"name"`
-		LimitRequests *int64  `json:"limitRequests"`
-		LimitTokens   *int64  `json:"limitTokens"`
+		ProviderQuotas *map[string]providerPercentQuota `json:"providerQuotas"`
+		Revoked        *bool                            `json:"revoked"`
+		Name           *string                          `json:"name"`
+		ExpiresAt      json.RawMessage                  `json:"expiresAt"`
 	}
-	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&input) != nil {
+	if decodeKeyInput(w, r, &input) != nil {
 		writeJSON(w, 400, map[string]string{"error": "Invalid key update"})
 		return
 	}
-	if input.Revoked == nil && input.Name == nil && input.LimitRequests == nil && input.LimitTokens == nil {
+	if input.Revoked == nil && input.Name == nil && input.ExpiresAt == nil && input.ProviderQuotas == nil {
 		writeJSON(w, 400, map[string]string{"error": "Nothing to update"})
 		return
 	}
 	if input.Revoked != nil && !*input.Revoked {
 		writeJSON(w, 400, map[string]string{"error": "Revocation cannot be undone"})
 		return
+	}
+	if input.ProviderQuotas != nil {
+		if err := validatePercentQuotas(*input.ProviderQuotas); err != nil {
+			writeJSON(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 	name := ""
 	hasName := input.Name != nil
@@ -199,14 +202,9 @@ func (s *server) patchKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	limitRequests, ok := keyLimit(input.LimitRequests)
+	expiresAt, ok := keyExpiry(input.ExpiresAt)
 	if !ok {
-		writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("Request limits must be 0 or a whole number up to %d", maxKeyLimit)})
-		return
-	}
-	limitTokens, ok := keyLimit(input.LimitTokens)
-	if !ok {
-		writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("Token limits must be 0 or a whole number up to %d", maxKeyLimit)})
+		writeJSON(w, 400, map[string]string{"error": keyExpiryFormatMessage})
 		return
 	}
 	revoked := input.Revoked != nil && *input.Revoked
@@ -224,24 +222,36 @@ func (s *server) patchKey(w http.ResponseWriter, r *http.Request) {
 			updated = *key
 			return nil
 		}
+		if input.ProviderQuotas != nil {
+			if key.InFlight > 0 {
+				return errKeyInFlight
+			}
+			key.ProviderQuotas = *input.ProviderQuotas
+			key.PercentUncertain = nil
+		}
 		if hasName {
 			key.Name = name
 		}
-		if input.LimitRequests != nil {
-			key.LimitRequests = limitRequests
-		}
-		if input.LimitTokens != nil {
-			key.LimitTokens = limitTokens
-		}
-		// An explicit token-budget change is the documented owner action that
-		// clears an uncertain-usage block; a name change is not.
-		if input.LimitTokens != nil {
-			key.UsageUncertain = false
+		// The dashboard resends the stored expiry with every edit, so only a
+		// changed value has to lie in the future.
+		if input.ExpiresAt != nil && !sameExpiry(key.ExpiresAt, expiresAt) {
+			if expiresAt != nil && !expiresAt.After(now) {
+				return errKeyExpiryPast
+			}
+			key.ExpiresAt = expiresAt
 		}
 		updated = *key
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, errKeyInFlight) {
+			writeJSON(w, 409, map[string]string{"error": "Wait for this key’s requests to finish before changing provider quotas"})
+			return
+		}
+		if errors.Is(err, errKeyExpiryPast) {
+			writeJSON(w, 400, map[string]string{"error": keyExpiryPastMessage})
+			return
+		}
 		if errors.Is(err, errKeyNotFound) {
 			writeJSON(w, 404, map[string]string{"error": "Key not found"})
 			return
@@ -253,9 +263,6 @@ func (s *server) patchKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) deleteKey(w http.ResponseWriter, r *http.Request) {
-	if s.keysUnavailable(w) {
-		return
-	}
 	err := s.manager.update(func(registry *diskRegistry) error {
 		for i := range registry.Keys {
 			if registry.Keys[i].ID == r.PathValue("id") {
@@ -279,14 +286,45 @@ func (s *server) deleteKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
-// keyLimit decodes an optional lifetime limit. A missing or zero value means
-// unlimited; negative, fractional and out-of-range values are rejected.
-func keyLimit(value *int64) (int64, bool) {
-	if value == nil {
-		return 0, true
+const (
+	keyExpiryFormatMessage = "Expiry must be an RFC 3339 timestamp, or null for a key that never expires"
+	keyExpiryPastMessage   = "Expiry must be in the future"
+)
+
+// keyExpiry decodes an optional expiry. A missing or null value means the key
+// never expires; anything that is not an RFC 3339 timestamp is rejected.
+func keyExpiry(raw json.RawMessage) (*time.Time, bool) {
+	if raw == nil || string(raw) == "null" {
+		return nil, true
 	}
-	if *value < 0 || *value > maxKeyLimit {
-		return 0, false
+	var value time.Time
+	if json.Unmarshal(raw, &value) != nil || value.IsZero() {
+		return nil, false
 	}
-	return *value, true
+	value = value.UTC()
+	return &value, true
+}
+
+func sameExpiry(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
+}
+
+var (
+	errKeyInFlight   = errors.New("key has requests in flight")
+	errKeyExpiryPast = errors.New("key expiry is in the past")
+)
+
+func decodeKeyInput(w http.ResponseWriter, r *http.Request, out any) error {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("unexpected trailing key data")
+	}
+	return nil
 }

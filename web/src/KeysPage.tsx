@@ -1,30 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  Ban,
-  Check,
-  Copy,
-  Pencil,
-  Plus,
-  RefreshCw,
-  Trash2,
-} from "lucide-react";
+import { Ban, Check, Copy, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { errorMessage, isStale, type APIRequest } from "./api";
 import { Modal } from "./Modal";
 import {
+  expiryText,
   keyState,
-  limitText,
-  parseLimit,
+  parseExpiry,
   stateLabel,
-  usedShare,
   type APIKey,
 } from "./keys";
 
 type Props = {
   request: APIRequest;
   live: boolean;
-  demo: boolean;
   reloadKey: string;
-  endpoint: string;
+  // The page heading owns the create button.
+  creating: boolean;
+  onCreateClose: () => void;
   copy: (value: string) => Promise<boolean>;
   notify: (text: string) => void;
 };
@@ -37,21 +29,28 @@ const day = (value: string) =>
     month: "short",
     day: "numeric",
   });
+const moment = (value: string) =>
+  new Date(value).toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 
 export function KeysPage({
   request,
   live,
-  demo,
   reloadKey,
-  endpoint,
+  creating,
+  onCreateClose,
   copy,
   notify,
 }: Props) {
   const [keys, setKeys] = useState<APIKey[] | null>(null);
   const [loading, setLoading] = useState(live);
   const [error, setError] = useState("");
-  // null is closed, "new" creates, otherwise the key being edited.
-  const [editing, setEditing] = useState<APIKey | "new" | null>(null);
+  const [editing, setEditing] = useState<APIKey | null>(null);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmError, setConfirmError] = useState("");
@@ -124,21 +123,8 @@ export function KeysPage({
 
   return (
     <div className="keys">
-      <div className="keys-intro">
-        <p>
-          A key lets its holder call this gateway's models at{" "}
-          <code>{endpoint}</code>. Every gateway shares that address. The key
-          decides which gateway answers. Keys can't open this dashboard.
-        </p>
-        <button
-          className="secondary"
-          disabled={!live}
-          onClick={() => setEditing("new")}
-        >
-          <Plus size={14} /> Create key
-        </button>
-      </div>
-      {!live && !demo && (
+      {live && keys?.length === 0 && <p className="empty">No keys yet</p>}
+      {!live && (
         <div className="notice">
           API keys are unavailable until the gateway's local store loads.
         </div>
@@ -149,121 +135,158 @@ export function KeysPage({
         </div>
       )}
       {live && loading && !keys && !error && (
-        <div className="empty">
+        <div className="loading">
           <RefreshCw size={22} className="spinning" />
         </div>
       )}
-      {live && keys?.length === 0 && (
-        <div className="empty">
-          <h2>No API keys yet</h2>
-          <p>
-            Create one for each person or tool that should use this gateway.
-          </p>
-          <button className="primary" onClick={() => setEditing("new")}>
-            <Plus size={14} /> Create key
-          </button>
+      {live && !!keys?.length && (
+        <div className="table-scroll">
+          <table className="key-table">
+            <thead>
+              <tr>
+                <th scope="col">Key</th>
+                <th scope="col">Prefix</th>
+                <th scope="col">Status</th>
+                <th scope="col" className="numeric">
+                  Requests
+                </th>
+                <th scope="col" className="numeric">
+                  Tokens
+                </th>
+                <th scope="col">Created</th>
+                <th scope="col">Expires</th>
+                <th scope="col">
+                  <span className="sr-only">Actions</span>
+                </th>
+              </tr>
+            </thead>
+            {keys.map((key) => {
+              const state = keyState(key);
+              const dead = state === "revoked";
+              const quotas = Object.entries(key.providerQuotas ?? {}).filter(
+                ([, q]) => q.fiveHour != null || q.sevenDay != null,
+              );
+              return (
+                <tbody
+                  className={state !== "active" ? "is-off" : ""}
+                  key={key.id}
+                >
+                  <tr>
+                    <th scope="row">{key.name || "Unnamed key"}</th>
+                    <td>
+                      <code>{key.prefix}…</code>
+                    </td>
+                    <td
+                      className={`key-status ${state}`}
+                      title={
+                        state === "revoked"
+                          ? `Revoked ${day(key.revokedAt!)}. Delete it to remove it from this list.`
+                          : state === "expired"
+                            ? "Edit it to set a later expiry or clear it."
+                            : undefined
+                      }
+                    >
+                      {stateLabel[state]}
+                    </td>
+                    <td className="numeric">{number(key.usedRequests)}</td>
+                    <td className="numeric">{number(key.usedTokens)}</td>
+                    <td>{day(key.createdAt)}</td>
+                    <td>
+                      {key.expiresAt ? moment(key.expiresAt) : "No expiry"}
+                    </td>
+                    <td>
+                      <div className="account-row-actions">
+                        <button
+                          className="icon-button"
+                          aria-label={`Edit ${key.name}`}
+                          title="Edit name, quotas and expiry"
+                          disabled={dead}
+                          onClick={() => setEditing(key)}
+                        >
+                          <Pencil size={14} />
+                        </button>
+                        <button
+                          className="icon-button is-danger"
+                          aria-label={`Revoke ${key.name}`}
+                          title="Revoke"
+                          disabled={dead}
+                          onClick={() => setConfirm({ action: "revoke", key })}
+                        >
+                          <Ban size={14} />
+                        </button>
+                        <button
+                          className="icon-button is-danger"
+                          aria-label={`Delete ${key.name}`}
+                          title="Delete"
+                          onClick={() => setConfirm({ action: "delete", key })}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  {quotas.length > 0 && (
+                    <tr className="key-provider-usage">
+                      <td colSpan={8}>
+                        {quotas.map(([provider, q]) => {
+                          const usage = key.providerUsage?.[provider];
+                          return (
+                            <div key={provider}>
+                              <strong>
+                                {provider === "claude" ? "Claude" : "Codex"}
+                              </strong>
+                              {(["fiveHour", "sevenDay"] as const)
+                                .filter((window) => q[window] != null)
+                                .map((window) => {
+                                  const used = usage?.[window] ?? 0,
+                                    limit = q[window]!;
+                                  return (
+                                    <span
+                                      key={window}
+                                      className={used >= limit ? "invalid" : ""}
+                                    >
+                                      {window === "fiveHour" ? "5h" : "7d"}:{" "}
+                                      {used.toFixed(2)}% / {limit}%
+                                      {used >= limit ? " · Limit reached" : ""}
+                                    </span>
+                                  );
+                                })}
+                              {usage?.uncertain && (
+                                <span className="invalid">
+                                  Blocked: usage incomplete
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              );
+            })}
+          </table>
         </div>
       )}
       {live && !!keys?.length && (
-        <ul className="key-list">
-          {keys.map((key) => {
-            const state = keyState(key);
-            const dead = state === "revoked";
-            return (
-              <li className={`key-row ${dead ? "is-off" : ""}`} key={key.id}>
-                <div className="account-identity">
-                  <h3>{key.name || "Unnamed key"}</h3>
-                  <p>
-                    <code>{key.prefix}…</code>
-                  </p>
-                  <p>
-                    {key.revokedAt
-                      ? `Revoked ${day(key.revokedAt)}`
-                      : `Created ${day(key.createdAt)}`}
-                  </p>
-                </div>
-                <div className="account-windows">
-                  <Meter
-                    label="Requests"
-                    used={key.usedRequests}
-                    limit={key.limitRequests}
-                  />
-                  <Meter
-                    label="Tokens"
-                    used={key.usedTokens}
-                    limit={key.limitTokens}
-                  />
-                </div>
-                <div className="account-row-actions">
-                  <button
-                    className="icon-button"
-                    aria-label={`Edit ${key.name}`}
-                    title="Edit name and limits"
-                    disabled={dead}
-                    onClick={() => setEditing(key)}
-                  >
-                    <Pencil size={14} />
-                  </button>
-                  <button
-                    className="icon-button is-danger"
-                    aria-label={`Revoke ${key.name}`}
-                    title="Revoke"
-                    disabled={dead}
-                    onClick={() => setConfirm({ action: "revoke", key })}
-                  >
-                    <Ban size={14} />
-                  </button>
-                  <button
-                    className="icon-button is-danger"
-                    aria-label={`Delete ${key.name}`}
-                    title="Delete"
-                    onClick={() => setConfirm({ action: "delete", key })}
-                  >
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-                {key.usageUncertain && key.limitTokens === 0 && !dead && (
-                  <p className="key-state">
-                    Some token usage could not be measured. This key can still
-                    make requests because it has no token limit. Its recorded
-                    total is incomplete.
-                  </p>
-                )}
-                {state !== "active" && (
-                  <p className={`key-state ${state}`}>
-                    <strong>{stateLabel[state]}.</strong>{" "}
-                    {state === "revoked" &&
-                      "Calls with this key are refused. Delete it to drop it from this list."}
-                    {state === "uncertain" &&
-                      "A call ended without a usage report, so vrouter can't tell how many tokens this key has used and refuses new calls. Change the token limit to unblock it, or create a replacement key."}
-                    {state === "requests-spent" &&
-                      "New calls are refused. Raise or clear the request limit to use this key again."}
-                    {state === "tokens-spent" &&
-                      "New calls are refused. Raise or clear the token limit to use this key again."}
-                  </p>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      {live && !!keys?.length && (
         <p className="keys-footnote">
-          Usage counts are lifetime totals and never reset. Token counts come
-          from what the provider reports after each response, so a key can end
-          above its token limit.
+          Request and token counts are totals since the key was created.
+          Provider percentages reset with each account's window.
         </p>
       )}
-      {editing && (
+      {(editing || creating) && (
         <KeyDialog
-          target={editing === "new" ? null : editing}
+          target={editing}
           request={request}
           copy={copy}
           onSaved={(key, created) => {
             put(key);
             if (!created) notify("Key updated");
           }}
-          onClose={() => setEditing(null)}
+          onClose={() => {
+            setEditing(null);
+            onCreateClose();
+          }}
         />
       )}
       {confirm && (
@@ -279,8 +302,8 @@ export function KeysPage({
           </h2>
           <p>
             {confirm.action === "revoke"
-              ? "vrouter refuses every new call made with this key. A response that is already running finishes. You can't undo this. To restore access, create a new key."
-              : "vrouter refuses every new call made with this key and removes it from this list. A response that is already running finishes. Its past requests stay in the request log. You can't undo this."}
+              ? "vrouter refuses new calls made with this key. Running responses finish. You can't undo this."
+              : "vrouter refuses new calls made with this key. Running responses finish, and its past requests stay in the log. You can't undo this."}
           </p>
           {confirmError && (
             <div className="notice error" role="alert">
@@ -315,44 +338,6 @@ export function KeysPage({
   );
 }
 
-function Meter({
-  label,
-  used,
-  limit,
-}: {
-  label: string;
-  used: number;
-  limit: number;
-}) {
-  const full = limit > 0 && used >= limit;
-  return (
-    <div className={full ? "is-full" : ""}>
-      <div className="account-allowance">
-        <span>{label}</span>
-        <strong>
-          {limit > 0
-            ? `${number(used)} of ${number(limit)}`
-            : `${number(used)} used`}
-        </strong>
-      </div>
-      {limit > 0 ? (
-        <div
-          className="progress"
-          role="progressbar"
-          aria-label={`${label} used`}
-          aria-valuemin={0}
-          aria-valuemax={limit}
-          aria-valuenow={Math.min(used, limit)}
-        >
-          <span style={{ width: `${usedShare(used, limit)}%` }} />
-        </div>
-      ) : (
-        <p>No limit</p>
-      )}
-    </div>
-  );
-}
-
 // Creates a key or edits one. After a create it shows the secret, which exists
 // only in this component's state and is gone once the dialog closes.
 function KeyDialog({
@@ -369,28 +354,61 @@ function KeyDialog({
   onClose: () => void;
 }) {
   const [name, setName] = useState(target?.name ?? "");
-  const [requests, setRequests] = useState(
-    limitText(target?.limitRequests ?? 0),
+  const storedExpiry = expiryText(target?.expiresAt);
+  const [expiry, setExpiry] = useState(storedExpiry);
+  const [percent, setPercent] = useState<
+    Record<string, Record<string, string>>
+  >(() =>
+    Object.fromEntries(
+      ["claude", "codex"].map((provider) => [
+        provider,
+        {
+          fiveHour:
+            target?.providerQuotas?.[provider]?.fiveHour?.toString() ?? "",
+          sevenDay:
+            target?.providerQuotas?.[provider]?.sevenDay?.toString() ?? "",
+        },
+      ]),
+    ),
   );
-  const [tokens, setTokens] = useState(limitText(target?.limitTokens ?? 0));
+  const percentInvalid = Object.values(percent).some((q) =>
+    Object.values(q).some(
+      (value) =>
+        value.trim() !== "" &&
+        (!Number.isFinite(Number(value)) ||
+          Number(value) < 0 ||
+          Number(value) > 100),
+    ),
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [secret, setSecret] = useState("");
   const [copied, setCopied] = useState(false);
-  const requestLimit = parseLimit(requests);
-  const tokenLimit = parseLimit(tokens);
-  const requestError = "error" in requestLimit ? requestLimit.error : "";
-  const tokenError = "error" in tokenLimit ? tokenLimit.error : "";
+  // An untouched field keeps the stored expiry, which may already have passed.
+  const expiresAt =
+    expiry === storedExpiry
+      ? { value: target?.expiresAt ?? null }
+      : parseExpiry(expiry);
+  const expiryError = "error" in expiresAt ? expiresAt.error : "";
 
   async function save() {
-    if (saving || !name.trim()) return;
-    if ("error" in requestLimit || "error" in tokenLimit) return;
+    if (saving || !name.trim() || percentInvalid) return;
+    if ("error" in expiresAt) return;
     setSaving(true);
     setError("");
     const body = {
+      providerQuotas: Object.fromEntries(
+        Object.entries(percent).map(([provider, fields]) => [
+          provider,
+          Object.fromEntries(
+            Object.entries(fields)
+              .filter(([, value]) => value.trim() !== "")
+              .map(([window, value]) => [window, Number(value)]),
+          ),
+        ]),
+      ),
       name: name.trim(),
-      limitRequests: requestLimit.value,
-      limitTokens: tokenLimit.value,
+      expiresAt: expiresAt.value,
     };
     try {
       if (target) {
@@ -433,12 +451,13 @@ function KeyDialog({
       >
         <h2 id="key-dialog-title">Copy your new key</h2>
         <p className="dialog-lead">
-          This is the only time vrouter shows it. The server keeps a hash, so
-          nobody can read the key back later. If you lose it, revoke it and
-          create another.
+          vrouter shows this key once. If you lose it, revoke it and create
+          another.
         </p>
         <div className="copy-field secret-field">
           <code>{secret}</code>
+        </div>
+        <div className="dialog-actions">
           <button
             className="secondary"
             onClick={async () => setCopied(await copy(secret))}
@@ -446,8 +465,6 @@ function KeyDialog({
             {copied ? <Check size={14} /> : <Copy size={14} />}
             {copied ? "Copied" : "Copy key"}
           </button>
-        </div>
-        <div className="dialog-actions">
           <button className="primary" onClick={onClose}>
             {copied ? "Done" : "I've saved it"}
           </button>
@@ -485,45 +502,71 @@ function KeyDialog({
             autoComplete="off"
           />
         </div>
-        <div className="field">
-          <label htmlFor="key-requests">Request limit</label>
-          <input
-            id="key-requests"
-            inputMode="numeric"
-            value={requests}
-            onChange={(e) => setRequests(e.target.value)}
-            placeholder="No limit"
-            aria-invalid={!!requestError}
-            aria-describedby="key-requests-help"
-            autoComplete="off"
-          />
-          <p id="key-requests-help" className={requestError ? "invalid" : ""}>
-            {requestError ||
-              "Each inference call counts once, before vrouter forwards it. Calls that fail still count. Listing models doesn't."}
+        <fieldset className="provider-quota-fields">
+          <legend>
+            Provider quotas <small>Optional</small>
+          </legend>
+          <p>
+            Percent of the subscription pool. Blank is unlimited, 0 blocks the
+            provider. Usage is measured after each response, so the last request
+            can pass a limit.
           </p>
-        </div>
-        <div className="field">
-          <label htmlFor="key-tokens">Token limit</label>
-          <input
-            id="key-tokens"
-            inputMode="numeric"
-            value={tokens}
-            onChange={(e) => setTokens(e.target.value)}
-            placeholder="No limit"
-            aria-invalid={!!tokenError}
-            aria-describedby="key-tokens-help"
-            autoComplete="off"
-          />
-          <p id="key-tokens-help" className={tokenError ? "invalid" : ""}>
-            {tokenError ||
-              "vrouter counts tokens after each response ends and refuses new calls once the total reaches the limit. The call that crosses it still completes, so usage can end above this number. It caps measured usage. It is not a spend budget. A key with a token limit runs one call at a time, and other calls get a 429 until that one finishes."}
-          </p>
-        </div>
-        <p className="fields-note">
-          Both limits are lifetime totals for this key. They don't reset.
+          {["claude", "codex"].map((provider) => (
+            <div className="provider-quota-inputs" key={provider}>
+              <strong>{provider === "claude" ? "Claude" : "Codex"}</strong>
+              {(["fiveHour", "sevenDay"] as const).map((window) => (
+                <div className="field" key={window}>
+                  <label htmlFor={provider + window}>
+                    {window === "fiveHour" ? "5-hour" : "7-day"} allowance (%)
+                  </label>
+                  <input
+                    id={provider + window}
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="any"
+                    placeholder="No limit"
+                    value={percent[provider][window]}
+                    onChange={(e) =>
+                      setPercent((old) => ({
+                        ...old,
+                        [provider]: {
+                          ...old[provider],
+                          [window]: e.target.value,
+                        },
+                      }))
+                    }
+                  />
+                </div>
+              ))}
+            </div>
+          ))}
           {target &&
-            " Usage so far stays counted, so a limit below it blocks the key."}
-        </p>
+            Object.values(target.providerUsage ?? {}).some(
+              (u) => u.uncertain,
+            ) && (
+              <p className="notice">
+                Saving these quotas acknowledges incomplete percentage
+                accounting and resumes access within the remaining allowance.
+              </p>
+            )}
+        </fieldset>
+        <div className="field">
+          <label htmlFor="key-expiry">Expires</label>
+          <input
+            id="key-expiry"
+            type="datetime-local"
+            value={expiry}
+            min={expiryText(new Date().toISOString())}
+            onChange={(e) => setExpiry(e.target.value)}
+            aria-invalid={!!expiryError}
+            aria-describedby="key-expiry-help"
+          />
+          <p id="key-expiry-help" className={expiryError ? "invalid" : ""}>
+            {expiryError ||
+              "Blank means it never expires. After this time vrouter refuses new calls."}
+          </p>
+        </div>
         {error && (
           <div className="notice error" role="alert">
             {error}
@@ -540,7 +583,7 @@ function KeyDialog({
           </button>
           <button
             className="primary"
-            disabled={saving || !name.trim() || !!requestError || !!tokenError}
+            disabled={saving || !name.trim() || percentInvalid || !!expiryError}
           >
             {target
               ? saving

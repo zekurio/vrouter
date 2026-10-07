@@ -30,12 +30,13 @@ const (
 // persisted only in the private state file; tokens must never reach logs,
 // HTTP responses, or error strings.
 type storedAccount struct {
-	ID        string `json:"id"`
-	Provider  string `json:"provider"`
-	Label     string `json:"label"`
-	Email     string `json:"email,omitempty"`
-	Plan      string `json:"plan,omitempty"`
-	AccountID string `json:"account_id,omitempty"`
+	WindowTriggerAt time.Time `json:"window_trigger_at,omitempty"`
+	ID              string    `json:"id"`
+	Provider        string    `json:"provider"`
+	Label           string    `json:"label"`
+	Email           string    `json:"email,omitempty"`
+	Plan            string    `json:"plan,omitempty"`
+	AccountID       string    `json:"account_id,omitempty"`
 	// Subject is the verified ID-token subject of a native Codex sign-in. It
 	// binds a saved record to one user, so reconnecting a workspace shared by
 	// several users can never silently switch accounts. Legacy imports have no
@@ -360,6 +361,7 @@ func storeNormalize(state *diskState) {
 	if state.Policy.Aliases == nil {
 		state.Policy.Aliases = map[string][]modelAlias{}
 	}
+	state.Policy.LegacyContext = nil
 	for i := range state.Accounts {
 		state.Accounts[i].Provider = strings.ToLower(strings.TrimSpace(state.Accounts[i].Provider))
 		state.Accounts[i].AuthMode = strings.ToLower(strings.TrimSpace(state.Accounts[i].AuthMode))
@@ -423,20 +425,6 @@ func storeClone(state diskState) diskState {
 
 func storeClonePolicy(policy modelPolicy) modelPolicy {
 	out := modelPolicy{}
-	if policy.Context != nil {
-		out.Context = make(map[string]map[string]int, len(policy.Context))
-		for channel, values := range policy.Context {
-			if values == nil {
-				out.Context[channel] = nil
-				continue
-			}
-			cloned := make(map[string]int, len(values))
-			for id, value := range values {
-				cloned[id] = value
-			}
-			out.Context[channel] = cloned
-		}
-	}
 	if policy.Excluded != nil {
 		out.Excluded = make(map[string][]string, len(policy.Excluded))
 		for key, values := range policy.Excluded {

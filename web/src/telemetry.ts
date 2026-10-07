@@ -1,4 +1,4 @@
-// Request log shapes and formatting.
+// Request telemetry shapes and formatting.
 
 export type RequestRecord = {
   id: string;
@@ -14,7 +14,9 @@ export type RequestRecord = {
   durationMs: number;
   inputTokens: number;
   outputTokens: number;
+  // Cache reads and cache writes are both subsets of inputTokens.
   cachedTokens: number;
+  cacheWriteTokens?: number;
   totalTokens: number;
   // False when the provider reported no usage. The token fields are then
   // placeholders, not a measured zero.
@@ -66,6 +68,3 @@ export function filterRequests(
       (!key || keyLabel(r) === key),
   );
 }
-
-export const unknownUsage = (requests: RequestRecord[]) =>
-  requests.filter((r) => !r.usageKnown).length;

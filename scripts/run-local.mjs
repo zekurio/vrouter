@@ -1,6 +1,6 @@
 // Start the local vrouter server with a private client API key.
 // Only bin/vrouter is launched; the server owns the account store.
-// VROUTER_API_KEY, VROUTER_ADDR, VROUTER_ADMIN_TOKEN, and VROUTER_DEMO from
+// VROUTER_API_KEY, VROUTER_ADDR, and VROUTER_ADMIN_TOKEN from
 // the environment are preserved.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -18,7 +18,7 @@ const legacyConfig = path.join(os.homedir(), '.local/state/vrouter/connection.js
 const binary = path.join(project, 'bin/vrouter');
 
 if (!fs.existsSync(binary)) {
-  console.error('bin/vrouter is missing. Build it first with: make build');
+  console.error('bin/vrouter is missing. Build it first with: just build');
   process.exit(1);
 }
 
@@ -91,7 +91,6 @@ const child = spawn(binary, [], {
     ...process.env,
     VROUTER_DATA_DIR: dataDir,
     VROUTER_ADDR: process.env.VROUTER_ADDR || '127.0.0.1:8080',
-    VROUTER_DEMO: process.env.VROUTER_DEMO ?? '0',
     VROUTER_API_KEY: apiKey,
   },
 });

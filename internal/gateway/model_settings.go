@@ -22,17 +22,16 @@ type modelAlias struct {
 	ForceMapping bool   `json:"force-mapping,omitempty"`
 }
 type modelPolicy struct {
-	Excluded map[string][]string       `json:"excluded-models"`
-	Aliases  map[string][]modelAlias   `json:"model-alias"`
-	Context  map[string]map[string]int `json:"context-overrides,omitempty"`
+	Excluded map[string][]string     `json:"excluded-models"`
+	Aliases  map[string][]modelAlias `json:"model-alias"`
+	// Retired: still decoded so older state loads, then dropped by storeNormalize.
+	LegacyContext map[string]map[string]int `json:"context-overrides,omitempty"`
 }
 type managedModel struct {
 	Model
-	Enabled         bool   `json:"enabled"`
-	Alias           string `json:"alias"`
-	ReadOnly        string `json:"readOnly,omitempty"`
-	DefaultContext  int    `json:"defaultContext"`
-	ContextOverride int    `json:"contextOverride,omitempty"`
+	Enabled  bool   `json:"enabled"`
+	Alias    string `json:"alias"`
+	ReadOnly string `json:"readOnly,omitempty"`
 }
 type modelSettings struct {
 	Models   []managedModel `json:"models"`
@@ -43,8 +42,6 @@ type modelChange struct {
 	Provider string `json:"provider"`
 	Enabled  *bool  `json:"enabled"`
 	Alias    string `json:"alias"`
-	// Omitted preserves the override; zero restores provider metadata.
-	Context *int `json:"context"`
 }
 
 func policyRevision(p modelPolicy) string {
@@ -92,9 +89,6 @@ func (s *server) readModelSettings(ctx context.Context) (modelSettings, modelPol
 		for _, a := range p.Aliases[channel] {
 			ids = append(ids, a.Name)
 		}
-		for id := range p.Context[channel] {
-			ids = append(ids, id)
-		}
 		for _, id := range ids {
 			key := modelKey(name, id)
 			if _, ok := rows[key]; !ok {
@@ -104,10 +98,7 @@ func (s *server) readModelSettings(ctx context.Context) (modelSettings, modelPol
 	}
 	for _, m := range rows {
 		blocked, wildcard := excludedModel(p, policyChannel(m.Provider), m.ID)
-		row := managedModel{Model: m, Enabled: !blocked, DefaultContext: m.Context, ContextOverride: p.Context[policyChannel(m.Provider)][m.ID]}
-		if row.ContextOverride > 0 {
-			row.Context = row.ContextOverride
-		}
+		row := managedModel{Model: m, Enabled: !blocked}
 		if wildcard {
 			row.ReadOnly = "Excluded by a wildcard policy"
 		}
@@ -124,9 +115,6 @@ func (s *server) readModelSettings(ctx context.Context) (modelSettings, modelPol
 	return result, p, err
 }
 func (s *server) getModelSettings(w http.ResponseWriter, r *http.Request) {
-	if !s.oauthReady(w) {
-		return
-	}
 	s.modelMu.Lock()
 	defer s.modelMu.Unlock()
 	settings, _, err := s.readModelSettings(r.Context())
@@ -140,9 +128,6 @@ func (s *server) getModelSettings(w http.ResponseWriter, r *http.Request) {
 var aliasID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 func (s *server) putModelSettings(w http.ResponseWriter, r *http.Request) {
-	if !s.oauthReady(w) {
-		return
-	}
 	var input struct {
 		Revision string        `json:"revision"`
 		Models   []modelChange `json:"models"`
@@ -176,12 +161,6 @@ func (s *server) putModelSettings(w http.ResponseWriter, r *http.Request) {
 		for k, v := range patch.Aliases {
 			d.Policy.Aliases[k] = v
 		}
-		if d.Policy.Context == nil {
-			d.Policy.Context = map[string]map[string]int{}
-		}
-		for k, v := range patch.Context {
-			d.Policy.Context[k] = v
-		}
 		return nil
 	})
 	if err != nil {
@@ -196,9 +175,6 @@ func applyModelChanges(settings modelSettings, p modelPolicy, changes []modelCha
 	data, _ := json.Marshal(p)
 	var nextPolicy modelPolicy
 	_ = json.Unmarshal(data, &nextPolicy)
-	if nextPolicy.Context == nil {
-		nextPolicy.Context = map[string]map[string]int{}
-	}
 	result := modelSettings{Models: append([]managedModel(nil), settings.Models...)}
 	indices := map[string]int{}
 	for i, m := range result.Models {
@@ -226,22 +202,6 @@ func applyModelChanges(settings modelSettings, p modelPolicy, changes []modelCha
 		}
 		row.Enabled, row.Alias = *change.Enabled, alias
 		channel := policyChannel(row.Provider)
-		if change.Context != nil {
-			if *change.Context < 0 || *change.Context > 2147483647 {
-				return result, p, errors.New("Context must be a whole number between 1 and 2147483647 tokens, or 0 to use the provider value.")
-			}
-			row.ContextOverride = *change.Context
-			row.Context = row.DefaultContext
-			if row.ContextOverride == 0 {
-				delete(nextPolicy.Context[channel], row.ID)
-			} else {
-				if nextPolicy.Context[channel] == nil {
-					nextPolicy.Context[channel] = map[string]int{}
-				}
-				nextPolicy.Context[channel][row.ID] = row.ContextOverride
-				row.Context = row.ContextOverride
-			}
-		}
 		touched[channel] = true
 		excluded := []string{}
 		for _, id := range nextPolicy.Excluded[channel] {
@@ -280,13 +240,10 @@ func applyModelChanges(settings modelSettings, p modelPolicy, changes []modelCha
 		owners[key] = m.ID
 	}
 	result.Revision = policyRevision(nextPolicy)
-	patch := modelPolicy{Excluded: map[string][]string{}, Aliases: map[string][]modelAlias{}, Context: map[string]map[string]int{}}
+	patch := modelPolicy{Excluded: map[string][]string{}, Aliases: map[string][]modelAlias{}}
 	for channel := range touched {
 		patch.Excluded[channel] = nextPolicy.Excluded[channel]
 		patch.Aliases[channel] = nextPolicy.Aliases[channel]
-		if values, exists := nextPolicy.Context[channel]; exists {
-			patch.Context[channel] = values
-		}
 	}
 	return result, patch, nil
 }

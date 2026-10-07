@@ -4,3 +4,9 @@ web/dist/*
 bin/
 .env
 *.local
+
+# devenv and direnv state
+.devenv*
+.direnv/
+devenv.local.nix
+devenv.local.yaml

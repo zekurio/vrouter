@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -11,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -40,7 +40,7 @@ const (
 	gatewayHeader = "X-Vrouter-Gateway"
 
 	// defaultGatewayID names the legacy gateway backed by DATA_DIR/state.json.
-	// It belongs to local-admin and exists in every registry.
+	// The former owner field is retained for registry compatibility.
 	defaultGatewayID = "default"
 	localAdminID     = "local-admin"
 
@@ -202,7 +202,7 @@ func (r *registryStore) markUncertain(keyID string) {
 	defer r.mu.Unlock()
 	for i := range r.state.Keys {
 		if r.state.Keys[i].ID == keyID {
-			r.state.Keys[i].UsageUncertain = true
+			r.state.Keys[i].PercentUncertain = map[string]bool{"claude": true, "codex": true}
 			if r.state.Keys[i].InFlight > 0 {
 				r.state.Keys[i].InFlight--
 			}
@@ -271,7 +271,7 @@ func registryDecode(data []byte) (diskRegistry, error) {
 	// usage is unknown, so the key becomes uncertain until its owner acts.
 	for i := range state.Keys {
 		if state.Keys[i].InFlight > 0 {
-			state.Keys[i].UsageUncertain = true
+			state.Keys[i].PercentUncertain = map[string]bool{"claude": true, "codex": true}
 			state.Keys[i].InFlight = 0
 		}
 	}
@@ -302,6 +302,9 @@ func registryNormalize(state *diskRegistry) {
 	}
 	if state.Keys == nil {
 		state.Keys = []keyRecord{}
+	}
+	for i := range state.Keys {
+		state.Keys[i].LegacyLimitRequests, state.Keys[i].LegacyLimitTokens, state.Keys[i].LegacyUsageUncertain = nil, nil, nil
 	}
 	if state.Telemetry == nil {
 		state.Telemetry = map[string][]telemetryRecord{}
@@ -372,11 +375,19 @@ func registryValidate(state diskRegistry) error {
 		if strings.TrimSpace(key.Name) == "" || len(key.Name) > 128 {
 			return fmt.Errorf("gateway: key %d has an invalid name", i)
 		}
-		if key.LimitRequests < 0 || key.LimitRequests > maxKeyLimit || key.LimitTokens < 0 || key.LimitTokens > maxKeyLimit {
-			return fmt.Errorf("gateway: key %d has an invalid limit", i)
+		if key.ExpiresAt != nil && key.ExpiresAt.IsZero() {
+			return fmt.Errorf("gateway: key %d has an invalid expiry", i)
 		}
 		if key.UsedRequests < 0 || key.UsedRequests > maxTokenCount || key.UsedTokens < 0 || key.UsedTokens > maxTokenCount {
 			return fmt.Errorf("gateway: key %d has invalid counters", i)
+		}
+		if err := validatePercentQuotas(key.ProviderQuotas); err != nil {
+			return err
+		}
+		for _, charge := range key.PercentCharges {
+			if (charge.Provider != "claude" && charge.Provider != "codex") || (charge.Window != "weekly" && charge.Window != "five-hour") || charge.ResetAt.IsZero() || math.IsNaN(charge.Percent) || math.IsInf(charge.Percent, 0) || charge.Percent < 0 {
+				return errors.New("invalid provider percentage accounting")
+			}
 		}
 		if key.InFlight < 0 {
 			return fmt.Errorf("gateway: key %d has a negative in-flight count", i)
@@ -406,9 +417,14 @@ func registryClone(state diskRegistry) diskRegistry {
 	out.Keys = make([]keyRecord, len(state.Keys))
 	for i, key := range state.Keys {
 		out.Keys[i] = key
+		clonePercentKey(&out.Keys[i], key)
 		if key.RevokedAt != nil {
 			revoked := *key.RevokedAt
 			out.Keys[i].RevokedAt = &revoked
+		}
+		if key.ExpiresAt != nil {
+			expires := *key.ExpiresAt
+			out.Keys[i].ExpiresAt = &expires
 		}
 	}
 	out.Telemetry = make(map[string][]telemetryRecord, len(state.Telemetry))
@@ -430,7 +446,7 @@ func findKey(state *diskRegistry, id string) *keyRecord {
 // ---------------------------------------------------------------------------
 // Manager
 
-// manager coordinates the tenant gateways of one process: the durable
+// manager coordinates the existing gateway stores: the durable
 // registry, the legacy root engine and lazily opened child engines.
 type manager struct {
 	mu       sync.Mutex
@@ -474,25 +490,6 @@ func (m *manager) close() error {
 		err = errors.Join(err, engine.Close())
 	}
 	return errors.Join(err, m.registry.close())
-}
-
-// engineFor resolves a selected gateway for a management request. Access
-// follows ownership: admins reach every gateway, users only their own, and a
-// foreign gateway is reported as not found so existence is never confirmed.
-func (m *manager) engineFor(id string, user loginUser) (*server, error) {
-	if user.Role != "admin" && user.ID != localAdminID {
-		accessible := false
-		for _, gateway := range m.registry.snapshot().Gateways {
-			if gateway.ID == id && gateway.OwnerID == user.ID {
-				accessible = true
-				break
-			}
-		}
-		if !accessible {
-			return nil, errGatewayNotFound
-		}
-	}
-	return m.engine(id)
 }
 
 // engine returns the running engine for a gateway, opening its child store on
@@ -556,7 +553,8 @@ func (m *manager) hasAnyKeys() bool {
 }
 
 // keyByHash finds a live API key by its secret. Revoked keys are reported as
-// missing so their state is never confirmed over HTTP.
+// missing so their state is never confirmed over HTTP. Expired keys are
+// returned; the caller tells their holder why they stopped working.
 func (m *manager) keyByHash(secret string) (keyRecord, bool) {
 	if secret == "" {
 		return keyRecord{}, false
@@ -574,15 +572,11 @@ func (m *manager) keyByHash(secret string) (keyRecord, bool) {
 	return keyRecord{}, false
 }
 
-// gatewayViewsFor lists the gateways a user may see. Admin sees everything;
-// users see only owned gateways.
-func (m *manager) gatewayViewsFor(user loginUser) []gatewayView {
+// gatewayViews keeps older account stores accessible to the administrator.
+func (m *manager) gatewayViews() []gatewayView {
 	registry := m.registry.snapshot()
 	views := make([]gatewayView, 0, len(registry.Gateways))
 	for _, gateway := range registry.Gateways {
-		if user.Role != "admin" && gateway.OwnerID != user.ID {
-			continue
-		}
 		views = append(views, gatewayView{ID: gateway.ID, Name: gateway.Name, OwnerID: gateway.OwnerID, CreatedAt: gateway.CreatedAt})
 	}
 	sort.SliceStable(views, func(i, j int) bool {
@@ -603,65 +597,21 @@ type gatewayView struct {
 
 type gatewaysResponse struct {
 	Gateways []gatewayView `json:"gateways"`
-	User     loginUser     `json:"user"`
 }
 
-type gatewayResponse struct {
-	Gateway gatewayView `json:"gateway"`
-}
-
-// gateways serves GET/POST /api/gateways on a gateway engine. Demo mode has
-// no registry, so it reports a synthetic legacy gateway and refuses creation.
+// gateways lists preserved account stores.
 func (s *server) gateways(w http.ResponseWriter, r *http.Request) {
-	if s.manager == nil {
-		if r.Method == http.MethodGet {
-			writeJSON(w, 200, gatewaysResponse{
-				Gateways: []gatewayView{{ID: defaultGatewayID, Name: "Default gateway", OwnerID: localAdminID, CreatedAt: time.Now().UTC()}},
-				User:     currentUser(r),
-			})
-			return
-		}
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "Gateway management is unavailable in demo mode"})
-		return
-	}
-	s.manager.handleGateways(w, r, currentUser(r))
+	s.manager.handleGateways(w, r)
 }
 
-func (m *manager) handleGateways(w http.ResponseWriter, r *http.Request, user loginUser) {
+func (m *manager) handleGateways(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, 200, gatewaysResponse{Gateways: m.gatewayViewsFor(user), User: user})
-	case http.MethodPost:
-		var input struct {
-			Name string `json:"name"`
-		}
-		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&input) != nil {
-			writeJSON(w, 400, map[string]string{"error": "Enter a gateway name"})
-			return
-		}
-		name := strings.TrimSpace(input.Name)
-		if name == "" || len(name) > gatewayNameMax {
-			writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("Gateway names must be 1 to %d characters", gatewayNameMax)})
-			return
-		}
-		id, err := secureID()
-		if err != nil {
-			writeJSON(w, 500, map[string]string{"error": "Secure random source unavailable"})
-			return
-		}
-		record := gatewayRecord{ID: id, Name: name, OwnerID: user.ID, CreatedAt: time.Now().UTC()}
-		err = m.update(func(registry *diskRegistry) error {
-			registry.Gateways = append(registry.Gateways, record)
-			return nil
-		})
-		if err != nil {
-			writeJSON(w, 500, map[string]string{"error": "Could not save the gateway"})
-			return
-		}
-		writeJSON(w, 201, gatewayResponse{Gateway: gatewayView{ID: record.ID, Name: record.Name, OwnerID: record.OwnerID, CreatedAt: record.CreatedAt}})
+		writeJSON(w, 200, gatewaysResponse{Gateways: m.gatewayViews()})
+
 	default:
-		w.Header().Set("Allow", "GET, POST")
-		writeJSON(w, 405, map[string]string{"error": "Use GET or POST for gateways"})
+		w.Header().Set("Allow", "GET")
+		writeJSON(w, 405, map[string]string{"error": "Use GET for gateways"})
 	}
 }
 
@@ -672,25 +622,10 @@ func gatewayHeaderValue(r *http.Request) string {
 }
 
 // gatewayIndependentPath reports endpoints that are deliberately not scoped to
-// a selected gateway: listing and creating gateways must work regardless of
+// a selected gateway: listing gateways must work regardless of
 // the header, including while a selection is stale.
 func gatewayIndependentPath(path string) bool {
 	return path == "/api/gateways"
-}
-
-// currentUser returns the authenticated user attached by the facade. The
-// legacy server has no session layer, so requests default to local-admin.
-func currentUser(r *http.Request) loginUser {
-	if user, ok := r.Context().Value(loginUserKey{}).(loginUser); ok {
-		return user
-	}
-	return loginUser{ID: localAdminID, Name: "Administrator", Role: "admin"}
-}
-
-type loginUserKey struct{}
-
-func withLoginUser(ctx context.Context, user loginUser) context.Context {
-	return context.WithValue(ctx, loginUserKey{}, user)
 }
 
 // legacyDispatch serves one management request on the gateway selected by the
@@ -703,7 +638,7 @@ func (s *server) legacyDispatch(w http.ResponseWriter, r *http.Request) {
 	}
 	selected := gatewayHeaderValue(r)
 	if selected != "" && selected != s.gatewayID {
-		target, err := s.manager.engineFor(selected, currentUser(r))
+		target, err := s.manager.engine(selected)
 		if err != nil {
 			writeJSON(w, gatewayErrorStatus(err), map[string]string{"error": gatewayErrorMessage(err)})
 			return

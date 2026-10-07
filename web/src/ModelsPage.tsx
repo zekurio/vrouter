@@ -26,11 +26,9 @@ type ManagedModel = Model & {
   enabled: boolean;
   alias: string;
   readOnly?: string;
-  defaultContext?: number;
-  contextOverride?: number;
 };
 type ModelSettings = { models: ManagedModel[]; revision: string };
-type Draft = { enabled: boolean; alias: string; context: string };
+type Draft = { enabled: boolean; alias: string };
 type Status = "all" | "enabled" | "disabled" | "changed";
 const statuses: SelectOption<Status>[] = [
   { value: "all", label: "All models" },
@@ -119,29 +117,12 @@ export function ModelsPage({
     settings?.models ?? models.map((m) => ({ ...m, enabled: true, alias: "" }));
   const editable = live && !!settings;
   const value = (m: ManagedModel): Draft =>
-    drafts[keyOf(m)] ?? {
-      enabled: m.enabled,
-      alias: m.alias,
-      context: m.contextOverride ? String(m.contextOverride) : "",
-    };
-  const defaultContext = (m: ManagedModel) => m.defaultContext ?? m.context;
-  const contextError = (m: ManagedModel) => {
-    const input = value(m).context.trim();
-    return (
-      input !== "" &&
-      (!/^\d+$/.test(input) || Number(input) < 1 || Number(input) > 2147483647)
-    );
-  };
-  const effectiveContext = (m: ManagedModel) =>
-    contextError(m) ? 0 : Number(value(m).context.trim()) || defaultContext(m);
+    drafts[keyOf(m)] ?? { enabled: m.enabled, alias: m.alias };
   const isChanged = (m: ManagedModel) => {
     const draft = drafts[keyOf(m)];
     return (
       !!draft &&
-      (draft.enabled !== m.enabled ||
-        draft.alias.trim() !== m.alias.trim() ||
-        contextError(m) ||
-        Number(draft.context.trim()) !== (m.contextOverride || 0))
+      (draft.enabled !== m.enabled || draft.alias.trim() !== m.alias.trim())
     );
   };
   const exposedID = (m: ManagedModel) => value(m).alias.trim() || m.id;
@@ -154,8 +135,7 @@ export function ModelsPage({
     value(m).enabled &&
     !!value(m).alias.trim() &&
     (usage.get(exposedID(m)) || 0) > 1;
-  const invalidContext = changed.some(contextError);
-  const blocked = changed.some(isDuplicate) || invalidContext;
+  const blocked = changed.some(isDuplicate);
 
   useEffect(() => {
     if (!changed.length) return;
@@ -200,7 +180,6 @@ export function ModelsPage({
           provider: m.provider,
           enabled: value(m).enabled,
           alias: value(m).alias.trim(),
-          context: Number(value(m).context.trim()),
         })),
       });
       if (!next || !Array.isArray(next.models))
@@ -276,9 +255,6 @@ export function ModelsPage({
           </button>
         </div>
       )}
-      {!live && rows.length > 0 && (
-        <div className="notice">Model settings are read-only in demo mode.</div>
-      )}
       <div className="models-toolbar">
         <label className="search">
           <Search size={15} />
@@ -319,12 +295,6 @@ export function ModelsPage({
           onChange={setStatus}
         />
       </div>
-      {rows.length > 0 && (
-        <p className="models-help" id="context-help">
-          Context is in tokens. Leave blank to use the provider value. Overrides
-          change the advertised limit; provider limits still apply.
-        </p>
-      )}
       {providers.map((p) => {
         const group = filtered.filter((m) => m.provider === p);
         if (!group.length) return null;
@@ -430,31 +400,15 @@ export function ModelsPage({
                         <p role="alert">Another enabled model uses this ID.</p>
                       )}
                     </div>
-                    <div className="model-context">
-                      <input
-                        aria-label={`Context window for ${m.id}`}
-                        aria-describedby="context-help"
-                        aria-invalid={contextError(m)}
-                        inputMode="numeric"
-                        value={current.context}
-                        placeholder={
-                          defaultContext(m)
-                            ? `${compact(defaultContext(m))} auto`
-                            : "Unknown"
-                        }
-                        title={
-                          defaultContext(m)
-                            ? `Provider value: ${defaultContext(m).toLocaleString()} tokens. Clear to restore.`
-                            : "Provider context unknown. Enter a limit in tokens."
-                        }
-                        disabled={locked}
-                        onChange={(e) => edit(m, { context: e.target.value })}
-                      />
-                      {contextError(m) && (
-                        <p role="alert">
-                          Enter a whole number from 1 to 2,147,483,647.
-                        </p>
-                      )}
+                    <div
+                      className="model-context"
+                      title={
+                        m.context
+                          ? `${m.context.toLocaleString()} tokens`
+                          : "Provider context unknown"
+                      }
+                    >
+                      {m.context ? compact(m.context) : "Unknown"}
                     </div>
                     <div className="model-actions">
                       {isChanged(m) && (
@@ -476,41 +430,36 @@ export function ModelsPage({
           </section>
         );
       })}
-      {!filtered.length && (
-        <div className="empty">
-          {loading && !rows.length ? (
+      {!filtered.length &&
+        (loading && !rows.length ? (
+          <div className="loading">
             <RefreshCw size={22} className="spinning" />
-          ) : (
-            <>
-              <h2>{rows.length ? "No matching models" : "No models yet"}</h2>
-              {rows.length === 0 && (
-                <>
-                  <p>Models appear once an account is connected.</p>
-                  <button
-                    className="secondary"
-                    disabled={!live}
-                    onClick={onAddAccount}
-                  >
-                    Add account
-                  </button>
-                </>
-              )}
-              {rows.length > 0 && (
-                <button
-                  className="secondary"
-                  onClick={() => {
-                    setSearch("");
-                    setProvider("all");
-                    setStatus("all");
-                  }}
-                >
-                  Clear filters
-                </button>
-              )}
-            </>
-          )}
-        </div>
-      )}
+          </div>
+        ) : (
+          <div className="empty">
+            <p>{rows.length ? "No matching models" : "No models yet"}</p>
+            {rows.length ? (
+              <button
+                className="secondary"
+                onClick={() => {
+                  setSearch("");
+                  setProvider("all");
+                  setStatus("all");
+                }}
+              >
+                Clear filters
+              </button>
+            ) : (
+              <button
+                className="secondary"
+                disabled={!live}
+                onClick={onAddAccount}
+              >
+                Add account
+              </button>
+            )}
+          </div>
+        ))}
       {changed.length > 0 && (
         <div className="save-bar" role="region" aria-label="Unsaved changes">
           <p>
@@ -524,11 +473,7 @@ export function ModelsPage({
               </span>
             ) : (
               blocked && (
-                <span className="save-error">
-                  {invalidContext
-                    ? "Fix invalid context windows first."
-                    : "Resolve duplicate IDs first."}
-                </span>
+                <span className="save-error">Resolve duplicate IDs first.</span>
               )
             )}
           </p>
@@ -600,10 +545,10 @@ export function ModelsPage({
                   </dd>
                 </div>
               )}
-              {effectiveContext(detail) > 0 && (
+              {detail.context > 0 && (
                 <div>
                   <dt>Context</dt>
-                  <dd>{effectiveContext(detail).toLocaleString()} tokens</dd>
+                  <dd>{detail.context.toLocaleString()} tokens</dd>
                 </div>
               )}
               {!!detail.maxOutput && (

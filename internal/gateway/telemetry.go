@@ -28,8 +28,12 @@ type telemetryRecord struct {
 	InputTokens  int64     `json:"inputTokens"`
 	OutputTokens int64     `json:"outputTokens"`
 	CachedTokens int64     `json:"cachedTokens"`
-	TotalTokens  int64     `json:"totalTokens"`
-	UsageKnown   bool      `json:"usageKnown"`
+	// CacheWriteTokens are Claude cache-creation tokens. Like CachedTokens they
+	// are a subset of InputTokens, kept apart because the API bills them at a
+	// different rate.
+	CacheWriteTokens int64 `json:"cacheWriteTokens,omitempty"`
+	TotalTokens      int64 `json:"totalTokens"`
+	UsageKnown       bool  `json:"usageKnown"`
 	// UsagePartial is set when counts were observed but the provider never
 	// delivered a trustworthy final usage report (a stream cut short, a
 	// terminal event without usage). The token fields are then partial.
@@ -63,7 +67,7 @@ func validateTelemetryRecord(record telemetryRecord) error {
 	if record.Status < 0 || record.Status > 999 || record.DurationMs < 0 {
 		return errors.New("gateway: telemetry record has invalid counters")
 	}
-	for _, value := range []int64{record.InputTokens, record.OutputTokens, record.CachedTokens, record.TotalTokens} {
+	for _, value := range []int64{record.InputTokens, record.OutputTokens, record.CachedTokens, record.CacheWriteTokens, record.TotalTokens} {
 		if value < 0 || value > 1<<62 {
 			return errors.New("gateway: telemetry record has invalid token counts")
 		}
@@ -113,11 +117,12 @@ func (s *server) telemetryHandler(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 // Quota admission and settlement
 
-const usageUncertainMessage = "This key's token usage could not be measured or recorded, so the key is blocked until the gateway owner changes its limits or replaces it."
+const keyExpiredMessage = "This vrouter client API key has expired"
 
 // inferenceKey is the authenticated request identity carried from key
 // validation to the forwarding engine.
 type inferenceKey struct {
+	Provider  string
 	GatewayID string
 	KeyID     string
 	KeyName   string
@@ -127,19 +132,23 @@ type inferenceKey struct {
 // inferenceAttempt accumulates everything the settlement needs for one
 // supported inference POST, including usage parsed from the provider response.
 type inferenceAttempt struct {
-	principal      inferenceKey
-	startedAt      time.Time
-	model          string
-	native         string
-	provider       string
-	accountID      string
-	stream         bool
-	outcome        string
-	reserved       bool
-	bodyComplete   bool
-	dispatchFailed bool
-	durationMs     int64
-	usage          usageParser
+	percentForwarded bool
+	percent          *percentMeasurement
+	percentCharges   []percentCharge
+	percentUnknown   map[string]bool
+	principal        inferenceKey
+	startedAt        time.Time
+	model            string
+	native           string
+	provider         string
+	accountID        string
+	stream           bool
+	outcome          string
+	reserved         bool
+	bodyComplete     bool
+	dispatchFailed   bool
+	durationMs       int64
+	usage            usageParser
 }
 
 // usageTrusted reports whether the provider response was delivered to a
@@ -154,8 +163,8 @@ func (a *inferenceAttempt) usageTrusted() bool {
 }
 
 // update applies a registry mutation and records that persistence is healthy
-// again after a previous failure, so token-limited keys recover once the disk
-// is writable.
+// again after a previous failure, so percentage-limited keys recover once the
+// disk is writable.
 func (m *manager) update(mutate func(*diskRegistry) error) error {
 	err := m.registry.update(mutate)
 	if err == nil {
@@ -164,10 +173,10 @@ func (m *manager) update(mutate func(*diskRegistry) error) error {
 	return err
 }
 
-// reserve admits one inference attempt. It enforces the lifetime request
-// limit and the measured token cap atomically, and permits at most one
-// in-flight request for a token-limited key. The reservation is persisted
-// before the request may be forwarded.
+// reserve admits one inference attempt. It enforces the key's expiry and
+// provider percentage quotas atomically, and permits at most one in-flight
+// request for a percentage-limited key. The reservation is persisted before
+// the request may be forwarded.
 func (m *manager) reserve(principal inferenceKey) (bool, int, string) {
 	if principal.KeyID == "" {
 		return true, 0, ""
@@ -179,27 +188,24 @@ func (m *manager) reserve(principal inferenceKey) (bool, int, string) {
 			allowed, status, message = false, http.StatusUnauthorized, "A valid vrouter client API key is required"
 			return errRegistryNoChange
 		}
-		if key.UsageUncertain && key.LimitTokens > 0 {
-			allowed, status, message = false, http.StatusTooManyRequests, usageUncertainMessage
+		now := time.Now()
+		if key.expired(now) {
+			allowed, status, message = false, http.StatusUnauthorized, keyExpiredMessage
 			return errRegistryNoChange
 		}
-		if key.LimitRequests > 0 && key.UsedRequests >= key.LimitRequests {
-			allowed, status, message = false, http.StatusTooManyRequests, "This key's lifetime request limit is reached."
+		if reason := percentAdmission(*key, principal.Provider, now); reason != "" {
+			allowed, status, message = false, 429, reason
 			return errRegistryNoChange
 		}
-		if key.LimitTokens > 0 {
+		if hasPercentLimit(key.ProviderQuotas[principal.Provider]) {
 			if m.degraded.Load() {
-				allowed, status, message = false, http.StatusServiceUnavailable, "Usage accounting is unavailable; token-limited requests are paused."
-				return errRegistryNoChange
-			}
-			if key.UsedTokens >= key.LimitTokens {
-				allowed, status, message = false, http.StatusTooManyRequests, "This key's lifetime token limit is reached."
+				allowed, status, message = false, http.StatusServiceUnavailable, "Usage accounting is unavailable; percentage-limited requests are paused."
 				return errRegistryNoChange
 			}
 			// A cap added while uncapped requests are still running must see
 			// them, so every reservation is counted, not only capped ones.
 			if key.InFlight > 0 {
-				allowed, status, message = false, http.StatusTooManyRequests, "This key already has a request in flight using its measured token budget. Retry when it finishes."
+				allowed, status, message = false, http.StatusTooManyRequests, "This key already has a request in flight using its measured provider quota. Retry when it finishes."
 				return errRegistryNoChange
 			}
 		}
@@ -218,14 +224,15 @@ func (m *manager) reserve(principal inferenceKey) (bool, int, string) {
 }
 
 // settle persists the completed attempt: it releases this attempt's in-flight
-// reservation, adds measured tokens, records uncertain usage when a forwarded
-// response cannot be trusted, and appends the telemetry row. All of it happens
-// in one atomic registry write. A write failure fails closed by keeping
-// token-limited keys blocked until a later successful write.
-func (m *manager) settle(principal inferenceKey, record telemetryRecord, totals usageTotals, usageAccepted, poison, reserved bool) {
+// reservation, adds measured tokens and percentage charges, and appends the
+// telemetry row. All of it happens in one atomic registry write. A write
+// failure fails closed by keeping percentage-limited keys blocked until a
+// later successful write.
+func (m *manager) settle(principal inferenceKey, record telemetryRecord, totals usageTotals, usageAccepted, reserved bool, charges []percentCharge, unknown map[string]bool) {
 	err := m.update(func(registry *diskRegistry) error {
 		if principal.KeyID != "" {
 			if key := findKey(registry, principal.KeyID); key != nil {
+				settlePercent(key, charges, unknown)
 				// Only the attempt that took the reservation may release it;
 				// a rejected request must never free another's budget.
 				if reserved && key.InFlight > 0 {
@@ -233,9 +240,6 @@ func (m *manager) settle(principal inferenceKey, record telemetryRecord, totals 
 				}
 				if usageAccepted {
 					key.UsedTokens = clampTokenCount(saturatingAdd(key.UsedTokens, totals.Total))
-				}
-				if poison {
-					key.UsageUncertain = true
 				}
 			}
 		}
@@ -245,7 +249,7 @@ func (m *manager) settle(principal inferenceKey, record telemetryRecord, totals 
 	if err != nil {
 		m.degraded.Store(true)
 		// Release only this admitted request after a failed write. Require
-		// owner acknowledgement before trusting its token budget again.
+		// owner acknowledgement before trusting its percentage usage again.
 		if reserved {
 			m.registry.markUncertain(principal.KeyID)
 		}
@@ -265,11 +269,12 @@ const (
 )
 
 type usageTotals struct {
-	Input  int64
-	Output int64
-	Cached int64
-	Total  int64
-	Known  bool
+	Input      int64
+	Output     int64
+	Cached     int64
+	CacheWrite int64
+	Total      int64
+	Known      bool
 }
 
 type usagePayload struct {
@@ -314,6 +319,7 @@ type usageParser struct {
 	input         int64
 	output        int64
 	cached        int64
+	cacheWrite    int64
 	total         int64
 	known         bool
 	hasInput      bool
@@ -374,13 +380,14 @@ func (u *usageParser) complete() {
 }
 
 func (u *usageParser) totals() usageTotals {
-	totals := usageTotals{Input: u.input, Output: u.output, Cached: u.cached, Total: u.total, Known: u.known}
+	totals := usageTotals{Input: u.input, Output: u.output, Cached: u.cached, CacheWrite: u.cacheWrite, Total: u.total, Known: u.known}
 	if !totals.Known {
 		return usageTotals{}
 	}
 	totals.Input = clampTokenCount(totals.Input)
 	totals.Output = clampTokenCount(totals.Output)
 	totals.Cached = clampTokenCount(totals.Cached)
+	totals.CacheWrite = clampTokenCount(totals.CacheWrite)
 	if computed := saturatingAdd(totals.Input, totals.Output); totals.Total < computed {
 		totals.Total = computed
 	}
@@ -559,7 +566,7 @@ func (u *usageParser) applyRawUsage(raw json.RawMessage) bool {
 // invalidateUsage discards all accumulated counts and marks the usage
 // unknown. It is used when a later cumulative sample is unusable.
 func (u *usageParser) invalidateUsage() {
-	u.input, u.output, u.cached, u.total = 0, 0, 0, 0
+	u.input, u.output, u.cached, u.cacheWrite, u.total = 0, 0, 0, 0, 0
 	u.known = false
 	u.hasInput = false
 	u.terminalUsage = false
@@ -606,6 +613,11 @@ func (u *usageParser) applyUsage(sample *usagePayload) bool {
 		seen = true
 		if cached := *sample.CacheReadInputTokens; cached > u.cached {
 			u.cached = cached
+		}
+	}
+	if sample.CacheCreationInputTokens != nil {
+		if written := *sample.CacheCreationInputTokens; written > u.cacheWrite {
+			u.cacheWrite = written
 		}
 	}
 	if sample.InputTokensDetails != nil && sample.InputTokensDetails.CachedTokens != nil {

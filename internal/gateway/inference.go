@@ -12,10 +12,6 @@ import (
 // presented API key, never from a header, and hands the request to the engine
 // that owns the key. VROUTER_API_KEY continues to select the legacy default.
 func (s *server) serveInference(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.Demo {
-		writeJSON(w, 503, map[string]string{"error": "Inference is disabled in demo mode"})
-		return
-	}
 	principal, ok := s.authorizeInference(w, r)
 	if !ok {
 		return
@@ -62,6 +58,10 @@ func (s *server) authorizeInference(w http.ResponseWriter, r *http.Request) (inf
 	}
 	if s.manager != nil {
 		if record, ok := s.manager.keyByHash(key); ok {
+			if record.expired(time.Now()) {
+				writeJSON(w, 401, map[string]string{"error": keyExpiredMessage})
+				return inferenceKey{}, false
+			}
 			return inferenceKey{GatewayID: record.GatewayID, KeyID: record.ID, KeyName: record.Name}, true
 		}
 	}
@@ -83,6 +83,14 @@ func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request
 		s.inference(w, r, nil)
 		return
 	}
+	principal.Provider = quotaProvider(r)
+	unlock, available := s.lockPercentUsage(principal.Provider)
+	if !available {
+		w.Header().Set("Retry-After", "1")
+		writeJSON(w, 429, map[string]string{"error": "This provider pool is measuring another request. Retry when it finishes."})
+		return
+	}
+	defer unlock()
 	recorder := &attemptWriter{ResponseWriter: w}
 	attempt := &inferenceAttempt{principal: principal, startedAt: time.Now().UTC()}
 	if s.manager != nil {
@@ -96,6 +104,7 @@ func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request
 		attempt.reserved = true
 	}
 	s.inference(recorder, r, attempt)
+	s.endPercentMeasurement(attempt)
 	s.finishAttempt(attempt, recorder)
 }
 
@@ -129,8 +138,7 @@ func (s *server) finishAttempt(attempt *inferenceAttempt, recorder *attemptWrite
 		return
 	}
 	totals := attempt.usage.totals()
-	// Only a forwarded provider success can have consumed tokens; a local
-	// rejection or a provider HTTP error must not poison a measured budget.
+	// Only a forwarded provider success can have consumed tokens.
 	dispatched := attempt.provider != ""
 	forwarded := dispatched && status >= 200 && status < 300
 	trusted := attempt.usageTrusted()
@@ -140,34 +148,30 @@ func (s *server) finishAttempt(attempt *inferenceAttempt, recorder *attemptWrite
 	usageKnown := totals.Known && trusted
 	usagePartial := totals.Known && !trusted
 	usageAccepted := forwarded && usageKnown
-	// An ambiguous dispatch may have consumed tokens we never saw, and a
-	// forwarded response whose usage is missing or partial may understate the
-	// real spend. Both must block a token-limited key instead of silently
-	// reopening its budget.
-	poison := attempt.dispatchFailed || (forwarded && !usageAccepted)
 	id, _ := secureID()
 	record := telemetryRecord{
-		ID:           id,
-		StartedAt:    attempt.startedAt,
-		GatewayID:    s.gatewayID,
-		KeyID:        attempt.principal.KeyID,
-		KeyName:      boundedField(attempt.principal.KeyName),
-		Model:        boundedField(attempt.model),
-		NativeModel:  boundedField(attempt.native),
-		Provider:     boundedField(attempt.provider),
-		AccountID:    boundedField(attempt.accountID),
-		Status:       status,
-		DurationMs:   attempt.durationMs,
-		InputTokens:  totals.Input,
-		OutputTokens: totals.Output,
-		CachedTokens: totals.Cached,
-		TotalTokens:  totals.Total,
-		UsageKnown:   usageKnown,
-		UsagePartial: usagePartial,
-		Stream:       attempt.stream,
-		Outcome:      outcome,
+		ID:               id,
+		StartedAt:        attempt.startedAt,
+		GatewayID:        s.gatewayID,
+		KeyID:            attempt.principal.KeyID,
+		KeyName:          boundedField(attempt.principal.KeyName),
+		Model:            boundedField(attempt.model),
+		NativeModel:      boundedField(attempt.native),
+		Provider:         boundedField(attempt.provider),
+		AccountID:        boundedField(attempt.accountID),
+		Status:           status,
+		DurationMs:       attempt.durationMs,
+		InputTokens:      totals.Input,
+		OutputTokens:     totals.Output,
+		CachedTokens:     totals.Cached,
+		CacheWriteTokens: totals.CacheWrite,
+		TotalTokens:      totals.Total,
+		UsageKnown:       usageKnown,
+		UsagePartial:     usagePartial,
+		Stream:           attempt.stream,
+		Outcome:          outcome,
 	}
-	s.manager.settle(attempt.principal, record, totals, usageAccepted, poison, attempt.reserved)
+	s.manager.settle(attempt.principal, record, totals, usageAccepted, attempt.reserved, attempt.percentCharges, attempt.percentUnknown)
 }
 
 func (s *server) inference(w http.ResponseWriter, r *http.Request, attempt *inferenceAttempt) {
@@ -351,6 +355,10 @@ retryInference:
 			attempt.provider = a.Provider
 			attempt.accountID = a.ID
 		}
+		if err := s.beginPercentMeasurement(r.Context(), attempt, a); err != nil {
+			writeJSON(w, 503, map[string]string{"error": err.Error()})
+			return
+		}
 		resp, err := s.streamClient.Do(req)
 		if err != nil {
 			if attempt != nil {
@@ -361,10 +369,12 @@ retryInference:
 		}
 		if (resp.StatusCode == 429 || resp.StatusCode == 503) && attemptIndex+1 < len(candidates) {
 			resp.Body.Close()
+			s.endPercentMeasurement(attempt)
 			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			resp.Body.Close()
+			s.endPercentMeasurement(attempt)
 			if resp.StatusCode == 429 && !resetTried && nativeUsage(a) {
 				resetTried = true
 				candidates = s.resetExhaustedPool(r.Context(), pool, native)
@@ -392,6 +402,7 @@ retryInference:
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.WriteHeader(resp.StatusCode)
 		if attempt != nil {
+			attempt.percentForwarded = true
 			attempt.usage.begin(stream)
 		}
 		// Once headers/body are delivered the request is never retried. Terminal

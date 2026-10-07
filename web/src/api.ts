@@ -5,18 +5,8 @@ export type APIRequest = <T>(
   method?: string,
   body?: unknown,
 ) => Promise<T>;
-export type User = {
-  id: string;
-  name: string;
-  email?: string;
-  role: "admin" | "user";
-};
-export type AuthMode = "local" | "token" | "oidc";
-export type AuthInfo = {
-  mode: AuthMode;
-  providers: { id: string; name: string; loginUrl: string }[];
-  user: User | null;
-};
+export type AuthMode = "local" | "token" | "external";
+export type AuthInfo = { mode: AuthMode; publicUrl: string };
 export type Gateway = {
   id: string;
   name: string;
@@ -106,18 +96,11 @@ export function createClient(options: Options) {
   };
 }
 
-// Which gateway to open at sign-in. A stored choice wins while it still exists.
-// With local or token access the server already falls back to the legacy
-// gateway, so the UI opens that one. With OIDC nothing is opened until the user
-// picks, unless they can only see one gateway.
-export function pickGateway(
-  gateways: Gateway[],
-  stored: string | null,
-  mode: AuthMode,
-) {
+// Preserve a saved gateway selection, otherwise open the default store.
+export function pickGateway(gateways: Gateway[], stored: string | null) {
   if (stored && gateways.some((g) => g.id === stored)) return stored;
   if (gateways.length === 1) return gateways[0].id;
-  if (mode === "oidc" || gateways.length === 0) return null;
+  if (gateways.length === 0) return null;
   const legacy = gateways
     .filter((g) => g.ownerId === "local-admin")
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];

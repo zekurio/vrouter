@@ -17,6 +17,9 @@ type catalogCache struct {
 	Err     error
 }
 type providerModel struct {
+	ReasoningLevels []struct {
+		Effort string `json:"effort"`
+	} `json:"supported_reasoning_levels"`
 	ID            string   `json:"id"`
 	Slug          string   `json:"slug"`
 	Name          string   `json:"display_name"`
@@ -83,8 +86,17 @@ func (s *server) accountModels(ctx context.Context, a storedAccount) ([]Model, e
 					m.MaxOutput = m.MaxTokens
 				}
 			}
-			result = append(result, Model{ID: id, Name: m.Name, Provider: provider(a.Provider), Context: m.Context, MaxOutput: m.MaxOutput, Inputs: m.Inputs})
+			reasoning := []string{}
+			for _, level := range m.ReasoningLevels {
+				reasoning = append(reasoning, level.Effort)
+			}
+			result = append(result, Model{Reasoning: reasoning, ReasoningSupported: len(reasoning) > 0, ID: id, Name: m.Name, Provider: provider(a.Provider), Context: m.Context, MaxOutput: m.MaxOutput, Inputs: m.Inputs})
 		}
+	}
+	if err != nil && ctx.Err() != nil {
+		// A caller that gave up says nothing about the provider; do not
+		// cache its failure for everyone else.
+		return result, err
 	}
 	ttl := time.Minute
 	if err != nil {
@@ -128,9 +140,6 @@ func (s *server) models(ctx context.Context) ([]Model, error) {
 		blocked, _ := excludedModel(p, channel, m.ID)
 		if blocked {
 			continue
-		}
-		if override := p.Context[channel][m.ID]; override > 0 {
-			m.Context = override
 		}
 		for _, a := range p.Aliases[channel] {
 			if a.Name == m.ID {

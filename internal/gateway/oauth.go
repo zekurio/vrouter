@@ -19,6 +19,10 @@ type oauthSession struct {
 	Expires                                                                              time.Time
 	Submitted, Completed                                                                 bool
 	Error                                                                                string
+	Flow                                                                                 string
+	DeviceAuthID, UserCode                                                               string
+	PollInterval                                                                         time.Duration
+	NextPoll                                                                             time.Time
 }
 
 func randomToken() string {
@@ -30,9 +34,6 @@ func randomToken() string {
 	return base64.RawURLEncoding.EncodeToString(b[:])
 }
 func (s *server) startOAuth(w http.ResponseWriter, r *http.Request) {
-	if !s.oauthReady(w) {
-		return
-	}
 	p := r.PathValue("provider")
 	if p != "codex" && p != "claude" {
 		writeJSON(w, 400, map[string]string{"error": "Choose Codex or Claude"})
@@ -137,7 +138,25 @@ func (s *server) startOAuth(w http.ResponseWriter, r *http.Request) {
 		query.Set("originator", codexNativeOriginator)
 	}
 	id := randomToken()
-	uri, err := s.openCallback(id, p, session.AuthMode)
+	session.Return = s.appURL(r) + "/#accounts"
+	if s.hostedOAuth(r) && p == "codex" {
+		if err := s.startDeviceOAuth(r.Context(), &session); err != nil {
+			writeJSON(w, 502, map[string]string{"error": err.Error()})
+			return
+		}
+		s.saveOAuthSession(id, session)
+		writeJSON(w, 200, map[string]any{"id": id, "provider": p, "flow": session.Flow, "url": codexDeviceURL, "userCode": session.UserCode, "expiresAt": session.Expires})
+		return
+	}
+	session.Flow = "loopback"
+	var uri string
+	var err error
+	if s.hostedOAuth(r) && p == "claude" {
+		session.Flow = "code"
+		uri = claudeManualRedirectURL
+	} else {
+		uri, err = s.openCallback(id, p, session.AuthMode)
+	}
 	if err != nil {
 		message := "Could not open the loopback callback listener. Retry the sign-in."
 		switch {
@@ -150,15 +169,6 @@ func (s *server) startOAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	session.RedirectURI = uri
-	origin := r.Header.Get("Origin")
-	if origin == "" {
-		scheme := "http"
-		if r.TLS != nil {
-			scheme = "https"
-		}
-		origin = scheme + "://" + r.Host
-	}
-	session.Return = origin + "/#accounts"
 	digest := sha256.Sum256([]byte(session.Verifier))
 	query.Set("client_id", session.ClientID)
 	query.Set("response_type", "code")
@@ -167,9 +177,13 @@ func (s *server) startOAuth(w http.ResponseWriter, r *http.Request) {
 	query.Set("state", session.State)
 	query.Set("code_challenge_method", "S256")
 	query.Set("code_challenge", base64.RawURLEncoding.EncodeToString(digest[:]))
+	s.saveOAuthSession(id, session)
+	writeJSON(w, 200, map[string]any{"id": id, "provider": p, "flow": session.Flow, "url": endpoint + "?" + query.Encode(), "redirectUri": uri, "expiresAt": session.Expires})
+}
+
+func (s *server) saveOAuthSession(id string, session oauthSession) {
 	s.oauth[id] = session
 	time.AfterFunc(time.Until(session.Expires)+time.Second, func() { s.oauthMu.Lock(); defer s.oauthMu.Unlock(); s.sweepOAuth() })
-	writeJSON(w, 200, map[string]any{"id": id, "provider": p, "url": endpoint + "?" + query.Encode(), "redirectUri": uri, "expiresAt": session.Expires})
 }
 func (s *server) session(w http.ResponseWriter, r *http.Request) (oauthSession, bool) {
 	session, ok := s.oauth[r.PathValue("id")]
@@ -181,14 +195,15 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) (oauthSession, 
 	return session, true
 }
 func (s *server) oauthStatus(w http.ResponseWriter, r *http.Request) {
-	if !s.oauthReady(w) {
-		return
-	}
 	s.oauthMu.Lock()
 	defer s.oauthMu.Unlock()
 	session, ok := s.session(w, r)
 	if !ok {
 		return
+	}
+	if session.Flow == "device" && !session.Completed && session.Error == "" && !session.Submitted {
+		s.pollDeviceOAuth(r.Context(), r.PathValue("id"))
+		session = s.oauth[r.PathValue("id")]
 	}
 	status := "pending"
 	if session.Completed {
@@ -199,11 +214,9 @@ func (s *server) oauthStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": status, "error": session.Error})
 }
 func (s *server) oauthCallback(w http.ResponseWriter, r *http.Request) {
-	if !s.oauthReady(w) {
-		return
-	}
 	var body struct {
 		RedirectURL string `json:"redirectUrl"`
+		Code        string `json:"code"`
 	}
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&body) != nil {
 		writeJSON(w, 400, map[string]string{"error": "Enter the full callback URL"})
@@ -215,13 +228,28 @@ func (s *server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	u, err := url.Parse(strings.TrimSpace(body.RedirectURL))
-	expected, _ := url.Parse(session.RedirectURI)
-	if err != nil || u.User != nil || u.Fragment != "" || u.Scheme != expected.Scheme || u.Host != expected.Host || u.Path != expected.Path {
-		writeJSON(w, 400, map[string]string{"error": "Callback address does not match this sign-in"})
+	if session.Flow == "device" {
+		writeJSON(w, 400, map[string]string{"error": "Finish device sign-in with the provider. No callback is needed."})
 		return
 	}
-	if err = s.completeOAuth(r.Context(), r.PathValue("id"), u.Query()); err != nil {
+	var q url.Values
+	if session.Flow == "code" {
+		code, state, ok := strings.Cut(strings.TrimSpace(body.Code), "#")
+		if !ok || code == "" || state == "" || strings.ContainsAny(code+state, " \t\r\n#") {
+			writeJSON(w, 400, map[string]string{"error": "Paste the complete authorization code from Claude, including # and the text after it"})
+			return
+		}
+		q = url.Values{"code": {code}, "state": {state}}
+	} else {
+		u, err := url.Parse(strings.TrimSpace(body.RedirectURL))
+		expected, _ := url.Parse(session.RedirectURI)
+		if err != nil || u.User != nil || u.Fragment != "" || u.Scheme != expected.Scheme || u.Host != expected.Host || u.Path != expected.Path {
+			writeJSON(w, 400, map[string]string{"error": "Callback address does not match this sign-in"})
+			return
+		}
+		q = u.Query()
+	}
+	if err := s.completeOAuth(r.Context(), r.PathValue("id"), q); err != nil {
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
@@ -284,7 +312,12 @@ func (s *server) completeOAuth(ctx context.Context, id string, q url.Values) err
 		a.Scopes = strings.Fields(*tokens.Scope)
 	}
 	if session.Provider == "codex" {
-		identity, err := s.verifyIDToken(ctx, tokens.IDToken, session.ClientID, session.Nonce)
+		var identity verifiedIdentity
+		if session.Flow == "device" {
+			identity, err = s.verifyDeviceIDToken(ctx, tokens.IDToken, session.ClientID)
+		} else {
+			identity, err = s.verifyIDToken(ctx, tokens.IDToken, session.ClientID, session.Nonce)
+		}
 		if err != nil {
 			return fail("Provider identity could not be verified. Start a new sign-in.")
 		}
@@ -355,6 +388,8 @@ func (s *server) completeOAuth(ctx context.Context, id string, q url.Values) err
 	session.Completed = true
 	session.Verifier = ""
 	session.Nonce = ""
+	session.DeviceAuthID = ""
+	session.UserCode = ""
 	s.oauth[id] = session
 	s.sweepOAuth()
 	return nil
@@ -461,9 +496,6 @@ func oauthReplacement(old, fresh storedAccount) storedAccount {
 }
 
 func (s *server) cancelOAuth(w http.ResponseWriter, r *http.Request) {
-	if !s.oauthReady(w) {
-		return
-	}
 	s.oauthMu.Lock()
 	defer s.oauthMu.Unlock()
 	delete(s.oauth, r.PathValue("id"))
