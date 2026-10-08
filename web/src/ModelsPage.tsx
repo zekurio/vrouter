@@ -8,7 +8,15 @@ import {
 import { Check, Copy, RefreshCw, Search, Undo2, X } from "lucide-react";
 import { ProviderBrand, providerColor, providerName } from "./ProviderBrand";
 import type { APIRequest } from "./AccountsPage";
+import { CodeBlock } from "./CodeBlock";
+import { ConnectionTest } from "./ConnectionTest";
 import { isDialogBackdropClick } from "./dialog";
+import {
+  curlExample,
+  protocolPath,
+  protocols,
+  type Protocol,
+} from "./protocols";
 import { Select, type SelectOption } from "./Select";
 
 export type Model = {
@@ -36,14 +44,11 @@ const statuses: SelectOption<Status>[] = [
   { value: "disabled", label: "Disabled" },
   { value: "changed", label: "Unsaved" },
 ];
-// vrouter forwards each provider in its own protocol and does not translate.
-const isClaude = (provider: string) => provider === "Claude";
 const compact = (n: number) =>
   Intl.NumberFormat("en", {
     notation: "compact",
     maximumFractionDigits: 1,
   }).format(n);
-const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const keyOf = (m: { provider: string; id: string }) => `${m.provider}\n${m.id}`;
 const message = (err: unknown, fallback: string) =>
   err instanceof Error ? err.message : fallback;
@@ -81,6 +86,7 @@ export function ModelsPage({
   const [status, setStatus] = useState<Status>("all");
   const [selected, setSelected] = useState<string | null>(null);
   const [copied, setCopied] = useState("");
+  const [protocol, setProtocol] = useState<Protocol>("responses");
   const dialog = useRef<HTMLDialogElement>(null);
   const sequence = useRef(0);
 
@@ -222,28 +228,20 @@ export function ModelsPage({
     );
   const detail = rows.find((m) => keyOf(m) === selected) || null;
 
-  function example(m: ManagedModel) {
-    const id = exposedID(m);
-    const claude = isClaude(m.provider);
-    const path = claude ? "/messages" : "/responses";
-    const body = claude
-      ? {
-          model: id,
-          max_tokens: 1024,
-          messages: [{ role: "user", content: "Hello" }],
-          stream: true,
-        }
-      : {
-          model: id,
-          input: [{ role: "user", content: "Hello" }],
-          stream: true,
-          store: false,
-        };
-    const auth = claude
-      ? '-H "x-api-key: $VROUTER_API_KEY" \\\n  -H "anthropic-version: 2023-06-01"'
-      : '-H "Authorization: Bearer $VROUTER_API_KEY"';
-    return `curl --no-buffer ${shellQuote(endpoint + path)} \\\n  ${auth} \\\n  -H "Content-Type: application/json" \\\n  -d ${shellQuote(JSON.stringify(body, null, 2))}`;
-  }
+  // The test runs in the browser, which can only call its own origin. When the
+  // public address is another origin, the same server answers on this one.
+  const testBase = endpoint.startsWith(`${location.origin}/`)
+    ? endpoint
+    : `${location.origin}/v1`;
+  // Drafts are not live until saved, so a test can only use the saved state.
+  const testBlock = (m: ManagedModel) =>
+    !live
+      ? "Connect an account first."
+      : isChanged(m)
+        ? "Save your changes to this model first."
+        : !m.enabled
+          ? "Enable this model and save to test it."
+          : undefined;
 
   return (
     <>
@@ -574,20 +572,33 @@ export function ModelsPage({
                 </div>
               )}
             </dl>
-            <div className="client-format">
-              <code>
-                POST{" "}
-                {isClaude(detail.provider) ? "/v1/messages" : "/v1/responses"}
-              </code>
-              <button
-                className="secondary"
-                onClick={() => void copy(example(detail))}
-              >
-                <Copy size={13} />
-                Copy request
-              </button>
+            <div className="protocol-choice">
+              <span>Client protocol</span>
+              <Select
+                label="Client protocol"
+                value={protocol}
+                options={protocols}
+                onChange={setProtocol}
+              />
             </div>
-            <pre className="snippet">{example(detail)}</pre>
+            <CodeBlock
+              code={curlExample(
+                endpoint,
+                protocol,
+                exposedID(detail),
+                detail.provider,
+              )}
+              method="POST"
+              path={`/v1${protocolPath(protocol)}`}
+              copy={copy}
+            />
+            <ConnectionTest
+              base={testBase}
+              protocol={protocol}
+              model={exposedID(detail)}
+              provider={detail.provider}
+              blocked={testBlock(detail)}
+            />
           </>
         )}
       </dialog>

@@ -1,8 +1,6 @@
 package gateway
 
 import (
-	"encoding/json"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -10,7 +8,7 @@ import (
 
 // serveInference is the /v1 entry point. It selects the gateway from the
 // presented API key, never from a header, and hands the request to the engine
-// that owns the key. VROUTER_API_KEY continues to select the legacy default.
+// that owns the key.
 func (s *server) serveInference(w http.ResponseWriter, r *http.Request) {
 	principal, ok := s.authorizeInference(w, r)
 	if !ok {
@@ -53,9 +51,6 @@ func (s *server) authorizeInference(w http.ResponseWriter, r *http.Request) (inf
 		writeJSON(w, 401, map[string]string{"error": "A valid vrouter client API key is required"})
 		return inferenceKey{}, false
 	}
-	if s.cfg.APIKey != "" && tokenEqual(key, s.cfg.APIKey) {
-		return inferenceKey{GatewayID: s.gatewayID, KeyName: "VROUTER_API_KEY", Legacy: true}, true
-	}
 	if s.manager != nil {
 		if record, ok := s.manager.keyByHash(key); ok {
 			if record.expired(time.Now()) {
@@ -65,34 +60,39 @@ func (s *server) authorizeInference(w http.ResponseWriter, r *http.Request) (inf
 			return inferenceKey{GatewayID: record.GatewayID, KeyID: record.ID, KeyName: record.Name}, true
 		}
 	}
-	if s.cfg.APIKey == "" && (s.manager == nil || !s.manager.hasAnyKeys()) {
-		writeJSON(w, 503, map[string]string{"error": "Set VROUTER_API_KEY or create a gateway API key to enable client requests"})
+	if s.manager == nil || !s.manager.hasAnyKeys() {
+		writeJSON(w, 503, map[string]string{"error": "Create a managed gateway API key to enable client requests"})
 		return inferenceKey{}, false
 	}
 	writeJSON(w, 401, map[string]string{"error": "A valid vrouter client API key is required"})
 	return inferenceKey{}, false
 }
 
-// serveInferenceAuthorized runs an already authenticated request. Supported
-// inference POSTs are admitted against the key's lifetime quota before any
-// provider work; every attempt, including failures, settles exactly one
-// telemetry row.
+// serveInferenceAuthorized selects the model and checks its provider quota.
+// Each supported POST settles one telemetry row, including failed requests.
 func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request, principal inferenceKey) {
-	isAttempt := r.Method == http.MethodPost && (r.URL.Path == "/v1/responses" || r.URL.Path == "/v1/messages")
-	if !isAttempt {
+	if r.Method != http.MethodPost || inferenceProtocol(r.URL.Path) == "" {
 		s.inference(w, r, nil)
 		return
 	}
-	principal.Provider = quotaProvider(r)
+	recorder := &attemptWriter{ResponseWriter: w}
+	attempt := &inferenceAttempt{principal: principal, startedAt: time.Now().UTC()}
+	prepared, status, message := s.prepareInference(recorder, r, attempt)
+	if prepared == nil {
+		writeJSON(recorder, status, protocolError(message))
+		s.finishAttempt(attempt, recorder)
+		return
+	}
+	principal.Provider = prepared.provider
+	attempt.principal = principal
 	unlock, available := s.lockPercentUsage(principal.Provider)
 	if !available {
 		w.Header().Set("Retry-After", "1")
-		writeJSON(w, 429, map[string]string{"error": "This provider pool is measuring another request. Retry when it finishes."})
+		writeJSON(recorder, 429, map[string]string{"error": "This provider pool is measuring another request. Retry when it finishes."})
+		s.finishAttempt(attempt, recorder)
 		return
 	}
 	defer unlock()
-	recorder := &attemptWriter{ResponseWriter: w}
-	attempt := &inferenceAttempt{principal: principal, startedAt: time.Now().UTC()}
 	if s.manager != nil {
 		allowed, status, message := s.manager.reserve(principal)
 		if !allowed {
@@ -103,7 +103,7 @@ func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request
 		}
 		attempt.reserved = true
 	}
-	s.inference(recorder, r, attempt)
+	s.forwardInference(recorder, r, attempt, prepared)
 	s.endPercentMeasurement(attempt)
 	s.finishAttempt(attempt, recorder)
 }
@@ -192,122 +192,17 @@ func (s *server) inference(w http.ResponseWriter, r *http.Request, attempt *infe
 		writeJSON(w, 200, map[string]any{"object": "list", "data": data})
 		return
 	}
-	if r.URL.Path != "/v1/responses" && r.URL.Path != "/v1/messages" {
-		writeJSON(w, 404, map[string]string{"error": "Supported endpoints are /v1/models, /v1/responses and /v1/messages"})
+	if inferenceProtocol(r.URL.Path) == "" {
+		writeJSON(w, 404, map[string]string{"error": "Supported endpoints are /v1/models, /v1/responses, /v1/messages and /v1/chat/completions"})
 		return
 	}
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", "POST")
-		writeJSON(w, 405, map[string]string{"error": "Use POST for inference"})
-		return
-	}
-	var payload map[string]json.RawMessage
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<20))
-	if decoder.Decode(&payload) != nil || payload == nil || decoder.Decode(&struct{}{}) != io.EOF {
-		writeJSON(w, 400, map[string]string{"error": "Expected a JSON inference request, at most 16 MiB"})
-		return
-	}
-	var model string
-	if json.Unmarshal(payload["model"], &model) != nil || model == "" {
-		writeJSON(w, 400, map[string]string{"error": "Choose a model"})
-		return
-	}
-	channel := "codex"
-	if r.URL.Path == "/v1/messages" {
-		channel = "claude"
-	}
-	state := s.store.snapshot()
-	native := model
-	for _, a := range state.Policy.Aliases[channel] {
-		if a.Alias == model {
-			native = a.Name
-			break
-		}
-	}
-	if attempt != nil {
-		attempt.model = model
-		attempt.native = native
-	}
-	blocked, _ := excludedModel(state.Policy, channel, native)
-	hidden := false
-	for _, a := range state.Policy.Aliases[channel] {
-		if a.Name == native && a.Alias != model {
-			hidden = true
-		}
-	}
-	if blocked || hidden {
-		writeJSON(w, 404, map[string]string{"error": "Model is disabled or has a different public alias"})
-		return
-	}
-	candidates := []storedAccount{}
-	catalogFailed := false
-	for _, a := range state.Accounts {
-		if a.Disabled || a.Provider != channel || !routableAuth(a) {
-			continue
-		}
-		models, err := s.accountModels(r.Context(), a)
-		if err != nil {
-			catalogFailed = true
-			continue
-		}
-		for _, m := range models {
-			if m.ID == native {
-				candidates = append(candidates, a)
-				break
-			}
-		}
-	}
-	if len(candidates) == 0 {
-		status := 404
-		message := "No enabled account advertises this model for this endpoint"
-		if catalogFailed {
-			status = 502
-			message = "Provider catalogs unavailable; cannot select an account"
-		}
-		writeJSON(w, status, map[string]string{"error": message})
-		return
-	}
-	// Preserve billing/authentication boundaries: never silently fall back from
-	// subscription access to a paid API-key account.
-	mode := candidates[0].AuthMode
-	filtered := candidates[:0]
-	for _, a := range candidates {
-		if a.AuthMode == mode {
-			filtered = append(filtered, a)
-		}
-	}
-	candidates = filtered
-	var stream bool
-	if raw, ok := payload["stream"]; ok && json.Unmarshal(raw, &stream) != nil {
-		writeJSON(w, 400, map[string]string{"error": "stream must be a boolean"})
-		return
-	}
-	if attempt != nil {
-		attempt.stream = stream
-	}
-	if channel == "codex" && mode != "api_key" {
-		if !stream {
-			writeJSON(w, 400, map[string]string{"error": "Codex requests require stream: true and store: false"})
-			return
-		}
-		if raw, ok := payload["store"]; ok && string(raw) != "false" {
-			writeJSON(w, 400, map[string]string{"error": "Codex requests require store: false"})
-			return
-		}
-		payload["store"] = json.RawMessage("false")
-	}
-	if channel == "codex" {
-		var text string
-		if json.Unmarshal(payload["input"], &text) == nil {
-			payload["input"], _ = json.Marshal([]map[string]string{{"role": "user", "content": text}})
-		}
-		if mode == "codex" {
-			if _, ok := payload["instructions"]; !ok {
-				payload["instructions"] = json.RawMessage(`""`)
-			}
-		}
-	}
-	payload["model"], _ = json.Marshal(native)
+	w.Header().Set("Allow", "POST")
+	writeJSON(w, 405, map[string]string{"error": "Use POST for inference"})
+}
+
+func (s *server) forwardInference(w http.ResponseWriter, r *http.Request, attempt *inferenceAttempt, prepared *preparedInference) {
+	channel, native, payload, candidates := prepared.provider, prepared.native, prepared.payload, prepared.accounts
+	upstreamStream := prepared.upstreamStream
 	pool := candidates
 	candidates = s.usableAccounts(r.Context(), pool, native)
 	resetTried := false
@@ -333,13 +228,12 @@ retryInference:
 		} else if a.AuthMode == "codex" {
 			target = "https://chatgpt.com/backend-api/codex/responses"
 		}
-		req, err := requestJSON(r.Context(), target, payload)
+		req, err := providerInferenceRequest(r.Context(), target, payload, a)
 		if err != nil {
 			writeJSON(w, 400, map[string]string{"error": "Invalid inference request"})
 			return
 		}
-		providerHeaders(req, a)
-		if stream {
+		if upstreamStream {
 			req.Header.Set("Accept", "text/event-stream")
 		}
 		// Header allowlist prevents downstream credentials, cookies and arbitrary
@@ -373,6 +267,7 @@ retryInference:
 			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			providerError := readProviderError(resp, a)
 			resp.Body.Close()
 			s.endPercentMeasurement(attempt)
 			if resp.StatusCode == 429 && !resetTried && nativeUsage(a) {
@@ -389,56 +284,16 @@ retryInference:
 			if status >= 300 && status < 400 {
 				status = 502
 			}
-			writeJSON(w, status, map[string]any{"error": map[string]string{"type": "provider_error", "message": http.StatusText(status)}})
+			writeJSON(w, status, providerError)
 			return
 		}
 		defer resp.Body.Close()
-		for _, header := range []string{"Content-Type", "Retry-After", "X-Request-ID"} {
-			if value := resp.Header.Get(header); value != "" {
-				w.Header().Set(header, value)
-			}
-		}
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-Accel-Buffering", "no")
-		w.WriteHeader(resp.StatusCode)
 		if attempt != nil {
 			attempt.percentForwarded = true
-			attempt.usage.begin(stream)
+			attempt.usage.begin(upstreamStream)
 		}
-		// Once headers/body are delivered the request is never retried. Terminal
-		// SSE errors and disconnects reach the caller unchanged.
-		buf := make([]byte, 32<<10)
-		for {
-			n, readErr := resp.Body.Read(buf)
-			if n > 0 {
-				if attempt != nil {
-					attempt.usage.observe(buf[:n])
-				}
-				if _, err = w.Write(buf[:n]); err != nil {
-					if attempt != nil {
-						attempt.outcome = outcomeIncomplete
-					}
-					return
-				}
-				if stream {
-					_ = http.NewResponseController(w).Flush()
-				}
-			}
-			if readErr != nil {
-				if attempt != nil {
-					if readErr == io.EOF {
-						attempt.bodyComplete = true
-						attempt.usage.complete()
-						if stream && !attempt.usage.terminal && !attempt.usage.terminalFailure {
-							attempt.outcome = outcomeIncomplete
-						}
-					} else {
-						attempt.outcome = outcomeError
-					}
-				}
-				return
-			}
-		}
+		s.deliverInference(w, r, resp, attempt, prepared, a)
+		return
 	}
 	writeJSON(w, 503, map[string]string{"error": "No usable account remains. Reconnect or enable an account."})
 }

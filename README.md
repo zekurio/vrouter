@@ -20,7 +20,6 @@ Open http://127.0.0.1:8080, enter the admin token, then add provider accounts an
 | `VROUTER_PUBLIC_URL` | Public HTTP(S) origin, such as `https://vrouter.example.com`; optional for local development |
 | `VROUTER_DATA_DIR` | Persistent state, default `$XDG_STATE_HOME/vrouter` or `~/.local/state/vrouter` |
 | `VROUTER_ADMIN_TOKEN` | Optional administrator token; required for non-loopback listeners unless external authentication is enabled |
-| `VROUTER_API_KEY` | Optional inference key for the default gateway; keys can also be created in the UI |
 | `VROUTER_EXTERNAL_AUTH` | Set to `1` when an authentication proxy protects the dashboard and management API |
 | `VROUTER_WINDOW_SKIP_PLANS` | Plans that never get an automatic 5-hour window trigger, default `codex:pro*` |
 
@@ -30,9 +29,11 @@ For remote hosting, put vrouter behind an HTTPS reverse proxy. With TinyAuth or 
 
 Route `/v1/*` directly to vrouter without browser authentication. These endpoints still require a vrouter API key. The optional `VROUTER_ADMIN_TOKEN` continues to require a bearer token on management requests, even with external authentication enabled. Without either option, management accepts loopback peers and loopback hosts only.
 
-Built-in OIDC sign-in and user membership have been removed. Provider account connections still use OAuth. Existing account stores, API keys, and gateway directories remain readable; older gateways remain selectable, but new personal gateways cannot be created.
+Provider account connections use OAuth. Dashboard access uses the authentication proxy or admin token.
 
 Persist the data directory and keep its backups private. Credentials are stored with restricted file permissions, without encryption at rest. Run only one instance per data directory.
+
+Accounts, model settings, client keys, quotas, and request history share one `vrouter.json` file. This testing build does not migrate older files. Use a fresh data directory or convert the data by hand. Stop the server before restoring data or importing provider credentials.
 
 Set `VROUTER_PUBLIC_URL` to the HTTPS address users open. vrouter uses it for copied client endpoints and provider sign-in return links. Browser management writes must use that origin, and the reverse proxy must preserve Host. The setting accepts an origin with an optional trailing slash; hosting under a subpath is unsupported. Forwarded headers do not override it. Without it, the UI uses the browser's origin and provider return links use the request's checked Origin or Host.
 
@@ -73,6 +74,8 @@ The frontend dependency hash lives in `nix/package.nix`. After changing `web/pnp
 
 Create a key for each person or tool in the API keys page. The secret is shown once; only its hash is stored. Keys can be renamed, revoked, or deleted. Client keys cannot open management endpoints.
 
+All client keys use these managed records. The server no longer reads `VROUTER_API_KEY` or the old `client-key` file. Dashboard admin tokens remain separate and cannot authorize inference.
+
 Each key has optional Claude and Codex percentage limits, separately for the 5-hour and 7-day windows. Blank means unlimited; zero blocks requests to that provider. Reaching either limit blocks subsequent requests to that provider with HTTP 429. Each account's contribution expires at its provider-reported reset time; the two windows are independent. The request that crosses a limit can finish above it.
 
 Percentages are measured from changes in provider-reported account utilization before and after a request. Each enabled subscription account contributes one equal share of its provider's pool. For four accounts, a measured 20 percentage points on one account consumes 5% of the pool. Different subscription plans are not weighted by token capacity. Pool size is captured when the request starts; changing the pool does not rewrite existing charges.
@@ -81,7 +84,21 @@ These are observed estimates: provider readings can be rounded or delayed, and u
 
 A missing measurement, an ambiguous request, or an unexpected reset during a request blocks the affected key's capped provider access. Saving its provider quotas explicitly acknowledges the gap without clearing known usage. Restart recovery treats unfinished requests as uncertain. API-key provider credentials cannot enforce subscription-percentage quotas, and an unavailable provider window is not treated as unlimited.
 
-A key can also have an expiry. After that time vrouter refuses its calls with HTTP 401; a response that is already running finishes. Moving the expiry later or clearing it restores the key. Lifetime request and token limits are gone: a registry from an older build still loads, and its keys keep their counters but lose those limits. Request reservations are persisted before forwarding; token usage settles afterward and is recorded as a total, not a limit. Deleting or revoking a key does not erase request history. History retains the latest 1,000 requests per gateway. The environment-based `VROUTER_API_KEY` remains an uncapped legacy key; use managed keys for quotas.
+A key can also have an expiry. After that time vrouter refuses its calls with HTTP 401; a response that is already running finishes. Moving the expiry later or clearing it restores the key. Keys have no lifetime request or token limit. Request reservations are persisted before forwarding; token usage settles afterward. Deleting or revoking a key does not erase request history. History retains the latest 1,000 requests per gateway.
+
+## Client requests
+
+Use `https://your-host/v1` as the base URL for OpenAI-compatible clients. For Anthropic clients that add `/v1/messages`, use `https://your-host`. In Delta, select Responses and use the base URL with `/v1`.
+
+vrouter serves `/v1/models`, `/v1/responses`, `/v1/messages`, and `/v1/chat/completions`. The model ID selects the provider. The endpoint selects the client protocol. When they differ, vrouter converts text, images, tools, tool results, and streaming events to the provider's format. It returns HTTP 400 for features it cannot convert. `/v1beta` is not supported.
+
+Provider limits still apply. Codex subscription accounts do not accept stored responses, numeric output token caps, `temperature`, or `top_p`. Remove these options, or set `store` to `false`. vrouter returns a specific error for unsupported options. It does not move a request from a subscription account to a paid API-key account.
+
+Claude OAuth requests need the native Claude Code identity block. vrouter adds it before the caller's system prompt and keeps the caller's prompt blocks unchanged. This applies to inference and automatic window starts. Paid API-key requests keep their original system prompt.
+
+Clients must replay the complete assistant output when they send tool results. To preserve signed reasoning across protocols, vrouter carries provider state in Responses `encrypted_content`, Messages `signature`, or the Chat extension `vrouter_reasoning`. The wrapper uses base64 encoding. Keep it unchanged and continue with the same provider. Chat clients must preserve `vrouter_reasoning` for reasoning and tool calls to work together.
+
+Open a model in the UI to copy a request or run **Test this model** with a client key. The test uses the public inference endpoint and counts against that key. It shows the HTTP status, provider error, and reply. It passes only after a complete response. The key stays in memory until you close the dialog or switch gateways. An account marked **Connected** has saved credentials; this does not prove that inference works.
 
 ## Automatic 5-hour windows
 
@@ -104,7 +121,7 @@ go test ./...               # Backend tests
 pnpm --dir web build        # Type-check and build the UI
 ```
 
-`just dev` creates or reuses a private local API key. The UI reloads as you edit; restart `just dev` after Go changes.
+`just dev` uses the normal persistent data directory. Create client keys on the Keys page. Set `VROUTER_DATA_DIR` to a scratch directory for experiments. The UI reloads as you edit; restart `just dev` after Go changes.
 
 - `cmd/vrouter`: startup and import commands.
 - `internal/gateway`: routing, provider adapters, authentication, storage and management handlers.

@@ -115,11 +115,17 @@ func TestPercentQuotasPersistAndRecover(t *testing.T) {
 	if ok, _, _ := s.manager.reserve(inferenceKey{KeyID: id, GatewayID: defaultGatewayID, Provider: "claude"}); !ok {
 		t.Fatal("reservation refused")
 	}
-	raw, _ := json.Marshal(s.manager.registry.snapshot())
-	recovered, err := registryDecode(raw)
+	dir := s.cfg.DataDir
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h, err := New(Config{DataDir: dir, ExternalAuth: true}, testAssets())
 	if err != nil {
 		t.Fatal(err)
 	}
+	reopened := h.(*server)
+	defer reopened.Close()
+	recovered := reopened.manager.registry.snapshot()
 	key := findKey(&recovered, id)
 	if key.InFlight != 0 || percentAdmission(*key, "claude", time.Now()) == "" {
 		t.Fatal("unfinished reservation did not fail closed")
@@ -371,20 +377,5 @@ func TestKeyExpiry(t *testing.T) {
 	}
 	if ok, _, _ := s.manager.reserve(principal); !ok {
 		t.Fatal("key still refused after clearing its expiry")
-	}
-}
-
-func TestRegistryLoadsLegacyLifetimeLimits(t *testing.T) {
-	hash := strings.Repeat("a", 64)
-	state, err := registryDecode([]byte(`{"version":1,"keys":[{"id":"k","gatewayId":"` + defaultGatewayID + `","name":"old","prefix":"vr_abc","hash":"` + hash + `","createdAt":"2026-01-01T00:00:00Z","limitRequests":5,"limitTokens":10,"usedRequests":5,"usedTokens":3,"usageUncertain":true}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := json.Marshal(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), "limit") || strings.Contains(string(data), "usageUncertain") {
-		t.Fatalf("legacy fields survived: %s", data)
 	}
 }

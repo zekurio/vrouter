@@ -12,17 +12,18 @@ vrouter is a Go model gateway with a React/TypeScript UI embedded in one binary.
 ## Where changes belong
 
 - `cmd/vrouter/main.go` handles startup and credential import. `internal/gateway` contains the backend in one package.
-- `server.go` registers management routes on both the authorized public mux and internal `mgmt` mux; `management.go` serves the dashboard; `tenancy.go` preserves existing gateway stores and dispatch. Preserve local/token and external-auth paths when adding routes.
+- `server.go` registers management routes on both the authorized public mux and internal `mgmt` mux; `management.go` serves the dashboard; `tenancy.go` dispatches requests through gateway views of the shared store. Preserve local/token and external-auth paths when adding routes.
 - `inference.go` handles inference; `providers.go`, `oauth.go`, and `claude_profile.go` contain provider-specific behavior. Provider account OAuth is separate from dashboard access, which uses a reverse proxy or an admin token.
 - `web/src/api.ts` owns management requests; `Workspace.tsx` owns per-gateway UI state. Go JSON shapes and TypeScript types are maintained manually, so update both when changing contracts.
 
 ## Quirks to preserve
 
 - Build the UI before compiling a runnable Go binary. `web/embed.go` embeds `web/dist`; the tracked `.gitkeep` lets Go compile without a UI, but startup requires `index.html`. `just dev` only builds missing UI assets, so its embedded UI can be stale. Generated assets and `bin` are ignored.
-- `.env` is not loaded automatically. `just dev` uses the normal persistent data directory and creates/reuses its `client-key`. Set `VROUTER_DATA_DIR` to a scratch directory for experiments.
+- `.env` is not loaded automatically. `just dev` uses the normal persistent data directory. Create client keys through management. Set `VROUTER_DATA_DIR` to a scratch directory for experiments.
 - State contains unencrypted provider credentials. Storage uses private permissions, atomic writes, and process locks. Use the store APIs, keep secrets out of responses/logs, and stop the server before CLI imports into the same directory.
+- `data.go` owns the shared `vrouter.json` file. Account and registry stores are scoped views of it. This testing build has no automatic migrations. All client keys use managed records; environment and old local keys are not read.
 - Management selects a gateway with `X-Vrouter-Gateway`; inference selects it from the API key. Admin tokens and inference keys are distinct. Preserve the browser Host in `/api` and `/auth` proxies because management writes check origin.
 - Switching gateways remounts `Workspace` and closes its API client. Closed clients reject stale reads but allow `DELETE` to clean up provider sign-in sessions. Preserve that exception.
-- Live inference supports `/v1/models`, `/v1/responses`, and `/v1/messages`. `/v1/chat/completions` and `/v1beta` are unsupported.
+- Live inference supports `/v1/models`, `/v1/responses`, `/v1/messages`, and `/v1/chat/completions`. Select the provider from the model before quota admission. Protocol adapters must preserve tool calls, streamed output, terminal events, and raw upstream usage. Reject features that cannot be converted. `/v1beta` is unsupported.
 - Keep inference account pools within one auth mode. Falling back from subscription credentials to paid API keys would cross a billing boundary.
 - `telemetry.go` reserves requests before forwarding and settles usage afterward. Keys have no lifetime request or token limits; an optional `expiresAt` refuses calls at authentication and again at reservation. Provider percentage quotas use separate 5-hour and weekly accounting in `key_percent.go`. Uncertain usage blocks percentage-limited keys, including unfinished reservations recovered after restart, until an explicit provider-quota update clears that flag; preserve these accounting rules.

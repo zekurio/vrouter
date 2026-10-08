@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"math"
-	"net/http"
 	"sync"
 	"time"
 )
@@ -289,13 +288,6 @@ func clonePercentKey(out *keyRecord, key keyRecord) {
 		}
 		out.ProviderQuotas[provider] = quota
 	}
-}
-
-func quotaProvider(r *http.Request) string {
-	if r.URL.Path == "/v1/messages" {
-		return "claude"
-	}
-	return "codex"
 }
 
 // Relative reset countdowns can differ by a second between observations.

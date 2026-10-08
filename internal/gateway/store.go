@@ -1,30 +1,17 @@
 package gateway
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 )
 
-const (
-	// storeStateVersion is the only on-disk schema this build can load. A
-	// different version is refused instead of being partially interpreted.
-	storeStateVersion = 1
-	storeFileName     = "state.json"
-	storeLockName     = "state.lock"
-	// storeMaxBytes bounds how much of a state file is decoded. The file holds
-	// a handful of credentials, so anything larger is treated as corruption.
-	storeMaxBytes = 16 << 20
-)
+const storeStateVersion = 1
 
 // storedAccount is one provider credential owned by this router. It is
 // persisted only in the private state file; tokens must never reach logs,
@@ -63,8 +50,7 @@ type chatGPTRegistration struct {
 	RedirectURI  string `json:"redirect_uri"`
 }
 
-// diskState is the complete persisted state. It is replaced atomically as a
-// whole, so readers never observe a partially written document.
+// diskState holds one gateway's accounts and model settings in the shared file.
 type diskState struct {
 	Version       int                     `json:"version"`
 	Accounts      []storedAccount         `json:"accounts"`
@@ -78,148 +64,50 @@ var (
 	errStoreInUse  = errors.New("gateway: account store is owned by another process")
 )
 
-// accountStore owns a single state.json beneath dir. Access is serialized in
-// memory and ownership is enforced across processes with a non-blocking file
-// lock, so two routers can never write the same state.
+// accountStore is a gateway-scoped view of the shared data store.
+// Only the root view owns the process lock.
 type accountStore struct {
-	mu     sync.Mutex
-	dir    string
-	path   string
-	lock   *os.File
-	state  diskState
-	closed bool
+	data      *dataStore
+	gatewayID string
+	owner     bool
 }
 
-// openStore opens or initializes the store in dir. The directory is created
-// with 0700 permissions and the state and lock files with 0600. A malformed
-// or unsupported state file, or a second owner of the directory, is refused.
 func openStore(dir string) (*accountStore, error) {
-	if strings.TrimSpace(dir) == "" {
-		return nil, errors.New("gateway: account store directory is required")
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("gateway: create account store directory: %w", err)
-	}
-	if err := storeRefuseSymlink(dir); err != nil {
-		return nil, err
-	}
-	info, err := os.Stat(dir)
-	if err != nil {
-		return nil, fmt.Errorf("gateway: open account store directory: %w", err)
-	}
-	if !info.IsDir() {
-		return nil, errors.New("gateway: account store path is not a directory")
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("gateway: restrict account store directory permissions: %w", err)
-	}
-	s := &accountStore{dir: dir, path: filepath.Join(dir, storeFileName)}
-	lock, err := storeAcquireLock(filepath.Join(dir, storeLockName))
+	data, err := openDataStore(dir)
 	if err != nil {
 		return nil, err
 	}
-	s.lock = lock
-	if err := s.load(); err != nil {
-		_ = s.releaseLock()
-		return nil, err
-	}
-	return s, nil
+	return &accountStore{data: data, gatewayID: defaultGatewayID, owner: true}, nil
 }
 
-// close releases the cross-process lock. It is idempotent and safe to call
-// after the server has stopped serving requests.
 func (s *accountStore) close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return nil
+	if s.owner {
+		return s.data.close()
 	}
-	s.closed = true
-	return s.releaseLock()
+	return nil
 }
 
-// snapshot returns a deep copy of the current state. Callers may read and
-// mutate the result freely; the store is unaffected.
 func (s *accountStore) snapshot() diskState {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return storeClone(s.state)
+	s.data.mu.Lock()
+	defer s.data.mu.Unlock()
+	return storeClone(s.data.state.States[s.gatewayID])
 }
 
-// update applies mutate to a private copy of the state and persists it. The
-// in-memory state is swapped only after the file has been replaced
-// atomically, so a failed callback or write leaves both memory and disk on
-// the previous revision.
 func (s *accountStore) update(mutate func(*diskState) error) error {
 	if mutate == nil {
-		return errors.New("gateway: account store update requires a callback")
+		return errors.New("gateway: account update requires a callback")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return errStoreClosed
-	}
-	draft := storeClone(s.state)
-	if err := mutate(&draft); err != nil {
-		return err
-	}
-	storeNormalize(&draft)
-	if err := storeValidate(draft); err != nil {
-		return err
-	}
-	if err := storeWriteFile(s.path, draft); err != nil {
-		return err
-	}
-	s.state = draft
-	return nil
-}
-
-// load reads state.json, or creates it with an empty revision when absent.
-func (s *accountStore) load() error {
-	if err := storeRefuseSymlink(s.path); err != nil {
-		return err
-	}
-	f, err := os.Open(s.path)
-	var data []byte
-	if err == nil {
-		data, err = io.ReadAll(io.LimitReader(f, storeMaxBytes+1))
-		_ = f.Close()
-	}
-	switch {
-	case err == nil:
-		state, err := storeDecode(data)
-		if err != nil {
+	return s.data.update(func(d *diskData) error {
+		state, ok := d.States[s.gatewayID]
+		if !ok {
+			return errGatewayNotFound
+		}
+		if err := mutate(&state); err != nil {
 			return err
 		}
-		if err := os.Chmod(s.path, 0o600); err != nil {
-			return fmt.Errorf("gateway: restrict account state permissions: %w", err)
-		}
-		s.state = state
+		d.States[s.gatewayID] = state
 		return nil
-	case errors.Is(err, fs.ErrNotExist):
-		s.state = diskState{Version: storeStateVersion}
-		storeNormalize(&s.state)
-		return storeWriteFile(s.path, s.state)
-	default:
-		return fmt.Errorf("gateway: read account state: %w", err)
-	}
-}
-
-func (s *accountStore) releaseLock() error {
-	if s.lock == nil {
-		return nil
-	}
-	f := s.lock
-	s.lock = nil
-	unlockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	closeErr := f.Close()
-	switch {
-	case unlockErr != nil:
-		return fmt.Errorf("gateway: unlock account store: %w", unlockErr)
-	case closeErr != nil:
-		return fmt.Errorf("gateway: close account store lock: %w", closeErr)
-	}
-	return nil
+	})
 }
 
 func storeAcquireLock(path string) (*os.File, error) {
@@ -244,46 +132,7 @@ func storeAcquireLock(path string) (*os.File, error) {
 	return f, nil
 }
 
-// storeDecode parses a persisted state. Errors never quote file contents
-// beyond what encoding/json reports about structure, and no account value is
-// included by this package.
-func storeDecode(data []byte) (diskState, error) {
-	if len(data) > storeMaxBytes {
-		return diskState{}, errors.New("gateway: account state file is too large")
-	}
-	var state diskState
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&state); err != nil {
-		return diskState{}, errors.New("gateway: account state is malformed")
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return diskState{}, errors.New("gateway: account state is malformed: unexpected trailing data")
-	}
-	if state.Version != storeStateVersion {
-		return diskState{}, fmt.Errorf("gateway: account state version %d is not supported", state.Version)
-	}
-	storeNormalize(&state)
-	if err := storeValidate(state); err != nil {
-		return diskState{}, err
-	}
-	return state, nil
-}
-
-// storeWriteFile replaces path atomically with a private 0600 file: the new
-// content is written to a temporary file in the same directory, fsynced, and
-// renamed over the old revision.
-func storeWriteFile(path string, state diskState) error {
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("gateway: encode account state: %w", err)
-	}
-	data = append(data, '\n')
-	return atomicWritePrivate(path, "account state", data)
-}
-
-// atomicWritePrivate is the shared durable-write primitive for state and
-// registry files. The label only shapes error text.
+// atomicWritePrivate commits the shared data file with private permissions.
 func atomicWritePrivate(path, label string, data []byte) error {
 	if err := storeRefuseSymlink(path); err != nil {
 		return err

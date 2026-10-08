@@ -20,7 +20,6 @@ import (
 func main() {
 	cfg := gateway.Config{
 		DataDir:         os.Getenv("VROUTER_DATA_DIR"),
-		APIKey:          os.Getenv("VROUTER_API_KEY"),
 		AdminToken:      os.Getenv("VROUTER_ADMIN_TOKEN"),
 		PublicURL:       os.Getenv("VROUTER_PUBLIC_URL"),
 		ExternalAuth:    os.Getenv("VROUTER_EXTERNAL_AUTH") == "1",

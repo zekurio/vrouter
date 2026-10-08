@@ -371,7 +371,7 @@ function App() {
       {help && (
         <HelpDialog
           publicUrl={auth?.publicUrl || ""}
-          copy={(value) => void copy(value)}
+          copy={copy}
           onClose={() => setHelp(false)}
         />
       )}

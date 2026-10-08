@@ -240,11 +240,10 @@ func (s *server) ensureWindow(ctx context.Context, account storedAccount) (*time
 	for k, v := range windowStartPayload(model, account.Provider) {
 		values[k], _ = json.Marshal(v)
 	}
-	req, err := requestJSON(ctx, target, values)
+	req, err := providerInferenceRequest(ctx, target, values, account)
 	if err != nil {
 		return nil, errors.New("could not prepare trigger")
 	}
-	providerHeaders(req, account)
 	if account.Provider == "codex" {
 		req.Header.Set("Accept", "text/event-stream")
 	}

@@ -126,7 +126,6 @@ type inferenceKey struct {
 	GatewayID string
 	KeyID     string
 	KeyName   string
-	Legacy    bool
 }
 
 // inferenceAttempt accumulates everything the settlement needs for one
@@ -156,7 +155,7 @@ type inferenceAttempt struct {
 // early, a terminal event without usage, or a truncated body may carry stale
 // or partial usage, so its numbers must not reopen a measured token budget.
 func (a *inferenceAttempt) usageTrusted() bool {
-	if a.stream {
+	if a.usage.stream {
 		return a.usage.terminal && !a.usage.terminalFailure && (a.usage.terminalUsage || a.usage.finalUsage)
 	}
 	return a.bodyComplete
@@ -289,9 +288,13 @@ type usagePayload struct {
 }
 
 type rawUsageEnvelope struct {
-	Type    string          `json:"type"`
-	Usage   json.RawMessage `json:"usage"`
-	Error   json.RawMessage `json:"error"`
+	Type       string          `json:"type"`
+	Usage      json.RawMessage `json:"usage"`
+	Error      json.RawMessage `json:"error"`
+	StopReason string          `json:"stop_reason"`
+	Delta      *struct {
+		StopReason string `json:"stop_reason"`
+	} `json:"delta"`
 	Message *struct {
 		Usage json.RawMessage `json:"usage"`
 	} `json:"message"`
@@ -499,6 +502,9 @@ func (u *usageParser) parseJSON(data []byte) {
 		return
 	}
 	usable := u.applyRawUsage(envelope.Usage)
+	if envelope.StopReason == "max_tokens" || envelope.Delta != nil && envelope.Delta.StopReason == "max_tokens" {
+		u.providerIncomplete = true
+	}
 	if envelope.Message != nil {
 		usable = u.applyRawUsage(envelope.Message.Usage) || usable
 	}

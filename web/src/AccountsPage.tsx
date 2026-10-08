@@ -47,6 +47,13 @@ export function accountLabel(account: Account) {
   return account.email || `${account.provider} account`;
 }
 
+// Badge for an account that is not routing. "connected" (formerly "ready")
+// only says credentials are stored, so it gets no badge of its own.
+export function accountState(account: Account) {
+  if (account.status === "connected" || account.status === "ready") return "";
+  return account.status === "disabled" ? "Disabled" : "Unavailable";
+}
+
 export function resetTime(value?: string) {
   if (!value) return "Reset not reported";
   const minutes = Math.ceil((new Date(value).getTime() - Date.now()) / 60000);
@@ -217,15 +224,20 @@ export function AccountsPage({
                         )}
                         {!on ? (
                           <p>Disabled. Requests skip this account.</p>
+                        ) : accountState(a) ? (
+                          <p className="account-warning">
+                            <Private>
+                              {a.statusMessage ||
+                                "Unavailable. vrouter is not routing to it right now."}
+                            </Private>
+                          </p>
                         ) : (
-                          a.status === "unavailable" && (
-                            <p className="account-warning">
-                              <Private>
-                                {a.statusMessage ||
-                                  "Unavailable. vrouter is not routing to it right now."}
-                              </Private>
-                            </p>
-                          )
+                          <p>
+                            <Private>
+                              {a.statusMessage ||
+                                "Credentials saved. Test a model to check that requests work."}
+                            </Private>
+                          </p>
                         )}
                       </div>
                       <span className="plan account-plan">{a.plan}</span>

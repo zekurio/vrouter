@@ -224,3 +224,15 @@ func requestJSON(ctx context.Context, target string, payload map[string]json.Raw
 	}
 	return req, err
 }
+
+func providerInferenceRequest(ctx context.Context, target string, payload map[string]json.RawMessage, account storedAccount) (*http.Request, error) {
+	prepared, err := claudeOAuthPayload(payload, account)
+	if err != nil {
+		return nil, err
+	}
+	req, err := requestJSON(ctx, target, prepared)
+	if err == nil {
+		providerHeaders(req, account)
+	}
+	return req, err
+}

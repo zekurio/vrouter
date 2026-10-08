@@ -3,6 +3,7 @@ import { Plus, RefreshCw } from "lucide-react";
 import {
   AccountsPage,
   accountLabel,
+  accountState,
   resetTime,
   type Account,
 } from "./AccountsPage";
@@ -294,11 +295,9 @@ export function Workspace({
                           <Private peek>{accountLabel(a)}</Private>
                         </h3>
                         <span className="plan">{a.plan || a.provider}</span>
-                        {a.status !== "ready" && (
+                        {accountState(a) && (
                           <span className={`account-state ${a.status}`}>
-                            {a.status === "disabled"
-                              ? "Disabled"
-                              : "Unavailable"}
+                            {accountState(a)}
                           </span>
                         )}
                       </div>

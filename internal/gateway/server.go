@@ -19,7 +19,7 @@ import (
 )
 
 type Config struct {
-	DataDir, APIKey, AdminToken string
+	DataDir, AdminToken string
 	// PublicURL is the browser-facing HTTP(S) origin, without a path.
 	PublicURL string
 	// ExternalAuth delegates dashboard authentication to a trusted reverse proxy.
@@ -130,9 +130,6 @@ func New(cfg Config, assets fs.FS) (http.Handler, error) {
 		return nil, err
 	}
 	cfg.PublicURL = publicURL
-	if cfg.APIKey != "" && cfg.AdminToken != "" && tokenEqual(cfg.APIKey, cfg.AdminToken) {
-		return nil, errors.New("VROUTER_API_KEY and VROUTER_ADMIN_TOKEN must differ")
-	}
 	if cfg.DataDir == "" {
 		cfg.DataDir = DefaultDataDir()
 		if cfg.DataDir == "" {
@@ -160,15 +157,19 @@ func New(cfg Config, assets fs.FS) (http.Handler, error) {
 // newGateway builds an account store and its handlers. The root authorizes
 // management once and can dispatch to preserved gateway stores via mgmt.
 func newGateway(cfg Config, assets fs.FS) (*server, error) {
+	store, err := openStore(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	return newGatewayStore(cfg, assets, store)
+}
+
+func newGatewayStore(cfg Config, assets fs.FS, store *accountStore) (*server, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = 60 * time.Second
 	noRedirect := func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	s := &server{cfg: cfg, gatewayID: defaultGatewayID, client: &http.Client{Transport: transport, Timeout: 12 * time.Second, CheckRedirect: noRedirect}, streamClient: &http.Client{Transport: transport, CheckRedirect: noRedirect}, quotas: map[string]quotaCache{}, oauth: map[string]oauthSession{}, catalogs: map[string]catalogCache{}, windowWatch: map[string]windowWatch{}}
-	var err error
-	s.store, err = openStore(cfg.DataDir)
-	if err != nil {
-		return nil, err
-	}
+	s.store = store
 	mux := http.NewServeMux()
 	s.mux = mux
 	s.mgmt = http.NewServeMux()
@@ -194,7 +195,7 @@ func newGateway(cfg Config, assets fs.FS) (*server, error) {
 		{"GET /api/gateways", s.gateways},
 	}
 	for _, route := range management {
-		mux.HandleFunc(route.pattern, s.authorize(s.legacyDispatch))
+		mux.HandleFunc(route.pattern, s.authorize(s.dispatchManagement))
 		s.mgmt.HandleFunc(route.pattern, route.handler)
 	}
 	unknown := func(w http.ResponseWriter, r *http.Request) {
@@ -285,9 +286,6 @@ func (s *server) authorize(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *server) hasClientKey() bool {
-	if s.cfg.APIKey != "" {
-		return true
-	}
 	return s.manager != nil && s.manager.hasKeys(s.gatewayID)
 }
 
@@ -306,7 +304,7 @@ func (s *server) state(w http.ResponseWriter, r *http.Request) {
 		state.Warnings = append(state.Warnings, "Some provider model catalogs could not be loaded. Reconnect expired accounts or refresh to retry.")
 	}
 	if !s.hasClientKey() {
-		state.Warnings = append(state.Warnings, "Set VROUTER_API_KEY or create a gateway API key to enable inference requests.")
+		state.Warnings = append(state.Warnings, "Create an API key in the Keys page to enable client requests.")
 	}
 	writeJSON(w, 200, state)
 }

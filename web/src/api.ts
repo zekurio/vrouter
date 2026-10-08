@@ -41,6 +41,29 @@ export const statusOf = (err: unknown) =>
 export const errorMessage = (err: unknown, fallback: string) =>
   err instanceof Error && err.message ? err.message : fallback;
 
+// Error bodies are {error: "text"} or {error: {type, message, code}}, and a
+// stream can send the inner object alone. Returns "" when nothing readable is
+// there, so callers can fall back to their own wording.
+export function errorText(body: unknown): string {
+  if (typeof body === "string") return body.trim().slice(0, 500);
+  if (!body || typeof body !== "object") return "";
+  const { error, message, type, code } = body as Record<string, unknown>;
+  if (typeof error === "string") return errorText(error);
+  if (error && typeof error === "object") {
+    const inner = errorText(error);
+    if (inner) return inner;
+  }
+  const text = typeof message === "string" ? message.trim().slice(0, 500) : "";
+  const tags = [type, code].filter(
+    (tag) =>
+      (typeof tag === "string" || typeof tag === "number") &&
+      tag !== "" &&
+      tag !== "error",
+  );
+  if (!text) return tags.join(", ");
+  return tags.length ? `${text} (${tags.join(", ")})` : text;
+}
+
 // One client per selected gateway. close() ends it when the selection changes:
 // reads in flight are aborted and later reads are refused, so an old gateway's
 // data cannot land in the new one's pages. Writes already sent are left to
@@ -81,7 +104,7 @@ export function createClient(options: Options) {
     if (response.status === 401 && !closed) options.onUnauthorized?.();
     if (!response.ok)
       throw failure(
-        result?.error || `Request failed (${response.status}).`,
+        errorText(result) || `Request failed (${response.status}).`,
         response.status,
       );
     return result;

@@ -56,7 +56,7 @@ in
       default = null;
       example = "/run/secrets/vrouter_env";
       description = ''
-        Runtime environment file for VROUTER_ADMIN_TOKEN and optional VROUTER_API_KEY.
+        Runtime environment file for VROUTER_ADMIN_TOKEN.
         Required without externalAuth. Use a runtime path, never a Nix store file.
       '';
     };
@@ -77,7 +77,9 @@ in
       after = [ "network-online.target" ];
       environment = {
         VROUTER_ADDR = "${address}:${toString cfg.port}";
-        VROUTER_DATA_DIR = "/var/lib/vrouter";
+        # systemd resolves WorkingDirectory before launch. With DynamicUser,
+        # /var/lib/vrouter can be a symlink, which the data store refuses.
+        VROUTER_DATA_DIR = ".";
         VROUTER_PUBLIC_URL = cfg.publicUrl;
         VROUTER_EXTERNAL_AUTH = if cfg.externalAuth then "1" else "0";
         VROUTER_WINDOW_SKIP_PLANS = lib.concatStringsSep "," cfg.windowSkipPlans;

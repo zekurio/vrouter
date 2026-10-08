@@ -36,11 +36,6 @@ type keyRecord struct {
 	// so a crash cannot hide unfinished work: on load, any nonzero count turns
 	// into PercentUncertain and is cleared.
 	InFlight int `json:"inFlight,omitempty"`
-	// Lifetime limits were replaced by ExpiresAt. These fields only let a
-	// registry written by an older build load; registryNormalize drops them.
-	LegacyLimitRequests  *int64 `json:"limitRequests,omitempty"`
-	LegacyLimitTokens    *int64 `json:"limitTokens,omitempty"`
-	LegacyUsageUncertain *bool  `json:"usageUncertain,omitempty"`
 }
 
 // expired reports whether the key's expiry has passed.
