@@ -90,6 +90,34 @@ func parseResetStatus(provider string, raw []byte) (*bool, *resetStatus) {
 
 var claudeGrantID = regexp.MustCompile(`^[a-z0-9_-]{1,40}$`)
 
+// Only an exhausted weekly allowance justifies spending a reset. Its natural
+// reset time determines priority; 5-hour and unrelated limits never do.
+func (q quotaCache) weeklyResetAt(blockers []string, now time.Time) time.Time {
+	var latest time.Time
+	for _, w := range q.Windows {
+		var key string
+		switch w.ID {
+		case "weekly":
+			key = "seven_day"
+		case "opus", "sonnet":
+			key = "seven_day_" + w.ID
+		default:
+			continue
+		}
+		if !slices.Contains(blockers, key) {
+			continue
+		}
+		// Without a current boundary we cannot rank this account reliably.
+		if w.ResetAt == nil || !w.ResetAt.After(now) {
+			return time.Time{}
+		}
+		if w.ResetAt.After(latest) {
+			latest = *w.ResetAt
+		}
+	}
+	return latest
+}
+
 func (q quotaCache) resetGrant(a storedAccount, blockers []string, now time.Time) (string, bool) {
 	r := q.Resets
 	if len(blockers) == 0 || r == nil || !r.Eligible || r.Available <= 0 || (r.Cooldown != nil && now.Before(*r.Cooldown)) {
@@ -201,24 +229,26 @@ func (s *server) resetExhaustedPool(ctx context.Context, pool []storedAccount, m
 		}
 	}
 	order := make([]int, len(pool))
+	deadlines := make([]time.Time, len(pool))
+	now := time.Now()
 	for i := range order {
 		order[i] = i
+		deadlines[i] = quotas[i].weeklyResetAt(quotaBlockers(pool[i], quotas[i], model, now), now)
 	}
 	sort.SliceStable(order, func(i, j int) bool {
-		count := func(k int) int {
-			if quotas[k].Resets == nil {
-				return 0
-			}
-			return quotas[k].Resets.Available
-		}
-		return count(order[i]) > count(order[j])
+		return deadlines[order[i]].After(deadlines[order[j]])
 	})
 	for _, i := range order {
 		a, q := pool[i], quotas[i]
 		if pendingID != "" && a.ID != pendingID {
 			continue
 		}
-		grant, ok := q.resetGrant(a, quotaBlockers(a, q, model, time.Now()), time.Now())
+		now := time.Now()
+		blockers := quotaBlockers(a, q, model, now)
+		if q.weeklyResetAt(blockers, now).IsZero() {
+			continue
+		}
+		grant, ok := q.resetGrant(a, blockers, now)
 		if !ok && pendingID == "" {
 			continue
 		}

@@ -102,6 +102,12 @@ Clients must replay the complete assistant output when they send tool results. T
 
 Open a model in the UI to copy a request or run **Test this model** with a client key. The test uses the public inference endpoint and counts against that key. It shows the HTTP status, provider error, and reply. It passes only after a complete response. The key stays in memory until you close the dialog or switch gateways. An account marked **Connected** has saved credentials; this does not prove that inference works.
 
+## Automatic usage resets
+
+When a client request finds every account in its provider pool blocked, vrouter refreshes their usage and checks for included resets. It only spends a reset on an account with an exhausted 7-day allowance, choosing the eligible account whose exhausted weekly allowance resets furthest in the future. An exhausted 5-hour window alone never triggers redemption. Accounts without a reported weekly reset time or an available reset are skipped. Claude's model-specific Opus and Sonnet weekly limits count when they block the requested model, and the selected grant must clear every blocking limit on that account.
+
+vrouter confirms fresh usable quota before retrying the request. Pending attempts retain their request ID across restarts and prevent another account's reset from being spent while the outcome is unknown. The provider decides which windows a redeemed reset clears; the weekly-only rule controls when vrouter spends it. Resets are redeemed on demand, not by the background 5-hour window check.
+
 ## Automatic 5-hour windows
 
 vrouter checks every minute whether each enabled subscription account in every gateway has an active 5-hour window, and sends a small request to the ones that do not. Accounts that are idle at the same check start together. vrouter prefers advertised Haiku models for Claude and nano, then mini models for Codex, honors model exclusions, and refuses to substitute a larger model. Catalogs do not expose prices, so these are explicit small-model preferences rather than a live price comparison. Codex uses the lowest reasoning level advertised by that model; Claude sends no thinking configuration and caps output at eight tokens.
