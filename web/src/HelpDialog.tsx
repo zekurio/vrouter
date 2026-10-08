@@ -50,10 +50,6 @@ export function HelpDialog({
           <X size={18} />
         </button>
       </div>
-      <p className="dialog-lead">
-        Give your client a base URL and an API key from the Keys page. Choose
-        any of these protocols for Claude or Codex. Provider limits still apply.
-      </p>
       {addresses.map((a) => (
         <div className="address-field" key={a.label}>
           <span>{a.label}</span>
@@ -69,11 +65,6 @@ export function HelpDialog({
           </div>
         </div>
       ))}
-      <p className="help-note">
-        Anthropic clients such as Claude Code add /v1/messages themselves, so
-        they need the address without /v1. In Delta, choose the Responses API
-        with the /v1 address. Open a model to test the connection with your key.
-      </p>
       <ul className="endpoint-list">
         {endpoints.map((e) => (
           <li key={e.path}>
