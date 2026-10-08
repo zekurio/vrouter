@@ -24,7 +24,7 @@ func (s *server) accounts(ctx context.Context) []Account {
 			name = providerLabel(a.Provider)
 		}
 		status := "connected"
-		note := "Credentials are saved. Use Test this model to check a real request."
+		note := ""
 		if !routableAuth(a) {
 			status = "unavailable"
 			note = "This sign-in method is no longer supported. Add the account using Codex sign-in."

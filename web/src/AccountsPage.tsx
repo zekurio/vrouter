@@ -231,14 +231,7 @@ export function AccountsPage({
                                 "Unavailable. vrouter is not routing to it right now."}
                             </Private>
                           </p>
-                        ) : (
-                          <p>
-                            <Private>
-                              {a.statusMessage ||
-                                "Credentials saved. Test a model to check that requests work."}
-                            </Private>
-                          </p>
-                        )}
+                        ) : null}
                       </div>
                       <span className="plan account-plan">{a.plan}</span>
                       <div className="account-windows">
