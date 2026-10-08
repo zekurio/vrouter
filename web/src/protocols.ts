@@ -14,6 +14,10 @@ export const protocolPath = (protocol: Protocol) =>
 
 const anthropicVersion = "2023-06-01";
 
+// Small output cap used by the connection test and the curl examples.
+// Messages requires max_tokens, so those requests never omit it.
+const defaultMaxOutput = 256;
+
 export function requestBody(
   protocol: Protocol,
   model: string,
@@ -22,7 +26,12 @@ export function requestBody(
 ) {
   const messages = [{ role: "user", content: prompt }];
   if (protocol === "messages")
-    return { model, max_tokens: maxOutput, messages, stream: true };
+    return {
+      model,
+      max_tokens: maxOutput ?? defaultMaxOutput,
+      messages,
+      stream: true,
+    };
   if (protocol === "chat")
     return {
       model,
@@ -57,13 +66,9 @@ export function curlExample(
   const headers = Object.entries(authHeaders(protocol, "$VROUTER_API_KEY"))
     .map(([name, value]) => `-H "${name}: ${value}"`)
     .join(" \\\n  ");
+  const cap = defaultMaxOutput;
   const body = JSON.stringify(
-    requestBody(
-      protocol,
-      model,
-      "Hello",
-      provider.toLowerCase() === "codex" ? undefined : 1024,
-    ),
+    requestBody(protocol, model, "Hello", cap),
     null,
     2,
   );
@@ -80,10 +85,12 @@ export type TestOutcome = {
   text: string;
   detail: string;
   requestId: string;
+  // Client setting names the provider did not use, from the
+  // X-Vrouter-Ignored-Parameters response header. Empty when there are none.
+  ignored: string[];
 };
 
 const testPrompt = "Reply with OK.";
-const testMaxOutput = 256;
 const testTimeout = 60000;
 const maxText = 2000;
 const maxErrorBody = 8192;
@@ -200,12 +207,12 @@ export async function runConnectionTest(options: {
   onText?: (text: string) => void;
 }): Promise<TestOutcome> {
   const { protocol, signal } = options;
-  const outputCap =
-    options.provider.toLowerCase() === "codex" ? undefined : testMaxOutput;
+  const outputCap = defaultMaxOutput;
   const started = performance.now();
   const timeout = AbortSignal.timeout(testTimeout);
   let status = 0;
   let requestId = "";
+  let ignored: string[] = [];
   const progress: Progress = { text: "", detail: "" };
   const outcome = (state: TestOutcome["state"], detail: string) => ({
     state,
@@ -214,6 +221,7 @@ export async function runConnectionTest(options: {
     text: progress.text,
     detail,
     requestId,
+    ignored,
   });
 
   try {
@@ -238,6 +246,10 @@ export async function runConnectionTest(options: {
       response.headers.get("x-request-id") ||
       response.headers.get("request-id") ||
       "";
+    ignored = (response.headers.get("x-vrouter-ignored-parameters") ?? "")
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean);
 
     if (!response.ok) {
       const raw = (await readBounded(response, maxErrorBody)).trim();

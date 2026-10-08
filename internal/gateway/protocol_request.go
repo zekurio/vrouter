@@ -40,6 +40,7 @@ type preparedInference struct {
 	provider, native       string
 	stream, upstreamStream bool
 	includeUsage           bool
+	ignoredParameters      []string
 	payload                map[string]json.RawMessage
 	accounts               []storedAccount
 }
@@ -135,6 +136,7 @@ func (s *server) prepareInference(w http.ResponseWriter, r *http.Request, attemp
 		p.upstream = messagesProtocol
 	}
 	attempt.native = p.native
+	clientPayload := payload
 	if p.client != p.upstream {
 		var err error
 		payload, err = adaptInferenceRequest(payload, p.client, p.upstream)
@@ -149,16 +151,19 @@ func (s *server) prepareInference(w http.ResponseWriter, r *http.Request, attemp
 		if value, exists := payload["store"]; exists && value != false {
 			return nil, 400, "Codex does not support stored responses. Set store to false."
 		}
-		for _, field := range []string{"max_output_tokens", "temperature", "top_p"} {
-			if payload[field] != nil {
-				return nil, 400, "Codex subscription access does not support " + field + ". Omit this field."
-			}
+		var err error
+		p.ignoredParameters, err = normalizeCodexParameters(payload, clientPayload, p.client)
+		if err != nil {
+			return nil, 400, err.Error()
 		}
 		payload["store"], payload["stream"] = false, true
 		p.upstreamStream = true
 		if _, ok := payload["instructions"]; !ok {
 			payload["instructions"] = ""
 		}
+	}
+	if p.client == messagesProtocol && p.upstream != messagesProtocol && object(clientPayload["metadata"])["user_id"] != nil {
+		p.ignoredParameters = append(p.ignoredParameters, "metadata.user_id")
 	}
 	if p.upstream == responsesProtocol {
 		if text, ok := payload["input"].(string); ok {
@@ -175,6 +180,49 @@ func (s *server) prepareInference(w http.ResponseWriter, r *http.Request, attemp
 	return p, 0, ""
 }
 
+// Codex subscription inference accepts output caps but rejects sampling values.
+// Validate client controls, and report only sampling fields omitted upstream.
+func normalizeCodexParameters(payload, clientPayload map[string]any, client wireProtocol) ([]string, error) {
+	ignored := []string{}
+	parameters := []string{"max_output_tokens"}
+	if client == messagesProtocol {
+		parameters = []string{"max_tokens"}
+	} else if client == chatProtocol {
+		parameters = []string{"max_tokens", "max_completion_tokens"}
+	}
+	parameters = append(parameters, "temperature", "top_p")
+	for _, field := range parameters {
+		value := clientPayload[field]
+		if value == nil {
+			continue
+		}
+		n, ok := protocolNumber(value)
+		if !ok {
+			return nil, fmt.Errorf("%s must be a valid number", field)
+		}
+		if strings.HasPrefix(field, "max_") {
+			if !n.IsInt() || n.Sign() <= 0 || !n.Num().IsInt64() {
+				return nil, fmt.Errorf("%s must be a positive integer", field)
+			}
+		} else {
+			upper := int64(1)
+			if field == "temperature" && client != messagesProtocol {
+				upper = 2
+			}
+			if n.Sign() < 0 || n.Cmp(new(big.Rat).SetInt64(upper)) > 0 {
+				return nil, fmt.Errorf("%s must be between 0 and %d", field, upper)
+			}
+		}
+		if field == "temperature" || field == "top_p" {
+			ignored = append(ignored, field)
+		}
+	}
+	for _, field := range []string{"temperature", "top_p"} {
+		delete(payload, field)
+	}
+	return ignored, nil
+}
+
 type protocolBlock struct {
 	kind, text, image, detail, id, name, arguments string
 	result                                         []protocolBlock
@@ -182,6 +230,7 @@ type protocolBlock struct {
 	native                                         map[string]any
 	projectedID                                    string
 	order                                          []any
+	isError                                        bool
 }
 type protocolMessage struct {
 	role   string
@@ -259,12 +308,20 @@ func adaptInferenceRequest(payload map[string]any, source, target wireProtocol) 
 			if r.effort == "none" {
 				out["thinking"] = map[string]any{"type": "disabled"}
 			} else {
+				if r.effort == "ultra" {
+					return nil, unsupported("Claude reasoning effort ultra")
+				}
+				effort := r.effort
+				if effort == "minimal" {
+					effort = "low"
+				}
 				out["thinking"] = map[string]any{"type": "adaptive"}
-				out["output_config"] = map[string]any{"effort": r.effort}
+				out["output_config"] = map[string]any{"effort": effort}
 			}
 		}
 	} else {
 		out["store"] = false
+		out["include"] = []any{"reasoning.encrypted_content"}
 		if r.stop != nil {
 			return nil, unsupported("stop sequences")
 		}
@@ -309,7 +366,11 @@ func adaptInferenceRequest(payload map[string]any, source, target wireProtocol) 
 					input = append(input, map[string]any{"type": "function_call", "call_id": b.id, "name": b.name, "arguments": b.arguments})
 				case "result":
 					flush()
-					input = append(input, map[string]any{"type": "function_call_output", "call_id": b.id, "output": encodeBlocks(b.result, target, "user")})
+					result := encodeBlocks(b.result, target, "user")
+					if b.isError {
+						result = append([]any{map[string]any{"type": "input_text", "text": "Tool execution failed."}}, result...)
+					}
+					input = append(input, map[string]any{"type": "function_call_output", "call_id": b.id, "output": result})
 				default:
 					content = append(content, encodeBlocks([]protocolBlock{b}, target, m.role)...)
 				}
@@ -381,7 +442,7 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 	case responsesProtocol:
 		allowed += " input instructions max_output_tokens reasoning parallel_tool_calls store include text truncation background metadata service_tier"
 	case messagesProtocol:
-		allowed += " messages system max_tokens stop_sequences thinking output_config"
+		allowed += " messages system max_tokens stop_sequences thinking output_config cache_control metadata service_tier"
 	case chatProtocol:
 		allowed += " messages max_tokens max_completion_tokens reasoning_effort parallel_tool_calls stop stream_options n logprobs top_logprobs response_format frequency_penalty presence_penalty service_tier store modalities verbosity"
 	}
@@ -393,14 +454,38 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 	}
 	if p["include"] != nil {
 		a, ok := p["include"].([]any)
-		if !ok || len(a) != 0 {
+		if !ok {
 			return r, unsupported("include")
+		}
+		for _, value := range a {
+			if value != "reasoning.encrypted_content" {
+				return r, unsupported("include value")
+			}
 		}
 	}
 	if p["metadata"] != nil {
 		m, ok := p["metadata"].(map[string]any)
-		if !ok || len(m) != 0 {
+		if !ok {
 			return r, unsupported("metadata")
+		}
+		if source == messagesProtocol {
+			for field := range m {
+				if field != "user_id" {
+					return r, unsupported("metadata field")
+				}
+			}
+			if value := m["user_id"]; value != nil {
+				if _, ok := value.(string); !ok {
+					return r, unsupported("metadata.user_id")
+				}
+			}
+		} else if len(m) != 0 {
+			return r, unsupported("metadata")
+		}
+	}
+	if source == messagesProtocol {
+		if err := validateClaudeCacheControl(p["cache_control"]); err != nil {
+			return r, err
 		}
 	}
 	for _, field := range []string{"truncation", "service_tier"} {
@@ -514,7 +599,10 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 					continue
 				}
 				if t == "function_call" {
-					if err := fields(m, "type id status call_id name arguments"); err != nil {
+					if err := fields(m, "type id status call_id name arguments caller"); err != nil {
+						return r, err
+					}
+					if err := validateDirectCaller(m["caller"]); err != nil {
 						return r, err
 					}
 					b := protocolBlock{kind: "tool", id: str(m["call_id"]), name: str(m["name"]), arguments: str(m["arguments"])}
@@ -525,7 +613,10 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 					continue
 				}
 				if t == "function_call_output" {
-					if err := fields(m, "type id status call_id output"); err != nil {
+					if err := fields(m, "type id status call_id output caller"); err != nil {
+						return r, err
+					}
+					if err := validateDirectCaller(m["caller"]); err != nil {
 						return r, err
 					}
 					b, err := parseBlocks(m["output"], responsesProtocol)
@@ -591,6 +682,9 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 			if text, ok := r.stop.(string); ok {
 				r.stop = []any{text}
 			}
+		}
+		if stops, ok := r.stop.([]any); ok && len(stops) == 0 {
+			r.stop = nil
 		}
 		if p["system"] != nil {
 			b, err := parseBlocks(p["system"], source)
@@ -706,16 +800,37 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 				if o == nil {
 					return r, unsupported("thinking")
 				}
-				if err := fields(o, "type"); err != nil {
+				if err := fields(o, "type budget_tokens display"); err != nil {
 					return r, err
+				}
+				if display := o["display"]; display != nil && display != "summarized" {
+					return r, unsupported("thinking.display")
 				}
 				switch str(o["type"]) {
 				case "disabled":
+					if o["budget_tokens"] != nil {
+						return r, unsupported("disabled thinking budget")
+					}
 					r.effort = "none"
 				case "adaptive":
+					if o["budget_tokens"] != nil {
+						return r, unsupported("adaptive thinking budget")
+					}
 					r.effort = "high"
+				case "enabled":
+					budget, ok := protocolNumber(o["budget_tokens"])
+					if !ok || !budget.IsInt() || !budget.Num().IsInt64() || budget.Cmp(big.NewRat(1024, 1)) < 0 {
+						return r, fmt.Errorf("thinking.budget_tokens must be an integer of at least 1024")
+					}
+					if r.maxTokens != nil {
+						maximum, ok := protocolNumber(r.maxTokens)
+						if !ok || budget.Cmp(maximum) >= 0 {
+							return r, fmt.Errorf("thinking.budget_tokens must be less than max_tokens")
+						}
+					}
+					r.effort = thinkingBudgetEffort(budget.Num().Int64())
 				default:
-					return r, unsupported("thinking type or fixed thinking budget")
+					return r, unsupported("thinking type")
 				}
 			}
 			if p["output_config"] != nil {
@@ -731,10 +846,12 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 						return r, unsupported("output_config.effort")
 					}
 				}
-				if r.effort == "none" {
-					return r, unsupported("effort with disabled thinking")
+				if o["effort"] != nil {
+					if r.effort == "none" {
+						return r, unsupported("effort with disabled thinking")
+					}
+					r.effort = str(o["effort"])
 				}
-				r.effort = str(o["effort"])
 			}
 		} else {
 			if p["reasoning_effort"] != nil {
@@ -745,7 +862,7 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 			r.effort = str(p["reasoning_effort"])
 		}
 	}
-	if r.effort != "" && r.effort != "none" && r.effort != "low" && r.effort != "medium" && r.effort != "high" && r.effort != "xhigh" {
+	if r.effort != "" && r.effort != "none" && r.effort != "minimal" && r.effort != "low" && r.effort != "medium" && r.effort != "high" && r.effort != "xhigh" && r.effort != "max" && r.effort != "ultra" {
 		return r, unsupported("reasoning effort " + r.effort)
 	}
 	if p["tools"] != nil {
@@ -771,8 +888,31 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 				}
 			}
 			if source == messagesProtocol {
-				if err := fields(t, "name description input_schema strict"); err != nil {
+				var err error
+				t, err = withoutClaudeCacheControl(t)
+				if err != nil {
 					return r, err
+				}
+				if err := fields(t, "name description input_schema strict type defer_loading allowed_callers input_examples"); err != nil {
+					return r, err
+				}
+				if t["type"] != nil && t["type"] != "custom" {
+					return r, unsupported("server tool type")
+				}
+				if t["defer_loading"] != nil && t["defer_loading"] != false {
+					return r, unsupported("deferred tool loading")
+				}
+				if t["allowed_callers"] != nil {
+					callers, ok := t["allowed_callers"].([]any)
+					if !ok || len(callers) != 1 || callers[0] != "direct" {
+						return r, unsupported("tool.allowed_callers")
+					}
+				}
+				if t["input_examples"] != nil {
+					examples, ok := t["input_examples"].([]any)
+					if !ok || len(examples) != 0 {
+						return r, unsupported("tool.input_examples")
+					}
 				}
 				tool := map[string]any{"type": "function", "name": t["name"], "parameters": t["input_schema"], "strict": false}
 				if t["description"] != nil {
@@ -894,22 +1034,95 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 }
 
 func defaultProtocolNumber(value any, want int64) bool {
+	rat, ok := protocolNumber(value)
+	return ok && rat.Cmp(new(big.Rat).SetInt64(want)) == 0
+}
+
+func protocolNumber(value any) (*big.Rat, bool) {
 	n, ok := value.(json.Number)
 	if !ok {
-		return false
+		return nil, false
 	}
 	text := n.String()
 	if len(text) > 128 {
-		return false
+		return nil, false
 	}
 	if i := strings.IndexAny(text, "eE"); i >= 0 {
 		exponent, err := strconv.Atoi(text[i+1:])
 		if err != nil || exponent < -1000 || exponent > 1000 {
-			return false
+			return nil, false
 		}
 	}
-	rat, ok := new(big.Rat).SetString(text)
-	return ok && rat.Cmp(new(big.Rat).SetInt64(want)) == 0
+	return new(big.Rat).SetString(text)
+}
+
+// A fixed Claude budget becomes an approximate effort hint in Responses.
+// These ranges do not impose a reasoning-token budget on the target provider.
+func thinkingBudgetEffort(budget int64) string {
+	switch {
+	case budget <= 1024:
+		return "low"
+	case budget <= 8192:
+		return "medium"
+	case budget <= 24576:
+		return "high"
+	default:
+		return "xhigh"
+	}
+}
+
+func validateClaudeCacheControl(value any) error {
+	if value == nil {
+		return nil
+	}
+	cache := object(value)
+	if cache == nil {
+		return unsupported("cache_control")
+	}
+	if err := fields(cache, "type ttl"); err != nil {
+		return err
+	}
+	if cache["type"] != "ephemeral" {
+		return unsupported("cache_control.type")
+	}
+	if ttl := cache["ttl"]; ttl != nil && ttl != "5m" && ttl != "1h" {
+		return unsupported("cache_control.ttl")
+	}
+	return nil
+}
+
+func withoutClaudeCacheControl(value map[string]any) (map[string]any, error) {
+	cache, exists := value["cache_control"]
+	if !exists {
+		return value, nil
+	}
+	if err := validateClaudeCacheControl(cache); err != nil {
+		return nil, err
+	}
+	cloned := make(map[string]any, len(value))
+	for field, v := range value {
+		if field != "cache_control" {
+			cloned[field] = v
+		}
+	}
+	return cloned, nil
+}
+
+func validateDirectCaller(value any) error {
+	if value == nil {
+		return nil
+	}
+	caller := object(value)
+	if caller == nil {
+		return unsupported("tool caller")
+	}
+	if err := fields(caller, "type"); err != nil {
+		return err
+	}
+	if caller["type"] != "direct" {
+		return unsupported("tool caller")
+	}
+	return nil
 }
 
 func plainTextFormat(value any) error {
@@ -961,6 +1174,13 @@ func parseBlocks(value any, source wireProtocol) ([]protocolBlock, error) {
 		b := object(value)
 		if b == nil {
 			return nil, unsupported("content block")
+		}
+		if source == messagesProtocol {
+			var err error
+			b, err = withoutClaudeCacheControl(b)
+			if err != nil {
+				return nil, err
+			}
 		}
 		switch str(b["type"]) {
 		case "refusal":
@@ -1042,7 +1262,10 @@ func parseBlocks(value any, source wireProtocol) ([]protocolBlock, error) {
 			}
 			blocks = append(blocks, protocolBlock{kind: "image", image: image, detail: detail})
 		case "tool_use":
-			if err := fields(b, "type id name input"); err != nil {
+			if err := fields(b, "type id name input caller"); err != nil {
+				return nil, err
+			}
+			if err := validateDirectCaller(b["caller"]); err != nil {
 				return nil, err
 			}
 			args, err := json.Marshal(b["input"])
@@ -1058,8 +1281,10 @@ func parseBlocks(value any, source wireProtocol) ([]protocolBlock, error) {
 			if err := fields(b, "type tool_use_id content is_error"); err != nil {
 				return nil, err
 			}
-			if b["is_error"] == true {
-				return nil, unsupported("tool_result.is_error")
+			if value := b["is_error"]; value != nil {
+				if _, ok := value.(bool); !ok {
+					return nil, unsupported("tool_result.is_error")
+				}
 			}
 			content, err := parseBlocks(b["content"], source)
 			if err != nil {
@@ -1068,7 +1293,7 @@ func parseBlocks(value any, source wireProtocol) ([]protocolBlock, error) {
 			if str(b["tool_use_id"]) == "" {
 				return nil, fmt.Errorf("Tool results need a call ID")
 			}
-			blocks = append(blocks, protocolBlock{kind: "result", id: str(b["tool_use_id"]), result: content})
+			blocks = append(blocks, protocolBlock{kind: "result", id: str(b["tool_use_id"]), result: content, isError: b["is_error"] == true})
 		default:
 			return nil, unsupported("content block " + str(b["type"]))
 		}
@@ -1101,7 +1326,11 @@ func encodeBlocks(blocks []protocolBlock, target wireProtocol, role string) []an
 			case "tool":
 				out = append(out, map[string]any{"type": "tool_use", "id": b.id, "name": b.name, "input": objectFromJSON(b.arguments)})
 			case "result":
-				out = append(out, map[string]any{"type": "tool_result", "tool_use_id": b.id, "content": encodeBlocks(b.result, target, "user")})
+				result := map[string]any{"type": "tool_result", "tool_use_id": b.id, "content": encodeBlocks(b.result, target, "user")}
+				if b.isError {
+					result["is_error"] = true
+				}
+				out = append(out, result)
 			}
 		} else {
 			if b.kind == "text" {

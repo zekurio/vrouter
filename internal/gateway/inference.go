@@ -83,6 +83,9 @@ func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request
 		s.finishAttempt(attempt, recorder)
 		return
 	}
+	if len(prepared.ignoredParameters) > 0 {
+		w.Header().Set("X-Vrouter-Ignored-Parameters", strings.Join(prepared.ignoredParameters, ", "))
+	}
 	principal.Provider = prepared.provider
 	attempt.principal = principal
 	unlock, available := s.lockPercentUsage(principal.Provider)

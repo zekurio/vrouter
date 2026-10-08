@@ -80,8 +80,6 @@ export function ConnectionTest({
         Sends "Reply with OK." to {base}
         {protocolPath(protocol)} with your API key. The request counts against
         that key like any other. The key is not saved.
-        {provider.toLowerCase() === "codex" &&
-          " Codex subscription accounts do not accept an output token cap."}
       </p>
       <div className="connection-test-form">
         <input
@@ -122,6 +120,9 @@ export function ConnectionTest({
             {facts && <span>{facts.filter(Boolean).join(" · ")}</span>}
           </div>
           {outcome?.detail && <p>{outcome.detail}</p>}
+          {outcome && outcome.ignored.length > 0 && (
+            <p>Provider does not use: {outcome.ignored.join(", ")}.</p>
+          )}
           {reply && <pre tabIndex={0}>{reply}</pre>}
         </div>
       )}

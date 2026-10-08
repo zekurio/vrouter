@@ -67,7 +67,7 @@ func decodeReasoningState(value string) (protocolBlock, error) {
 		if str(item["type"]) != "reasoning" {
 			return b, unsupported("invalid Responses reasoning state")
 		}
-		if err := fields(item, "type id status summary encrypted_content"); err != nil {
+		if err := validateResponseReasoningContent(item); err != nil {
 			return b, err
 		}
 		b.text, err = reasoningSummary(item["summary"])
@@ -112,14 +112,51 @@ func reasoningSummary(value any) (string, error) {
 }
 
 func parseResponseReasoning(item map[string]any) (protocolBlock, error) {
-	if err := fields(item, "type id status summary encrypted_content"); err != nil {
+	if err := validateResponseReasoningContent(item); err != nil {
 		return protocolBlock{}, err
 	}
 	if value := str(item["encrypted_content"]); value != "" {
 		return decodeReasoningState(value)
 	}
 	text, err := reasoningSummary(item["summary"])
+	if err == nil {
+		for _, value := range list(item["content"]) {
+			if text != "" {
+				text += "\n\n"
+			}
+			text += str(object(value)["text"])
+		}
+	}
 	return protocolBlock{kind: "reasoning", text: text}, err
+}
+
+func validateResponseReasoningContent(item map[string]any) error {
+	if err := fields(item, "type id status summary encrypted_content content"); err != nil {
+		return err
+	}
+	if item["content"] == nil {
+		return nil
+	}
+	content, ok := item["content"].([]any)
+	if !ok {
+		return unsupported("reasoning content")
+	}
+	for _, value := range content {
+		part := object(value)
+		if part == nil {
+			return unsupported("reasoning content part")
+		}
+		if err := fields(part, "type text"); err != nil {
+			return err
+		}
+		if part["type"] != "reasoning_text" {
+			return unsupported("reasoning content part")
+		}
+		if _, ok := part["text"].(string); !ok {
+			return unsupported("reasoning content text")
+		}
+	}
+	return nil
 }
 
 func prepareReplyReasoning(b *replyBlock) error {

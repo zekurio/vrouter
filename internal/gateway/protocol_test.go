@@ -144,8 +144,8 @@ func TestProtocolsPreserveConversationAndRejectLoss(t *testing.T) {
 		}
 	}
 	p, _ = decodeProtocolJSON([]byte(`{"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":2048},"max_tokens":4096}`))
-	if _, err := adaptInferenceRequest(p, messagesProtocol, responsesProtocol); err == nil {
-		t.Error("fixed reasoning budget was lost")
+	if adapted, err := adaptInferenceRequest(p, messagesProtocol, responsesProtocol); err != nil || object(adapted["reasoning"])["effort"] != "medium" {
+		t.Fatalf("fixed reasoning budget was not mapped to effort: %+v %v", adapted, err)
 	}
 }
 
@@ -268,8 +268,8 @@ func TestCodexNonstreamKeepsNativeResponse(t *testing.T) {
 		t.Fatalf("raw accounting %+v", row)
 	}
 	w = call(t, s, "POST", "/v1/responses", `{"model":"model","input":"hello","max_output_tokens":256}`, secret)
-	if w.Code != 400 || !strings.Contains(w.Body.String(), "max_output_tokens") {
-		t.Fatalf("cap silently lost %d %s", w.Code, w.Body.String())
+	if w.Code != 200 || w.Header().Get("X-Vrouter-Ignored-Parameters") != "" {
+		t.Fatalf("valid cap rejected or ignored %d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -595,7 +595,7 @@ func signedClaudeStream() string {
 }
 
 func opaqueResponsesStream() string {
-	item := `{"id":"reason_test","type":"reasoning","summary":[{"type":"summary_text","text":"I should call lookup."}],"encrypted_content":"opaque-openai-state"}`
+	item := `{"id":"reason_test","type":"reasoning","content":[],"summary":[{"type":"summary_text","text":"I should call lookup."}],"encrypted_content":"opaque-openai-state"}`
 	tool := `{"id":"fc_test","type":"function_call","call_id":"call_test","name":"lookup","arguments":"{\"city\":\"Vienna\"}"}`
 	return frame("response.created", `{"type":"response.created","response":{"id":"resp_test","status":"in_progress"}}`) +
 		frame("response.output_item.added", `{"type":"response.output_item.added","output_index":0,"item":{"id":"reason_test","type":"reasoning","summary":[]}}`) +
@@ -725,7 +725,7 @@ func TestProtocolSignedReasoningToolCycle(t *testing.T) {
 					} else {
 						body := `{"id":"msg","content":[{"type":"thinking","thinking":"I should call lookup.","signature":"signed-claude-state"},{"type":"tool_use","id":"call_test","name":"lookup","input":{"city":"Vienna"}}],"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":2}}`
 						if source == responsesProtocol {
-							body = `{"id":"resp","status":"completed","output":[{"id":"reason_test","type":"reasoning","summary":[{"type":"summary_text","text":"I should call lookup."}],"encrypted_content":"opaque-openai-state"},{"id":"fc_test","type":"function_call","call_id":"call_test","name":"lookup","arguments":"{\"city\":\"Vienna\"}"}],"usage":{"input_tokens":1,"output_tokens":2}}`
+							body = `{"id":"resp","status":"completed","output":[{"id":"reason_test","type":"reasoning","content":[],"summary":[{"type":"summary_text","text":"I should call lookup."}],"encrypted_content":"opaque-openai-state"},{"id":"fc_test","type":"function_call","call_id":"call_test","name":"lookup","arguments":"{\"city\":\"Vienna\"}"}],"usage":{"input_tokens":1,"output_tokens":2}}`
 						}
 						parsed, _ := decodeProtocolJSON([]byte(body))
 						if err := consumeProtocolJSON(parsed, source, sink); err != nil {
