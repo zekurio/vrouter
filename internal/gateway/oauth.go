@@ -340,7 +340,7 @@ func (s *server) completeOAuth(ctx context.Context, id string, q url.Values) err
 		a.Label = a.Email
 	}
 	if a.Label == "" {
-		a.Label = provider(a.Provider)
+		a.Label = providerLabel(a.Provider)
 	}
 	err = s.store.update(func(d *diskState) error {
 		selected, same := -1, -1

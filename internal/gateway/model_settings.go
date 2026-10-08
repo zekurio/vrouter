@@ -51,10 +51,8 @@ func policyRevision(p modelPolicy) string {
 }
 func policyChannel(provider string) string {
 	switch provider {
-	case "Codex":
-		return "codex"
-	case "Claude":
-		return "claude"
+	case "codex", "claude":
+		return provider
 	}
 	return ""
 }
@@ -83,7 +81,7 @@ func (s *server) readModelSettings(ctx context.Context) (modelSettings, modelPol
 		rows[modelKey(m.Provider, m.ID)] = m
 	}
 	// Hidden/renamed models remain editable even when no account advertises them.
-	for _, name := range []string{"Codex", "Claude"} {
+	for _, name := range []string{"codex", "claude"} {
 		channel := policyChannel(name)
 		ids := append([]string{}, p.Excluded[channel]...)
 		for _, a := range p.Aliases[channel] {

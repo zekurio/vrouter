@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { LogIn, Plus, Trash2 } from "lucide-react";
 import { ConnectDialog, connectable } from "./ConnectDialog";
-import { ProviderBrand, providerColor } from "./ProviderBrand";
+import { ProviderBrand, providerColor, providerLabel } from "./ProviderBrand";
 import { Private, usePrivateLabel } from "./Privacy";
 import { isDialogBackdropClick } from "./dialog";
 import type { APIRequest } from "./api";
@@ -44,7 +44,7 @@ type Props = {
 };
 
 export function accountLabel(account: Account) {
-  return account.email || `${account.provider} account`;
+  return account.email || `${providerLabel(account.provider)} account`;
 }
 
 // Badge for an account that is not routing. "connected" (formerly "ready")
@@ -160,7 +160,7 @@ export function AccountsPage({
           >
             <div className="model-group-heading">
               <ProviderBrand provider={provider} />
-              <h2 id={`pool-${provider}`}>{provider}</h2>
+              <h2 id={`pool-${provider}`}>{providerLabel(provider)}</h2>
               <span>
                 {pool.length} {pool.length === 1 ? "account" : "accounts"}
               </span>
@@ -171,7 +171,7 @@ export function AccountsPage({
                     disabled={!live}
                     onClick={() => {
                       setReauth(null);
-                      setConnect(provider.toLowerCase());
+                      setConnect(provider);
                     }}
                   >
                     <Plus size={14} /> Add account
@@ -293,7 +293,7 @@ export function AccountsPage({
                             disabled={!live || busy === a.id}
                             onClick={() => {
                               setReauth(a);
-                              setConnect(provider.toLowerCase());
+                              setConnect(provider);
                             }}
                           >
                             <LogIn size={14} />
@@ -334,9 +334,9 @@ export function AccountsPage({
               Remove <Private>{accountLabel(removing)}</Private>?
             </h2>
             <p>
-              vrouter deletes the stored {removing.provider} sign-in and stops
-              routing requests to it. To use the account again, sign in from Add
-              account.
+              vrouter deletes the stored {providerLabel(removing.provider)}{" "}
+              sign-in and stops routing requests to it. To use the account
+              again, sign in from Add account.
             </p>
             {removeError && (
               <div className="notice error" role="alert">

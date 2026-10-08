@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Ban, Check, Copy, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { errorMessage, isStale, type APIRequest } from "./api";
+import { providerLabel } from "./ProviderBrand";
 import { Modal } from "./Modal";
 import {
   expiryText,
@@ -232,9 +233,7 @@ export function KeysPage({
                           const usage = key.providerUsage?.[provider];
                           return (
                             <div key={provider}>
-                              <strong>
-                                {provider === "claude" ? "Claude" : "Codex"}
-                              </strong>
+                              <strong>{providerLabel(provider)}</strong>
                               {(["fiveHour", "sevenDay"] as const)
                                 .filter((window) => q[window] != null)
                                 .map((window) => {
@@ -513,7 +512,7 @@ function KeyDialog({
           </p>
           {["claude", "codex"].map((provider) => (
             <div className="provider-quota-inputs" key={provider}>
-              <strong>{provider === "claude" ? "Claude" : "Codex"}</strong>
+              <strong>{providerLabel(provider)}</strong>
               {(["fiveHour", "sevenDay"] as const).map((window) => (
                 <div className="field" key={window}>
                   <label htmlFor={provider + window}>

@@ -315,7 +315,7 @@ func planName(provider, value string) string {
 	if value == "" {
 		return ""
 	}
-	if provider == "Codex" {
+	if provider == "codex" {
 		switch strings.ToLower(value) {
 		case "pro":
 			return "Pro 20x"
@@ -329,18 +329,29 @@ func planName(provider, value string) string {
 func provider(value string) string {
 	switch strings.ToLower(value) {
 	case "openai", "codex":
-		return "Codex"
+		return "codex"
 	case "anthropic", "claude":
-		return "Claude"
+		return "claude"
 	case "xai", "x-ai", "grok":
-		return "Grok"
+		return "grok"
 	case "google", "gemini":
-		return "Gemini"
+		return "gemini"
 	case "":
-		return "Other"
+		return "other"
 	default:
 		return value
 	}
+}
+
+// providerLabel names a provider where no account label or email is known.
+func providerLabel(value string) string {
+	switch provider(value) {
+	case "codex":
+		return "Codex"
+	case "claude":
+		return "Claude"
+	}
+	return value
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

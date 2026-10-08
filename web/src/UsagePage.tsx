@@ -10,7 +10,7 @@ import {
 import { RefreshCw } from "lucide-react";
 import { errorMessage, isStale, type APIRequest } from "./api";
 import { Private } from "./Privacy";
-import { ProviderBrand } from "./ProviderBrand";
+import { ProviderBrand, providerColor, providerLabel } from "./ProviderBrand";
 import { Select } from "./Select";
 import {
   filterRequests,
@@ -57,15 +57,9 @@ const outcomes: { value: OutcomeFilter; label: string }[] = [
 ];
 
 // Chart series follow the provider, so a provider keeps its color in every
-// view. Anything else shares the neutral slot.
-const seriesColor = (provider: string) =>
-  provider === "Codex" || provider === "OpenAI"
-    ? "var(--series-1)"
-    : provider === "Claude"
-      ? "var(--series-2)"
-      : "var(--series-other)";
+// view.
 const series = (provider: string) =>
-  ({ "--provider": seriesColor(provider) }) as CSSProperties;
+  ({ "--provider": providerColor(provider) }) as CSSProperties;
 
 const dayLabel = (time: number) =>
   new Date(time).toLocaleDateString(undefined, {
@@ -155,7 +149,7 @@ export function UsagePage({ request, reloadKey }: Props) {
                   <li key={p.name} style={series(p.provider)}>
                     <span className="series-key" aria-hidden="true" />
                     <ProviderBrand provider={p.provider} small />
-                    <strong>{p.name}</strong>
+                    <strong>{providerLabel(p.provider)}</strong>
                     <span>{plural(p.requests, "request")}</span>
                     <b>{money(p.cost)}</b>
                     <p>
@@ -464,7 +458,7 @@ function CostChart({ usage }: { usage: Usage }) {
               <div key={p.name} style={series(p.provider)}>
                 <span className="series-key" aria-hidden="true" />
                 <strong>{money(at.byProvider[p.name] ?? 0)}</strong>
-                {p.name}
+                {providerLabel(p.provider)}
               </div>
             ))}
             {providers.length > 1 && (
@@ -636,7 +630,7 @@ function Row({ record: r }: { record: RequestRecord }) {
       </td>
       <td>{keyLabel(r)}</td>
       <td>
-        {r.provider || "Not routed"}
+        {r.provider ? providerLabel(r.provider) : "Not routed"}
         {r.accountId && (
           <span className="cell-sub">
             <Private>{r.accountId}</Private>

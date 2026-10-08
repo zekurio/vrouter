@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Check, ExternalLink, RefreshCw, X } from "lucide-react";
 import type { APIRequest } from "./AccountsPage";
-import { ProviderBrand, providerColor } from "./ProviderBrand";
+import { ProviderBrand, providerColor, providerLabel } from "./ProviderBrand";
 
 // Providers vrouter can sign in to. Codex is the pool for OpenAI sign-in.
-export const connectable = ["Codex", "Claude"];
+export const connectable = ["codex", "claude"];
 
 type Connection = {
   id: string;
@@ -53,7 +53,8 @@ export function ConnectDialog({
   const onConnectedRef = useRef(onConnected);
   onConnectedRef.current = onConnected;
   const live = useRef<Connection | null>(null);
-  const name = connectable.find((p) => p.toLowerCase() === provider) || "";
+  const id = connectable.includes(provider) ? provider : "";
+  const name = id && providerLabel(id);
   // Only a live session may be linked. Controls without one keep their space.
   const ready = phase === "pending" ? session : null;
   const manualCode = session?.flow === "code";
@@ -207,7 +208,7 @@ export function ConnectDialog({
     <dialog
       ref={dialog}
       className="connect-dialog"
-      style={{ "--provider": providerColor(name) } as CSSProperties}
+      style={{ "--provider": providerColor(id) } as CSSProperties}
       onCancel={(e) => {
         e.preventDefault();
         onClose();
@@ -246,12 +247,12 @@ export function ConnectDialog({
               <button
                 key={p}
                 style={{ "--provider": providerColor(p) } as CSSProperties}
-                onClick={() => choose(p.toLowerCase())}
+                onClick={() => choose(p)}
               >
                 <ProviderBrand provider={p} />
                 <span>
-                  <strong>Sign in with {p}</strong>
-                  {p === "Codex"
+                  <strong>Sign in with {providerLabel(p)}</strong>
+                  {p === "codex"
                     ? "ChatGPT subscription"
                     : "Claude subscription"}
                 </span>

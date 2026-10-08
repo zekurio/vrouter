@@ -1,16 +1,24 @@
 import type { CSSProperties } from "react";
 
+// Providers are identified by the lower-case ids the gateway stores.
+const labels: Record<string, string> = {
+  codex: "Codex",
+  claude: "Claude",
+  grok: "Grok",
+  gemini: "Gemini",
+  other: "Other",
+};
+export const providerLabel = (provider: string) => labels[provider] || provider;
 export const providerName = (provider: string) =>
-  provider === "Codex" ? "OpenAI" : provider;
-const colors: Record<string, string> = {
-  Codex: "#79bce9",
-  OpenAI: "#79bce9",
-  Claude: "#e6a27b",
-  Grok: "#87c99b",
-  Gemini: "#b6a3eb",
+  provider === "codex" ? "OpenAI" : providerLabel(provider);
+const brands: Record<string, string> = {
+  codex: "openai",
+  claude: "claude",
+  grok: "xai",
+  gemini: "gemini",
 };
 export const providerColor = (provider: string) =>
-  colors[provider] || "#b0b4bd";
+  `var(--brand-${brands[provider] ?? "other"})`;
 export function ProviderBrand({
   provider,
   small = false,
@@ -18,15 +26,8 @@ export function ProviderBrand({
   provider: string;
   small?: boolean;
 }) {
-  const asset =
-    provider === "Codex" || provider === "OpenAI"
-      ? "openai"
-      : provider === "Claude"
-        ? "claude"
-        : provider === "Grok"
-          ? "xai"
-          : null;
-  if (!asset) return null;
+  const asset = brands[provider];
+  if (!asset || asset === "gemini") return null;
   return (
     <span
       className={`provider-mark ${small ? "small" : ""}`}

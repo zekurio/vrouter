@@ -21,6 +21,7 @@ import { Private } from "./Privacy";
 import {
   ProviderBrand as Brand,
   providerColor as color,
+  providerLabel,
 } from "./ProviderBrand";
 import { UsagePage } from "./UsagePage";
 
@@ -227,11 +228,11 @@ export function Workspace({
                             title={
                               filter === p
                                 ? "Show all pools"
-                                : `Show only ${p} accounts`
+                                : `Show only ${providerLabel(p)} accounts`
                             }
                             onClick={() => setPool(filter === p ? "" : p)}
                           >
-                            {p}
+                            {providerLabel(p)}
                           </button>
                         ) : (
                           p
@@ -294,7 +295,9 @@ export function Workspace({
                         <h3>
                           <Private peek>{accountLabel(a)}</Private>
                         </h3>
-                        <span className="plan">{a.plan || a.provider}</span>
+                        <span className="plan">
+                          {a.plan || providerLabel(a.provider)}
+                        </span>
                         {accountState(a) && (
                           <span className={`account-state ${a.status}`}>
                             {accountState(a)}

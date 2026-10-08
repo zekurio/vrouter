@@ -21,7 +21,7 @@ func (s *server) accounts(ctx context.Context) []Account {
 			name = a.Email
 		}
 		if name == "" {
-			name = provider(a.Provider)
+			name = providerLabel(a.Provider)
 		}
 		status := "connected"
 		note := "Credentials are saved. Use Test this model to check a real request."
