@@ -1,4 +1,5 @@
-// Management API client.
+// Management API client. With an admin token, the browser sends the sign-in
+// cookie on its own; this code never holds the token after sign-in.
 
 export type APIRequest = <T>(
   path: string,
@@ -19,8 +20,6 @@ export const gatewayHeader = "X-Vrouter-Gateway";
 type Options = {
   // Gateway every request is scoped to. Omit for the auth and gateway-list calls.
   gateway?: string;
-  // Read on each call. The admin token lives in memory only.
-  token: () => string;
   onUnauthorized?: () => void;
   fetch?: typeof fetch;
   timeout?: number;
@@ -77,14 +76,12 @@ export function createClient(options: Options) {
   const request: APIRequest = async (path, method = "GET", body) => {
     const read = method === "GET";
     if (closed && method !== "DELETE") throw stale();
-    const token = options.token();
     const timeout = AbortSignal.timeout(options.timeout ?? 15000);
     let response: Response;
     try {
       response = await send(path, {
         method,
         headers: {
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
           ...(options.gateway ? { [gatewayHeader]: options.gateway } : {}),
           ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
         },

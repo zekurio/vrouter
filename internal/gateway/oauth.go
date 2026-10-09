@@ -384,6 +384,7 @@ func (s *server) completeOAuth(ctx context.Context, id string, q url.Values) err
 	s.catalogMu.Unlock()
 	s.quotaMu.Lock()
 	delete(s.quotas, a.ID)
+	delete(s.lastQuotas, a.ID)
 	s.quotaMu.Unlock()
 	session.Completed = true
 	session.Verifier = ""

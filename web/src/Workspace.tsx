@@ -48,7 +48,6 @@ type Props = {
   gateway: Gateway;
   page: Page;
   navigate: (page: Page) => void;
-  token: () => string;
   authMode: AuthMode;
   publicUrl: string;
   onUnauthorized: () => void;
@@ -66,7 +65,6 @@ export function Workspace({
   gateway,
   page,
   navigate,
-  token,
   authMode,
   publicUrl,
   onUnauthorized,
@@ -80,7 +78,6 @@ export function Workspace({
   const [client] = useState(() =>
     createClient({
       gateway: gateway.id,
-      token,
       onUnauthorized: () => handlers.current.onUnauthorized(),
     }),
   );
@@ -89,6 +86,7 @@ export function Workspace({
   const [error, setError] = useState("");
   const refreshSequence = useRef(0);
   const refreshPending = useRef(false);
+  const retry = useRef({ delay: 0, timer: 0 });
   const [pool, setPool] = useState("");
   const [connect, setConnect] = useState<string | null>(null);
   const [creatingKey, setCreatingKey] = useState(false);
@@ -97,11 +95,15 @@ export function Workspace({
     if (background && refreshPending.current) return;
     refreshPending.current = true;
     const sequence = ++refreshSequence.current;
+    clearTimeout(retry.current.timer);
     setLoading(true);
-    setError("");
+    // A background refresh keeps the last error on screen until it succeeds.
+    if (!background) setError("");
     try {
       const next = await client.request<State>("/api/state");
       if (sequence !== refreshSequence.current) return;
+      retry.current.delay = 0;
+      setError("");
       setState(next);
     } catch (err) {
       if (sequence !== refreshSequence.current || isStale(err)) return;
@@ -114,6 +116,13 @@ export function Workspace({
         return;
       }
       setError(errorMessage(err, "Could not load gateway data."));
+      // Try again soon instead of waiting for the next poll, backing off while
+      // the gateway stays unreachable.
+      const delay = Math.min(retry.current.delay * 2 || 3000, 60000);
+      retry.current = {
+        delay,
+        timer: window.setTimeout(() => void refresh(true), delay),
+      };
     } finally {
       if (sequence === refreshSequence.current) {
         setLoading(false);
@@ -130,6 +139,7 @@ export function Workspace({
     document.addEventListener("visibilitychange", poll);
     return () => {
       clearInterval(timer);
+      clearTimeout(retry.current.timer);
       document.removeEventListener("visibilitychange", poll);
       client.close();
     };

@@ -50,12 +50,10 @@ func (s *server) accounts(ctx context.Context) []Account {
 			defer wg.Done()
 			select {
 			case limit <- struct{}{}:
+				defer func() { <-limit }()
 			case <-ctx.Done():
-				return
 			}
-			defer func() { <-limit }()
-			q := s.nativeQuota(ctx, a)
-			applyAccountQuota(&accounts[i], q)
+			applyAccountQuota(&accounts[i], s.dashboardQuota(ctx, a))
 		}(i, a)
 	}
 	wg.Wait()
@@ -69,7 +67,7 @@ func applyAccountQuota(account *Account, q quotaCache) {
 	if q.Resets != nil {
 		account.AvailableResets = &q.Resets.Available
 	}
-	if q.Error == "" && !q.ObservedAt.IsZero() {
+	if len(q.Windows) > 0 || (q.Error == "" && !q.ObservedAt.IsZero()) {
 		account.QuotaUpdatedAt = &q.ObservedAt
 	}
 	if q.Plan != "" {
@@ -133,6 +131,7 @@ func (s *server) changeAccount(w http.ResponseWriter, r *http.Request, remove bo
 	s.catalogMu.Unlock()
 	s.quotaMu.Lock()
 	delete(s.quotas, body.ID)
+	delete(s.lastQuotas, body.ID)
 	s.quotaMu.Unlock()
 	if remove {
 		writeJSON(w, 200, map[string]string{"id": body.ID, "status": "removed"})
@@ -187,8 +186,40 @@ func (s *server) nativeQuota(ctx context.Context, a storedAccount) quotaCache {
 	if profilePlan != nil {
 		q.Plan = <-profilePlan
 	}
+	if q.Error != "" && ctx.Err() != nil {
+		// A caller that gave up says nothing about the provider; do not
+		// cache its failure for everyone else.
+		return q
+	}
 	s.quotaMu.Lock()
 	s.quotas[a.ID] = q
+	if q.Error == "" {
+		s.lastQuotas[a.ID] = q
+	}
 	s.quotaMu.Unlock()
 	return q
+}
+
+// dashboardQuota is the quota shown for an account. When a probe fails it
+// keeps the last reported windows beside the error, so a provider hiccup does
+// not blank the page. Routing and key accounting never read this.
+func (s *server) dashboardQuota(ctx context.Context, a storedAccount) quotaCache {
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	q := s.nativeQuota(ctx, a)
+	if q.Error == "" {
+		return q
+	}
+	s.quotaMu.Lock()
+	last, ok := s.lastQuotas[a.ID]
+	s.quotaMu.Unlock()
+	if !ok {
+		return q
+	}
+	last = currentQuota(last, time.Now())
+	if len(last.Windows) == 0 {
+		return q
+	}
+	last.Error = "Provider usage unavailable. Showing the last reported values."
+	return last
 }

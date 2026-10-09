@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 type modelAlias struct {
@@ -68,6 +69,9 @@ func excludedModel(p modelPolicy, channel, id string) (bool, bool) {
 	return excluded, wildcard
 }
 func (s *server) readModelSettings(ctx context.Context) (modelSettings, modelPolicy, error) {
+	// Stay inside the dashboard's own request timeout when a provider stalls.
+	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
 	p := s.store.snapshot().Policy
 	result := modelSettings{Models: []managedModel{}, Revision: policyRevision(p)}
 	models, err := s.rawModels(ctx)
