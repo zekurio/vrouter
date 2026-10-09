@@ -20,9 +20,6 @@ const (
 	windowRetryDelay = 5 * time.Minute
 )
 
-// The provider is serving a request; that request starts or reports the window.
-var errWindowBusy = errors.New("provider is serving a request")
-
 // Some plans, such as Codex Pro, have no 5-hour window to start.
 var errNoWindow = errors.New("account does not report a 5-hour window")
 
@@ -160,7 +157,7 @@ func (s *server) startIdleWindows(ctx context.Context) {
 		go func(account storedAccount) {
 			defer wg.Done()
 			resetAt, err := s.ensureWindow(ctx, account)
-			if errors.Is(err, errWindowBusy) || ctx.Err() != nil {
+			if ctx.Err() != nil {
 				return
 			}
 			watch := windowWatch{}
@@ -187,12 +184,6 @@ func (s *server) startIdleWindows(ctx context.Context) {
 // ensureWindow returns the reset time of the account's 5-hour window, sending
 // one small request first when no window is active.
 func (s *server) ensureWindow(ctx context.Context, account storedAccount) (*time.Time, error) {
-	// Triggers must not mix with a key's before/after measurement.
-	gate := s.providerGate(account.Provider)
-	if !gate.TryRLock() {
-		return nil, errWindowBusy
-	}
-	defer gate.RUnlock()
 	ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
 	defer cancel()
 	account, err := s.accessAccount(ctx, account.ID)
@@ -299,4 +290,13 @@ func (s *server) ensureWindow(ctx context.Context, account storedAccount) (*time
 		return next.ResetAt, nil
 	}
 	return nil, errors.New("trigger sent, but a new 5-hour reset time is not confirmed")
+}
+
+func observedWindow(q quotaCache, id string) *QuotaWindow {
+	for i := range q.ReportedWindows {
+		if q.ReportedWindows[i].ID == id {
+			return &q.ReportedWindows[i]
+		}
+	}
+	return nil
 }

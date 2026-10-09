@@ -1980,17 +1980,6 @@ dialog .notice {
 .key-table .is-off td:not(.key-status):not(:last-child) {
   opacity: 0.45;
 }
-.key-provider-usage td {
-  padding-top: 0;
-}
-.key-provider-usage div {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 18px;
-}
-.key-provider-usage div + div {
-  margin-top: 6px;
-}
 
 /* Usage */
 .usage h2 {
@@ -2414,48 +2403,5 @@ dialog .notice {
   }
   .header-actions {
     grid-column: 2;
-  }
-}
-
-.provider-quota-fields {
-  margin: 0;
-  padding: 16px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-.provider-quota-fields legend {
-  padding: 0 6px;
-  font-weight: 600;
-}
-.provider-quota-fields legend small {
-  font-weight: 400;
-  color: var(--muted);
-}
-.provider-quota-fields > p {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.6;
-  margin: 8px 0;
-}
-.provider-quota-inputs {
-  display: grid;
-  grid-template-columns: 60px 1fr 1fr;
-  gap: 14px;
-  align-items: center;
-  margin: 16px 0;
-}
-.provider-quota-inputs .field {
-  margin: 0;
-  min-width: 0;
-}
-.provider-quota-inputs input {
-  width: 100%;
-}
-@media (max-width: 520px) {
-  .provider-quota-inputs {
-    grid-template-columns: 1fr 1fr;
-  }
-  .provider-quota-inputs > strong {
-    grid-column: 1 / -1;
   }
 }

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Ban, Check, Copy, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { errorMessage, isStale, type APIRequest } from "./api";
-import { providerLabel } from "./ProviderBrand";
 import { Modal } from "./Modal";
 import {
   expiryText,
@@ -23,8 +22,6 @@ type Props = {
 };
 type Confirm = { action: "revoke" | "delete"; key: APIKey };
 
-// Providers whose subscription pools can be rationed per key.
-const quotaProviders = ["claude", "codex"];
 const number = (n: number) => n.toLocaleString();
 const day = (value: string) =>
   new Date(value).toLocaleDateString(undefined, {
@@ -163,9 +160,6 @@ export function KeysPage({
               const state = keyState(key);
               const dead = state === "revoked";
               const label = key.name || "Unnamed key";
-              const quotas = Object.entries(key.providerQuotas).filter(
-                ([, q]) => q.fiveHour != null || q.sevenDay != null,
-              );
               return (
                 <tbody
                   className={state !== "active" ? "is-off" : ""}
@@ -199,7 +193,7 @@ export function KeysPage({
                         <button
                           className="icon-button"
                           aria-label={`Edit ${label}`}
-                          title="Edit name, quotas and expiry"
+                          title="Edit name and expiry"
                           disabled={dead}
                           onClick={() => setEditing(key)}
                         >
@@ -225,41 +219,6 @@ export function KeysPage({
                       </div>
                     </td>
                   </tr>
-                  {quotas.length > 0 && (
-                    <tr className="key-provider-usage">
-                      <td colSpan={8}>
-                        {quotas.map(([provider, q]) => {
-                          const usage = key.providerUsage[provider];
-                          return (
-                            <div key={provider}>
-                              <strong>{providerLabel(provider)}</strong>
-                              {(["fiveHour", "sevenDay"] as const)
-                                .filter((window) => q[window] != null)
-                                .map((window) => {
-                                  const used = usage?.[window] ?? 0,
-                                    limit = q[window]!;
-                                  return (
-                                    <span
-                                      key={window}
-                                      className={used >= limit ? "invalid" : ""}
-                                    >
-                                      {window === "fiveHour" ? "5h" : "7d"}:{" "}
-                                      {used.toFixed(2)}% / {limit}%
-                                      {used >= limit ? " · Limit reached" : ""}
-                                    </span>
-                                  );
-                                })}
-                              {usage?.uncertain && (
-                                <span className="invalid">
-                                  Blocked: usage incomplete
-                                </span>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </td>
-                    </tr>
-                  )}
                 </tbody>
               );
             })}
@@ -269,7 +228,6 @@ export function KeysPage({
       {!!keys?.length && (
         <p className="keys-footnote">
           Request and token counts are totals since the key was created.
-          Provider percentages reset with each account's window.
         </p>
       )}
       {(editing || creating) && (
@@ -355,30 +313,6 @@ function KeyDialog({
   const [name, setName] = useState(target?.name ?? "");
   const storedExpiry = expiryText(target?.expiresAt);
   const [expiry, setExpiry] = useState(storedExpiry);
-  const [percent, setPercent] = useState<
-    Record<string, Record<string, string>>
-  >(() =>
-    Object.fromEntries(
-      quotaProviders.map((provider) => [
-        provider,
-        {
-          fiveHour:
-            target?.providerQuotas[provider]?.fiveHour?.toString() ?? "",
-          sevenDay:
-            target?.providerQuotas[provider]?.sevenDay?.toString() ?? "",
-        },
-      ]),
-    ),
-  );
-  const percentInvalid = Object.values(percent).some((q) =>
-    Object.values(q).some(
-      (value) =>
-        value.trim() !== "" &&
-        (!Number.isFinite(Number(value)) ||
-          Number(value) < 0 ||
-          Number(value) > 100),
-    ),
-  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [secret, setSecret] = useState("");
@@ -391,21 +325,11 @@ function KeyDialog({
   const expiryError = "error" in expiresAt ? expiresAt.error : "";
 
   async function save() {
-    if (saving || !name.trim() || percentInvalid) return;
+    if (saving || !name.trim()) return;
     if ("error" in expiresAt) return;
     setSaving(true);
     setError("");
     const body = {
-      providerQuotas: Object.fromEntries(
-        Object.entries(percent).map(([provider, fields]) => [
-          provider,
-          Object.fromEntries(
-            Object.entries(fields)
-              .filter(([, value]) => value.trim() !== "")
-              .map(([window, value]) => [window, Number(value)]),
-          ),
-        ]),
-      ),
       name: name.trim(),
       expiresAt: expiresAt.value,
     };
@@ -501,53 +425,6 @@ function KeyDialog({
             autoComplete="off"
           />
         </div>
-        <fieldset className="provider-quota-fields">
-          <legend>
-            Provider quotas <small>Optional</small>
-          </legend>
-          <p>
-            Percent of the subscription pool. Blank is unlimited, 0 blocks the
-            provider. Usage is measured after each response, so the last request
-            can pass a limit.
-          </p>
-          {quotaProviders.map((provider) => (
-            <div className="provider-quota-inputs" key={provider}>
-              <strong>{providerLabel(provider)}</strong>
-              {(["fiveHour", "sevenDay"] as const).map((window) => (
-                <div className="field" key={window}>
-                  <label htmlFor={provider + window}>
-                    {window === "fiveHour" ? "5-hour" : "7-day"} allowance (%)
-                  </label>
-                  <input
-                    id={provider + window}
-                    type="number"
-                    min="0"
-                    max="100"
-                    step="any"
-                    placeholder="No limit"
-                    value={percent[provider][window]}
-                    onChange={(e) =>
-                      setPercent((old) => ({
-                        ...old,
-                        [provider]: {
-                          ...old[provider],
-                          [window]: e.target.value,
-                        },
-                      }))
-                    }
-                  />
-                </div>
-              ))}
-            </div>
-          ))}
-          {target &&
-            Object.values(target.providerUsage).some((u) => u.uncertain) && (
-              <p className="notice">
-                Saving these quotas acknowledges incomplete percentage
-                accounting and resumes access within the remaining allowance.
-              </p>
-            )}
-        </fieldset>
         <div className="field">
           <label htmlFor="key-expiry">Expires</label>
           <input
@@ -580,7 +457,7 @@ function KeyDialog({
           </button>
           <button
             className="primary"
-            disabled={saving || !name.trim() || percentInvalid || !!expiryError}
+            disabled={saving || !name.trim() || !!expiryError}
           >
             {target
               ? saving

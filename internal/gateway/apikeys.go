@@ -18,24 +18,27 @@ import (
 // keyRecord is one gateway API key. Only the SHA-256 hash of the secret is
 // stored; the full key is shown once at creation and never persisted.
 type keyRecord struct {
-	ProviderQuotas   map[string]providerPercentQuota `json:"providerQuotas,omitempty"`
-	PercentCharges   []percentCharge                 `json:"percentCharges,omitempty"`
-	PercentUncertain map[string]bool                 `json:"percentUncertain,omitempty"`
-	ID               string                          `json:"id"`
-	GatewayID        string                          `json:"gatewayId"`
-	Name             string                          `json:"name"`
-	Prefix           string                          `json:"prefix"`
-	Hash             string                          `json:"hash"`
-	CreatedAt        time.Time                       `json:"createdAt"`
-	RevokedAt        *time.Time                      `json:"revokedAt,omitempty"`
+	legacyKeyFields
+	ID        string     `json:"id"`
+	GatewayID string     `json:"gatewayId"`
+	Name      string     `json:"name"`
+	Prefix    string     `json:"prefix"`
+	Hash      string     `json:"hash"`
+	CreatedAt time.Time  `json:"createdAt"`
+	RevokedAt *time.Time `json:"revokedAt,omitempty"`
 	// ExpiresAt is when the key stops authorizing requests. Nil never expires.
 	ExpiresAt    *time.Time `json:"expiresAt,omitempty"`
 	UsedRequests int64      `json:"usedRequests"`
 	UsedTokens   int64      `json:"usedTokens"`
-	// InFlight counts reservations that have not settled yet. It is persisted
-	// so a crash cannot hide unfinished work: on load, any nonzero count turns
-	// into PercentUncertain and is cleared.
-	InFlight int `json:"inFlight,omitempty"`
+}
+
+// legacyKeyFields holds per-key percentage accounting written by older
+// builds. Loading accepts it and normalization drops it.
+type legacyKeyFields struct {
+	ProviderQuotas   json.RawMessage `json:"providerQuotas,omitempty"`
+	PercentCharges   json.RawMessage `json:"percentCharges,omitempty"`
+	PercentUncertain json.RawMessage `json:"percentUncertain,omitempty"`
+	InFlight         json.RawMessage `json:"inFlight,omitempty"`
 }
 
 // expired reports whether the key's expiry has passed.
@@ -45,24 +48,18 @@ func (k keyRecord) expired(now time.Time) bool {
 
 // keyView is the public metadata shape. It never contains the hash or secret.
 type keyView struct {
-	ProviderQuotas map[string]providerPercentQuota `json:"providerQuotas"`
-	ProviderUsage  map[string]percentSummary       `json:"providerUsage"`
-	ID             string                          `json:"id"`
-	Name           string                          `json:"name"`
-	Prefix         string                          `json:"prefix"`
-	CreatedAt      time.Time                       `json:"createdAt"`
-	RevokedAt      *time.Time                      `json:"revokedAt,omitempty"`
-	ExpiresAt      *time.Time                      `json:"expiresAt,omitempty"`
-	UsedRequests   int64                           `json:"usedRequests"`
-	UsedTokens     int64                           `json:"usedTokens"`
+	ID           string     `json:"id"`
+	Name         string     `json:"name"`
+	Prefix       string     `json:"prefix"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	RevokedAt    *time.Time `json:"revokedAt,omitempty"`
+	ExpiresAt    *time.Time `json:"expiresAt,omitempty"`
+	UsedRequests int64      `json:"usedRequests"`
+	UsedTokens   int64      `json:"usedTokens"`
 }
 
 func (k keyRecord) view() keyView {
-	quotas := k.ProviderQuotas
-	if quotas == nil {
-		quotas = map[string]providerPercentQuota{}
-	}
-	return keyView{ProviderQuotas: quotas, ProviderUsage: keyPercentUsage(k, time.Now()), ID: k.ID, Name: k.Name, Prefix: k.Prefix, CreatedAt: k.CreatedAt, RevokedAt: k.RevokedAt, ExpiresAt: k.ExpiresAt, UsedRequests: k.UsedRequests, UsedTokens: k.UsedTokens}
+	return keyView{ID: k.ID, Name: k.Name, Prefix: k.Prefix, CreatedAt: k.CreatedAt, RevokedAt: k.RevokedAt, ExpiresAt: k.ExpiresAt, UsedRequests: k.UsedRequests, UsedTokens: k.UsedTokens}
 }
 
 const keySecretPrefix = "vr_"
@@ -113,19 +110,12 @@ func (s *server) listKeys(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) createKey(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		ProviderQuotas *map[string]providerPercentQuota `json:"providerQuotas"`
-		Name           string                           `json:"name"`
-		ExpiresAt      json.RawMessage                  `json:"expiresAt"`
+		Name      string          `json:"name"`
+		ExpiresAt json.RawMessage `json:"expiresAt"`
 	}
 	if decodeKeyInput(w, r, &input) != nil {
 		writeJSON(w, 400, map[string]string{"error": "Enter a key name and an optional expiry"})
 		return
-	}
-	if input.ProviderQuotas != nil {
-		if err := validatePercentQuotas(*input.ProviderQuotas); err != nil {
-			writeJSON(w, 400, map[string]string{"error": err.Error()})
-			return
-		}
 	}
 	name := strings.TrimSpace(input.Name)
 	if name == "" || len(name) > keyNameMax {
@@ -153,10 +143,7 @@ func (s *server) createKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := keyRecord{ID: id, GatewayID: s.gatewayID, Name: name, Prefix: keyPrefix(secret), Hash: hash, CreatedAt: now, ExpiresAt: expiresAt}
-	if input.ProviderQuotas != nil {
-		key.ProviderQuotas = *input.ProviderQuotas
-	}
-	err = s.manager.update(func(registry *diskRegistry) error {
+	err = s.manager.registry.update(func(registry *diskRegistry) error {
 		registry.Keys = append(registry.Keys, key)
 		return nil
 	})
@@ -169,28 +156,21 @@ func (s *server) createKey(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) patchKey(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		ProviderQuotas *map[string]providerPercentQuota `json:"providerQuotas"`
-		Revoked        *bool                            `json:"revoked"`
-		Name           *string                          `json:"name"`
-		ExpiresAt      json.RawMessage                  `json:"expiresAt"`
+		Revoked   *bool           `json:"revoked"`
+		Name      *string         `json:"name"`
+		ExpiresAt json.RawMessage `json:"expiresAt"`
 	}
 	if decodeKeyInput(w, r, &input) != nil {
 		writeJSON(w, 400, map[string]string{"error": "Invalid key update"})
 		return
 	}
-	if input.Revoked == nil && input.Name == nil && input.ExpiresAt == nil && input.ProviderQuotas == nil {
+	if input.Revoked == nil && input.Name == nil && input.ExpiresAt == nil {
 		writeJSON(w, 400, map[string]string{"error": "Nothing to update"})
 		return
 	}
 	if input.Revoked != nil && !*input.Revoked {
 		writeJSON(w, 400, map[string]string{"error": "Revocation cannot be undone"})
 		return
-	}
-	if input.ProviderQuotas != nil {
-		if err := validatePercentQuotas(*input.ProviderQuotas); err != nil {
-			writeJSON(w, 400, map[string]string{"error": err.Error()})
-			return
-		}
 	}
 	name := ""
 	hasName := input.Name != nil
@@ -209,7 +189,7 @@ func (s *server) patchKey(w http.ResponseWriter, r *http.Request) {
 	revoked := input.Revoked != nil && *input.Revoked
 	now := time.Now().UTC()
 	var updated keyRecord
-	err := s.manager.update(func(registry *diskRegistry) error {
+	err := s.manager.registry.update(func(registry *diskRegistry) error {
 		key := findKey(registry, r.PathValue("id"))
 		if key == nil || key.GatewayID != s.gatewayID {
 			return errKeyNotFound
@@ -220,13 +200,6 @@ func (s *server) patchKey(w http.ResponseWriter, r *http.Request) {
 			}
 			updated = *key
 			return nil
-		}
-		if input.ProviderQuotas != nil {
-			if key.InFlight > 0 {
-				return errKeyInFlight
-			}
-			key.ProviderQuotas = *input.ProviderQuotas
-			key.PercentUncertain = nil
 		}
 		if hasName {
 			key.Name = name
@@ -243,10 +216,6 @@ func (s *server) patchKey(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err != nil {
-		if errors.Is(err, errKeyInFlight) {
-			writeJSON(w, 409, map[string]string{"error": "Wait for this key’s requests to finish before changing provider quotas"})
-			return
-		}
 		if errors.Is(err, errKeyExpiryPast) {
 			writeJSON(w, 400, map[string]string{"error": keyExpiryPastMessage})
 			return
@@ -262,7 +231,7 @@ func (s *server) patchKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) deleteKey(w http.ResponseWriter, r *http.Request) {
-	err := s.manager.update(func(registry *diskRegistry) error {
+	err := s.manager.registry.update(func(registry *diskRegistry) error {
 		for i := range registry.Keys {
 			if registry.Keys[i].ID == r.PathValue("id") {
 				if registry.Keys[i].GatewayID != s.gatewayID {
@@ -311,10 +280,7 @@ func sameExpiry(a, b *time.Time) bool {
 	return a.Equal(*b)
 }
 
-var (
-	errKeyInFlight   = errors.New("key has requests in flight")
-	errKeyExpiryPast = errors.New("key expiry is in the past")
-)
+var errKeyExpiryPast = errors.New("key expiry is in the past")
 
 func decodeKeyInput(w http.ResponseWriter, r *http.Request, out any) error {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))

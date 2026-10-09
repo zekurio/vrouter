@@ -7,13 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"math"
 	"net/http"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -75,19 +73,6 @@ func (r *registryStore) update(mutate func(*diskRegistry) error) error {
 	return r.data.update(func(d *diskData) error { return mutate(&d.Registry) })
 }
 
-// Keep uncertain usage in memory when a disk write failed. The unfinished
-// persisted reservation also fails closed on the next start.
-func (r *registryStore) markUncertain(keyID string) {
-	r.data.mu.Lock()
-	defer r.data.mu.Unlock()
-	if key := findKey(&r.data.state.Registry, keyID); key != nil {
-		key.PercentUncertain = map[string]bool{"claude": true, "codex": true}
-		if key.InFlight > 0 {
-			key.InFlight--
-		}
-	}
-}
-
 // registryNormalize makes collections concrete, seeds the default gateway, and
 // trims telemetry to the retention bound. Telemetry is stored oldest first;
 // the tail is the retained recent portion.
@@ -120,6 +105,7 @@ func registryNormalize(state *diskRegistry) {
 	}
 	for i := range state.Keys {
 		state.Keys[i].Name = strings.TrimSpace(state.Keys[i].Name)
+		state.Keys[i].legacyKeyFields = legacyKeyFields{}
 	}
 }
 
@@ -175,17 +161,6 @@ func registryValidate(state diskRegistry) error {
 		if key.UsedRequests < 0 || key.UsedRequests > maxTokenCount || key.UsedTokens < 0 || key.UsedTokens > maxTokenCount {
 			return fmt.Errorf("gateway: key %d has invalid counters", i)
 		}
-		if err := validatePercentQuotas(key.ProviderQuotas); err != nil {
-			return err
-		}
-		for _, charge := range key.PercentCharges {
-			if (charge.Provider != "claude" && charge.Provider != "codex") || (charge.Window != "weekly" && charge.Window != "five-hour") || charge.ResetAt.IsZero() || math.IsNaN(charge.Percent) || math.IsInf(charge.Percent, 0) || charge.Percent < 0 {
-				return errors.New("invalid provider percentage accounting")
-			}
-		}
-		if key.InFlight < 0 {
-			return fmt.Errorf("gateway: key %d has a negative in-flight count", i)
-		}
 	}
 	for gatewayID, records := range state.Telemetry {
 		if _, exists := seenGateways[gatewayID]; !exists {
@@ -211,7 +186,6 @@ func registryClone(state diskRegistry) diskRegistry {
 	out.Keys = make([]keyRecord, len(state.Keys))
 	for i, key := range state.Keys {
 		out.Keys[i] = key
-		clonePercentKey(&out.Keys[i], key)
 		if key.RevokedAt != nil {
 			revoked := *key.RevokedAt
 			out.Keys[i].RevokedAt = &revoked
@@ -248,7 +222,6 @@ type manager struct {
 	root     *server
 	registry *registryStore
 	engines  map[string]*server
-	degraded atomic.Bool
 	closed   bool
 }
 

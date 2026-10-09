@@ -88,14 +88,6 @@ func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request
 	}
 	principal.Provider = prepared.provider
 	attempt.principal = principal
-	unlock, available := s.lockPercentUsage(principal.Provider)
-	if !available {
-		w.Header().Set("Retry-After", "1")
-		writeJSON(recorder, 429, map[string]string{"error": "This provider pool is measuring another request. Retry when it finishes."})
-		s.finishAttempt(attempt, recorder)
-		return
-	}
-	defer unlock()
 	if s.manager != nil {
 		allowed, status, message := s.manager.reserve(principal)
 		if !allowed {
@@ -104,10 +96,8 @@ func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request
 			s.finishAttempt(attempt, recorder)
 			return
 		}
-		attempt.reserved = true
 	}
 	s.forwardInference(recorder, r, attempt, prepared)
-	s.endPercentMeasurement(attempt)
 	s.finishAttempt(attempt, recorder)
 }
 
@@ -174,7 +164,7 @@ func (s *server) finishAttempt(attempt *inferenceAttempt, recorder *attemptWrite
 		Stream:           attempt.stream,
 		Outcome:          outcome,
 	}
-	s.manager.settle(attempt.principal, record, totals, usageAccepted, attempt.reserved, attempt.percentCharges, attempt.percentUnknown)
+	s.manager.settle(attempt.principal, record, totals, usageAccepted)
 }
 
 // inference answers every /v1 request that is not a supported POST.
@@ -249,25 +239,18 @@ retryInference:
 			req.Header.Set("anthropic-beta", beta)
 		}
 		attempt.provider, attempt.accountID = a.Provider, a.ID
-		if err := s.beginPercentMeasurement(r.Context(), attempt, a); err != nil {
-			writeJSON(w, 503, map[string]string{"error": err.Error()})
-			return
-		}
 		resp, err := s.streamClient.Do(req)
 		if err != nil {
-			attempt.dispatchFailed = true
 			writeJSON(w, 502, map[string]string{"error": "Provider connection failed"})
 			return
 		}
 		if (resp.StatusCode == 429 || resp.StatusCode == 503) && attemptIndex+1 < len(candidates) {
 			resp.Body.Close()
-			s.endPercentMeasurement(attempt)
 			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			providerError := readProviderError(resp, a)
 			resp.Body.Close()
-			s.endPercentMeasurement(attempt)
 			if resp.StatusCode == 429 && !resetTried && nativeUsage(a) {
 				resetTried = true
 				candidates = s.resetExhaustedPool(r.Context(), pool, native)
@@ -286,7 +269,6 @@ retryInference:
 			return
 		}
 		defer resp.Body.Close()
-		attempt.percentForwarded = true
 		attempt.usage.begin(upstreamStream)
 		s.deliverInference(w, r, resp, attempt, prepared, a)
 		return

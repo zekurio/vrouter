@@ -1,6 +1,6 @@
 # vrouter
 
-A Go model gateway with a React management UI, built into one binary for Linux and macOS. It serves Claude and Codex accounts through OpenAI and Anthropic compatible endpoints, with a percentage quota per client key.
+A Go model gateway with a React management UI, built into one binary for Linux and macOS. It serves Claude and Codex accounts through OpenAI and Anthropic compatible endpoints, with a separate client key for each person or tool.
 
 ## Quick start
 
@@ -29,7 +29,7 @@ vrouter does not load `.env` files. Export variables or set them in your service
 
 ## Data
 
-One `vrouter.json` file in the data directory holds accounts, model settings, client keys, quotas, and request history. vrouter writes it with restricted file permissions but does not encrypt it, so keep backups private.
+One `vrouter.json` file in the data directory holds accounts, model settings, client keys, and request history. vrouter writes it with restricted file permissions but does not encrypt it, so keep backups private.
 
 Run one instance per data directory. Stop the server before you restore data or import provider credentials.
 
@@ -109,35 +109,17 @@ Read logs with `journalctl -u vrouter`. Back up `/var/lib/private/vrouter`, whic
 
 The frontend dependency hash lives in `nix/package.nix`. After changing `web/pnpm-lock.yaml`, replace the hash with `lib.fakeHash`, run `nix build`, and copy in the hash it reports. The fetcher includes all platforms, so one hash works for Linux and macOS.
 
-## API keys and quotas
+## API keys
 
 Create a key for each person or tool on the API keys page. vrouter shows the secret once and stores only its hash. You can rename, revoke, or delete a key.
 
 Client keys cannot open management endpoints, and admin tokens cannot authorize inference.
 
-### Percentage limits
-
-Each key has optional Claude and Codex limits for the 5-hour and 7-day windows. Blank means unlimited. Zero blocks the provider. Once a key reaches either limit, further requests to that provider get HTTP 429. The request that crosses a limit can finish above it.
-
-The two windows are independent. Each account's contribution expires at the reset time its provider reports.
-
-vrouter measures a request by reading the account's provider-reported utilization before and after it. Each enabled subscription account counts as one equal share of its provider's pool. With four accounts, 20 percentage points on one account costs 5% of the pool. vrouter does not weight plans by token capacity. It captures the pool size when the request starts, and later pool changes do not rewrite existing charges.
-
-These numbers are estimates. Providers round and delay their readings, and vrouter cannot tell gateway traffic from other use of the same account. Dedicate percentage-limited accounts to vrouter.
-
-While any active key has a percentage quota for a provider, vrouter allows one request at a time in that gateway's pool for that provider. Overlapping calls get HTTP 429 with a short retry interval. Claude and Codex run independently.
-
-### Uncertain usage
-
-A missing measurement, an ambiguous request, or an unexpected reset during a request blocks the key's capped access to that provider. Saving the key's provider quotas acknowledges the gap and keeps the usage vrouter does know about. After a restart, vrouter treats unfinished requests as uncertain.
-
-Provider accounts that use an API key cannot enforce percentage quotas. vrouter does not treat an unavailable provider window as unlimited.
-
 ### Expiry and history
 
 A key can have an expiry. After it passes, vrouter refuses the key's calls with HTTP 401, though a response already running finishes. Move the expiry later or clear it to restore the key.
 
-Keys have no lifetime request or token limit. vrouter persists a reservation before forwarding each request and settles token usage afterward. It keeps the latest 1,000 requests per gateway, and deleting or revoking a key does not erase them.
+Keys have no usage limits. vrouter counts each request when it admits it and adds the token usage when the response finishes. It keeps the latest 1,000 requests per gateway, and deleting or revoking a key does not erase them.
 
 ## Client requests
 
@@ -214,7 +196,7 @@ vrouter does not recheck an account with an active window until its reported res
 
 Codex Pro plans report a 5-hour entry without enforcing one, so vrouter also skips plans by name. `VROUTER_WINDOW_SKIP_PLANS` takes comma-separated `plan` or `provider:plan` entries and replaces the default `codex:pro*`. Matching ignores case and tests both the provider's plan value and the name shown on the account. A trailing `*` matches any ending, so the default covers every Codex Pro tier. Set the variable to `none` to trigger on every plan.
 
-A trigger consumes both provider allowances where they apply. It is not charged to a client key and does not redeem resets. vrouter sends no trigger while another allowance on the account is exhausted, or while the provider is serving a percentage-limited request.
+A trigger consumes both provider allowances where they apply. It is not charged to a client key and does not redeem resets. vrouter sends no trigger while another allowance on the account is exhausted.
 
 After a failed check, a rejected trigger, or a trigger whose new reset time vrouter cannot confirm, it waits five minutes before trying that account again. It persists the cooldown, so a restart cannot repeat a trigger sooner. vrouter logs starts and failures.
 
@@ -225,14 +207,9 @@ After a failed check, a rejected trigger, or a trigger whose new reset time vrou
 ```json
 {
   "name": "Alice",
-  "providerQuotas": {
-    "claude": { "fiveHour": 25, "sevenDay": 25 },
-    "codex": { "fiveHour": 45, "sevenDay": 45 }
-  }
+  "expiresAt": "2027-01-01T00:00:00Z"
 }
 ```
-
-On an update, omitting `providerQuotas` keeps the existing limits. Supplying it replaces them and acknowledges uncertain percentage usage.
 
 `expiresAt` takes a future RFC 3339 timestamp, or `null` for a key that never expires. Omitting it on an update keeps the current expiry.
 
