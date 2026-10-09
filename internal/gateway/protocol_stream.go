@@ -60,8 +60,16 @@ func (s *server) deliverInference(w http.ResponseWriter, r *http.Request, resp *
 					}
 				}
 			}
+			// The provider's terminal event ends the stream. Clients may
+			// close immediately after receiving it, cancelling the upstream
+			// read before HTTP EOF. The delivered response is still complete.
+			if p.upstreamStream && attempt.usage.terminal {
+				return
+			}
 			if err != nil {
-				if err != io.EOF {
+				if r.Context().Err() != nil {
+					attempt.outcome = outcomeIncomplete
+				} else if err != io.EOF {
 					attempt.outcome = outcomeError
 				} else if p.upstreamStream && !attempt.usage.terminal {
 					attempt.outcome = outcomeIncomplete
