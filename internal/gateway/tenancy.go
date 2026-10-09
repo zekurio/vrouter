@@ -252,13 +252,10 @@ type manager struct {
 	closed   bool
 }
 
-// openManager attaches the shared registry view to the root engine. The
-// caller owns root and must not have attached a manager yet.
-func openManager(root *server, assets fs.FS) (*manager, error) {
+// attachManager gives the root engine the shared registry view.
+func attachManager(root *server, assets fs.FS) {
 	registry := &registryStore{data: root.store.data}
-	m := &manager{cfg: root.cfg, assets: assets, root: root, registry: registry, engines: map[string]*server{}}
-	root.manager = m
-	return m, nil
+	root.manager = &manager{cfg: root.cfg, assets: assets, root: root, registry: registry, engines: map[string]*server{}}
 }
 
 func (m *manager) close() error {
@@ -297,31 +294,25 @@ func (m *manager) engine(id string) (*server, error) {
 	if engine, ok := m.engines[id]; ok {
 		return engine, nil
 	}
-	record := m.gatewayRecord(id)
-	if record == nil {
+	if !m.hasGateway(id) {
 		return nil, errGatewayNotFound
 	}
-	cfg := m.cfg
-	// The root already authorized management before dispatch.
-	cfg.AdminToken = ""
-	engine, err := newGatewayStore(cfg, m.assets, &accountStore{data: m.root.store.data, gatewayID: id})
-	if err != nil {
-		return nil, err
-	}
+	// Only the root mux is served, so the root has already authorized
+	// management before a request reaches this engine.
+	engine := newGatewayStore(m.cfg, m.assets, &accountStore{data: m.root.store.data, gatewayID: id})
 	engine.gatewayID = id
 	engine.manager = m
 	m.engines[id] = engine
 	return engine, nil
 }
 
-func (m *manager) gatewayRecord(id string) *gatewayRecord {
-	registry := m.registry.snapshot()
-	for i := range registry.Gateways {
-		if registry.Gateways[i].ID == id {
-			return &registry.Gateways[i]
+func (m *manager) hasGateway(id string) bool {
+	for _, gateway := range m.registry.snapshot().Gateways {
+		if gateway.ID == id {
+			return true
 		}
 	}
-	return nil
+	return false
 }
 
 func (m *manager) hasKeys(gatewayID string) bool {
@@ -362,47 +353,17 @@ func (m *manager) keyByHash(secret string) (keyRecord, bool) {
 	return keyRecord{}, false
 }
 
-// gatewayViews keeps older account stores accessible to the administrator.
-func (m *manager) gatewayViews() []gatewayView {
-	registry := m.registry.snapshot()
-	views := make([]gatewayView, 0, len(registry.Gateways))
-	for _, gateway := range registry.Gateways {
-		views = append(views, gatewayView{ID: gateway.ID, Name: gateway.Name, OwnerID: gateway.OwnerID, CreatedAt: gateway.CreatedAt})
-	}
-	sort.SliceStable(views, func(i, j int) bool {
-		if views[i].CreatedAt.Equal(views[j].CreatedAt) {
-			return views[i].ID < views[j].ID
-		}
-		return views[i].CreatedAt.Before(views[j].CreatedAt)
-	})
-	return views
-}
-
-type gatewayView struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	OwnerID   string    `json:"ownerId"`
-	CreatedAt time.Time `json:"createdAt"`
-}
-
-type gatewaysResponse struct {
-	Gateways []gatewayView `json:"gateways"`
-}
-
-// gateways lists preserved account stores.
+// gateways lists every gateway, oldest first. It answers the same for any
+// selected gateway, so a stale selection can still load the list.
 func (s *server) gateways(w http.ResponseWriter, r *http.Request) {
-	s.manager.handleGateways(w, r)
-}
-
-func (m *manager) handleGateways(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		writeJSON(w, 200, gatewaysResponse{Gateways: m.gatewayViews()})
-
-	default:
-		w.Header().Set("Allow", "GET")
-		writeJSON(w, 405, map[string]string{"error": "Use GET for gateways"})
-	}
+	gateways := s.manager.registry.snapshot().Gateways
+	sort.SliceStable(gateways, func(i, j int) bool {
+		if gateways[i].CreatedAt.Equal(gateways[j].CreatedAt) {
+			return gateways[i].ID < gateways[j].ID
+		}
+		return gateways[i].CreatedAt.Before(gateways[j].CreatedAt)
+	})
+	writeJSON(w, 200, map[string]any{"gateways": gateways})
 }
 
 // gatewayHeaderValue returns the explicitly selected gateway, or "" when the
@@ -411,30 +372,20 @@ func gatewayHeaderValue(r *http.Request) string {
 	return strings.TrimSpace(r.Header.Get(gatewayHeader))
 }
 
-// gatewayIndependentPath reports endpoints that are deliberately not scoped to
-// a selected gateway: listing gateways must work regardless of
-// the header, including while a selection is stale.
-func gatewayIndependentPath(path string) bool {
-	return path == "/api/gateways"
-}
-
 // dispatchManagement selects the requested gateway, or the default when absent.
 func (s *server) dispatchManagement(w http.ResponseWriter, r *http.Request) {
-	if s.manager == nil || gatewayIndependentPath(r.URL.Path) {
+	selected := gatewayHeaderValue(r)
+	// The gateway list is not scoped to a selection.
+	if selected == "" || selected == s.gatewayID || r.URL.Path == "/api/gateways" {
 		s.mgmt.ServeHTTP(w, r)
 		return
 	}
-	selected := gatewayHeaderValue(r)
-	if selected != "" && selected != s.gatewayID {
-		target, err := s.manager.engine(selected)
-		if err != nil {
-			writeJSON(w, gatewayErrorStatus(err), map[string]string{"error": gatewayErrorMessage(err)})
-			return
-		}
-		target.mgmt.ServeHTTP(w, r)
+	target, err := s.manager.engine(selected)
+	if err != nil {
+		writeJSON(w, gatewayErrorStatus(err), map[string]string{"error": gatewayErrorMessage(err)})
 		return
 	}
-	s.mgmt.ServeHTTP(w, r)
+	target.mgmt.ServeHTTP(w, r)
 }
 
 func gatewayErrorStatus(err error) int {

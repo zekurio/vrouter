@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -31,8 +32,42 @@ func inferenceProtocol(path string) wireProtocol {
 	return ""
 }
 
-func protocolError(message string) map[string]any {
-	return map[string]any{"error": map[string]any{"type": "invalid_request_error", "code": "unsupported_protocol_feature", "message": message}}
+// unsupportedFeature marks a valid request the selected provider protocol
+// cannot express.
+type unsupportedFeature string
+
+func (e unsupportedFeature) Error() string {
+	return "Cannot translate " + string(e) + " to the selected provider protocol"
+}
+
+// inferenceError is a request refused before any provider call.
+type inferenceError struct {
+	status  int
+	message string
+	code    string
+}
+
+func invalidRequest(err error) *inferenceError {
+	e := &inferenceError{status: 400, message: err.Error()}
+	var feature unsupportedFeature
+	if errors.As(err, &feature) {
+		e.code = "unsupported_protocol_feature"
+	}
+	return e
+}
+
+func (e *inferenceError) body() map[string]any {
+	kind, code := "invalid_request_error", "invalid_request"
+	switch e.status {
+	case 404:
+		kind, code = "not_found_error", "model_not_found"
+	case 502:
+		kind, code = "api_error", "provider_catalog_unavailable"
+	}
+	if e.code != "" {
+		code = e.code
+	}
+	return map[string]any{"error": map[string]any{"type": kind, "code": code, "message": e.message}}
 }
 
 type preparedInference struct {
@@ -47,22 +82,22 @@ type preparedInference struct {
 
 // Select the model before quota admission. The endpoint only selects the
 // client protocol. It does not select the provider or its quota.
-func (s *server) prepareInference(w http.ResponseWriter, r *http.Request, attempt *inferenceAttempt) (*preparedInference, int, string) {
+func (s *server) prepareInference(w http.ResponseWriter, r *http.Request, attempt *inferenceAttempt) (*preparedInference, *inferenceError) {
 	var payload map[string]any
 	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<20))
 	d.UseNumber()
 	if d.Decode(&payload) != nil || payload == nil || d.Decode(&struct{}{}) != io.EOF {
-		return nil, 400, "Expected a JSON inference request, at most 16 MiB"
+		return nil, &inferenceError{status: 400, message: "Expected a JSON inference request, at most 16 MiB"}
 	}
 	model, ok := payload["model"].(string)
 	if !ok || model == "" {
-		return nil, 400, "Choose a model"
+		return nil, &inferenceError{status: 400, message: "Choose a model"}
 	}
 	stream := false
 	if value, exists := payload["stream"]; exists {
 		stream, ok = value.(bool)
 		if !ok {
-			return nil, 400, "stream must be a boolean"
+			return nil, &inferenceError{status: 400, message: "stream must be a boolean"}
 		}
 	}
 	attempt.model, attempt.stream = model, stream
@@ -111,13 +146,13 @@ func (s *server) prepareInference(w http.ResponseWriter, r *http.Request, attemp
 		}
 	}
 	if len(byProvider) > 1 {
-		return nil, 400, "This model ID is advertised by more than one provider. Set a unique public alias and use that alias."
+		return nil, &inferenceError{status: 400, message: "This model ID is advertised by more than one provider. Set a unique public alias and use that alias."}
 	}
 	if len(byProvider) == 0 {
 		if failed {
-			return nil, 502, "Provider catalogs unavailable; cannot select an account"
+			return nil, &inferenceError{status: 502, message: "Provider catalogs unavailable; cannot select an account"}
 		}
-		return nil, 404, "No enabled account advertises this public model. Check disabled models and public aliases."
+		return nil, &inferenceError{status: 404, message: "No enabled account advertises this public model. Check disabled models and public aliases."}
 	}
 	p := &preparedInference{client: inferenceProtocol(r.URL.Path), stream: stream, upstreamStream: stream}
 	p.includeUsage = object(payload["stream_options"])["include_usage"] == true
@@ -141,20 +176,20 @@ func (s *server) prepareInference(w http.ResponseWriter, r *http.Request, attemp
 		var err error
 		payload, err = adaptInferenceRequest(payload, p.client, p.upstream)
 		if err != nil {
-			return nil, 400, err.Error()
+			return nil, invalidRequest(err)
 		}
 	} else if err := unwrapNativeReasoning(payload, p.upstream); err != nil {
-		return nil, 400, err.Error()
+		return nil, invalidRequest(err)
 	}
 	payload["model"] = p.native
 	if p.accounts[0].AuthMode == "codex" {
 		if value, exists := payload["store"]; exists && value != false {
-			return nil, 400, "Codex does not support stored responses. Set store to false."
+			return nil, &inferenceError{status: 400, message: "Codex does not support stored responses. Set store to false."}
 		}
 		var err error
 		p.ignoredParameters, err = normalizeCodexParameters(payload, clientPayload, p.client)
 		if err != nil {
-			return nil, 400, err.Error()
+			return nil, invalidRequest(err)
 		}
 		payload["store"], payload["stream"] = false, true
 		p.upstreamStream = true
@@ -172,12 +207,12 @@ func (s *server) prepareInference(w http.ResponseWriter, r *http.Request, attemp
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return nil, 400, "Invalid inference request"
+		return nil, &inferenceError{status: 400, message: "Invalid inference request"}
 	}
 	if err := json.Unmarshal(raw, &p.payload); err != nil {
-		return nil, 400, "Invalid inference request"
+		return nil, &inferenceError{status: 400, message: "Invalid inference request"}
 	}
-	return p, 0, ""
+	return p, nil
 }
 
 // Codex subscription inference accepts output caps but rejects sampling values.
@@ -247,12 +282,10 @@ type protocolRequest struct {
 	stop                         any
 }
 
-func unsupported(field string) error {
-	return fmt.Errorf("Cannot translate %s to the selected provider protocol", field)
-}
-func object(v any) map[string]any { m, _ := v.(map[string]any); return m }
-func list(v any) []any            { a, _ := v.([]any); return a }
-func str(v any) string            { s, _ := v.(string); return s }
+func unsupported(field string) error { return unsupportedFeature(field) }
+func object(v any) map[string]any    { m, _ := v.(map[string]any); return m }
+func list(v any) []any               { a, _ := v.([]any); return a }
+func str(v any) string               { s, _ := v.(string); return s }
 func fields(m map[string]any, allowed string) error {
 	set := map[string]bool{}
 	for _, k := range strings.Fields(allowed) {
@@ -293,8 +326,8 @@ func adaptInferenceRequest(payload map[string]any, source, target wireProtocol) 
 			max = 4096
 		}
 		out["max_tokens"] = max
-		if len(r.system) > 0 {
-			out["system"] = encodeBlocks(r.system, target, "system")
+		if system := encodeBlocks(r.system, target, "system"); len(system) > 0 {
+			out["system"] = system
 		}
 		messages := []any{}
 		for _, m := range r.messages {
@@ -418,7 +451,8 @@ func adaptInferenceRequest(payload map[string]any, source, target wireProtocol) 
 			if c["name"] != nil {
 				choice["name"] = c["name"]
 			}
-			if r.parallel != nil {
+			// Claude accepts this flag only on choices that can call a tool.
+			if r.parallel != nil && kind != "none" {
 				choice["disable_parallel_tool_use"] = !*r.parallel
 			}
 			out["tool_choice"] = choice
@@ -429,7 +463,7 @@ func adaptInferenceRequest(payload map[string]any, source, target wireProtocol) 
 				out["tool_choice"] = c["type"]
 			}
 		}
-	} else if target == messagesProtocol && r.parallel != nil {
+	} else if target == messagesProtocol && r.parallel != nil && len(r.tools) > 0 {
 		out["tool_choice"] = map[string]any{"type": "auto", "disable_parallel_tool_use": !*r.parallel}
 	}
 	return out, nil
@@ -1306,14 +1340,13 @@ func encodeBlocks(blocks []protocolBlock, target wireProtocol, role string) []an
 	for _, b := range blocks {
 		if target == messagesProtocol {
 			switch b.kind {
-			case "reasoning":
+			case "reasoning", "text":
 				if b.native != nil {
 					out = append(out, b.native)
-				} else {
+				} else if b.text != "" {
+					// Claude rejects empty text blocks, and they carry nothing.
 					out = append(out, map[string]any{"type": "text", "text": b.text})
 				}
-			case "text":
-				out = append(out, map[string]any{"type": "text", "text": b.text})
 			case "image":
 				source := map[string]any{"type": "url", "url": b.image}
 				if strings.HasPrefix(b.image, "data:") {

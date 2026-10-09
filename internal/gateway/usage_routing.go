@@ -49,11 +49,7 @@ func quotaBlockers(a storedAccount, q quotaCache, model string, now time.Time) [
 	}
 	var blocked []string
 	for _, w := range q.Windows {
-		exhausted := w.Remaining <= 0
-		if w.used != nil {
-			exhausted = *w.used >= 100
-		}
-		if !exhausted {
+		if !windowExhausted(w) {
 			continue
 		}
 		key := quotaWindowKey(a, w, model)
@@ -67,22 +63,39 @@ func quotaBlockers(a storedAccount, q quotaCache, model string, now time.Time) [
 	return blocked
 }
 
-func quotaWindowKey(a storedAccount, w QuotaWindow, model string) string {
+func windowExhausted(w QuotaWindow) bool {
+	if w.used != nil {
+		return *w.used >= 100
+	}
+	return w.Remaining <= 0
+}
+
+// quotaWindowScope names the routing limit a window enforces. family is set
+// for Claude windows that only limit one model family.
+func quotaWindowScope(a storedAccount, w QuotaWindow) (key, family string) {
 	switch w.ID {
 	case "five-hour":
-		return "five_hour"
+		return "five_hour", ""
 	case "weekly":
-		return "seven_day"
+		return "seven_day", ""
 	case "monthly", "window-1", "window-2":
 		if a.Provider == "codex" {
-			return w.ID
+			return w.ID, ""
 		}
 	case "opus", "sonnet":
-		if a.Provider == "claude" && strings.Contains(strings.ToLower(model), w.ID) {
-			return "seven_day_" + w.ID
+		if a.Provider == "claude" {
+			return "seven_day_" + w.ID, w.ID
 		}
 	}
-	return ""
+	return "", ""
+}
+
+func quotaWindowKey(a storedAccount, w QuotaWindow, model string) string {
+	key, family := quotaWindowScope(a, w)
+	if family != "" && !strings.Contains(strings.ToLower(model), family) {
+		return ""
+	}
+	return key
 }
 
 func quotaKnownUsable(a storedAccount, q quotaCache, model string, now time.Time) bool {
@@ -99,6 +112,29 @@ func quotaKnownUsable(a storedAccount, q quotaCache, model string, now time.Time
 		}
 	}
 	return false
+}
+
+// quotaKnownUsableForAllModels is quotaKnownUsable across every model family.
+// A reset attempt may have been made for a different model than the one now
+// being routed, so only this can prove the attempt is no longer needed.
+func quotaKnownUsableForAllModels(a storedAccount, q quotaCache, now time.Time) bool {
+	q = currentQuota(q, now)
+	if q.Error != "" {
+		return false
+	}
+	if a.Provider == "codex" && q.Allowed != nil {
+		return *q.Allowed
+	}
+	known := false
+	for _, w := range q.Windows {
+		if key, _ := quotaWindowScope(a, w); key != "" {
+			if windowExhausted(w) {
+				return false
+			}
+			known = true
+		}
+	}
+	return known
 }
 
 func (s *server) freshNativeQuota(ctx context.Context, a storedAccount) quotaCache {
@@ -158,7 +194,7 @@ func (s *server) usableAccounts(ctx context.Context, pool []storedAccount, model
 			usable = append(usable, a)
 			// A delayed reset can first become visible on a later normal request.
 			// Only a probe newer than the attempt can reconcile it.
-			if quotaKnownUsable(a, quotas[i], "opus sonnet", time.Now()) {
+			if quotaKnownUsableForAllModels(a, quotas[i], time.Now()) {
 				s.resetMu.Lock()
 				if attempt, ok := s.store.snapshot().ResetAttempts[a.ID]; ok && quotas[i].ObservedAt.After(attempt.LastTry) {
 					_ = s.saveResetAttempt(a.ID, nil)

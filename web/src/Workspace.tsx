@@ -26,8 +26,6 @@ import {
 import { UsagePage } from "./UsagePage";
 
 type State = {
-  mode: "live" | "unconfigured";
-  connected: boolean;
   observedAt: string;
   models: Model[];
   accounts: Account[];
@@ -58,6 +56,8 @@ type Props = {
   onGone: () => void;
   copy: (value: string) => Promise<boolean>;
   notify: (text: string) => void;
+  // True while this gateway has unsaved model drafts.
+  onDirty: (dirty: boolean) => void;
 };
 
 // Everything that belongs to one gateway. The app mounts it with the gateway ID
@@ -73,6 +73,7 @@ export function Workspace({
   onGone,
   copy,
   notify,
+  onDirty,
 }: Props) {
   const handlers = useRef({ onUnauthorized, onGone });
   handlers.current = { onUnauthorized, onGone };
@@ -146,7 +147,6 @@ export function Workspace({
   const visibleAccounts = (state?.accounts || []).filter(
     (a) => !filter || a.provider === filter,
   );
-  const live = state?.mode === "live";
   // One address for every gateway. The API key picks the gateway.
   const endpoint = `${publicUrl || location.origin}/v1`;
 
@@ -158,14 +158,18 @@ export function Workspace({
         </div>
         <div className="heading-actions">
           {page === "Overview" && (
-            <button className="secondary" disabled={!live} onClick={addAccount}>
+            <button
+              className="secondary"
+              disabled={!state}
+              onClick={addAccount}
+            >
               <Plus size={14} /> Add account
             </button>
           )}
           {page === "Keys" && (
             <button
               className="secondary"
-              disabled={!live}
+              disabled={!state}
               onClick={() => setCreatingKey(true)}
             >
               <Plus size={14} /> Create key
@@ -197,7 +201,7 @@ export function Workspace({
         </div>
       ))}
       {loading && !state && (
-        <div className="loading">
+        <div className="loading" role="status" aria-label="Loading">
           <RefreshCw size={22} className="spinning" />
         </div>
       )}
@@ -235,7 +239,7 @@ export function Workspace({
                             {providerLabel(p)}
                           </button>
                         ) : (
-                          p
+                          providerLabel(p)
                         )}
                       </h2>
                       <span>
@@ -330,21 +334,10 @@ export function Workspace({
                         ))}
                       </div>
                     ) : (
-                      <>
-                        <div className="account-allowance">
-                          <span>{a.window}</span>
-                          <strong>
-                            {a.remaining === null
-                              ? "Unknown"
-                              : `${a.remaining}% left`}
-                          </strong>
-                        </div>
-                        {a.remaining !== null && (
-                          <div className="progress">
-                            <span style={{ width: `${a.remaining}%` }} />
-                          </div>
-                        )}
-                      </>
+                      <div className="account-allowance">
+                        <span>{a.window}</span>
+                        <strong>Unknown</strong>
+                      </div>
                     )}
                     {a.quotaError && (
                       <p className="quota-error">
@@ -363,12 +356,13 @@ export function Workspace({
           <ModelsPage
             models={state.models}
             request={client.request}
-            live={state.mode === "live"}
+            active={page === "Models"}
             reloadKey={state.observedAt}
             endpoint={endpoint}
             copy={copy}
             notify={notify}
             onSaved={() => void refresh()}
+            onDirty={onDirty}
             onAddAccount={addAccount}
           />
         </div>
@@ -377,7 +371,6 @@ export function Workspace({
         <AccountsPage
           accounts={state.accounts}
           request={client.request}
-          live={state.mode === "live"}
           connect={connect}
           setConnect={setConnect}
           onChanged={() => void refresh()}
@@ -387,10 +380,10 @@ export function Workspace({
       {page === "Keys" && state && (
         <KeysPage
           request={client.request}
-          live={state.mode === "live"}
           reloadKey={state.observedAt}
           creating={creatingKey}
           onCreateClose={() => setCreatingKey(false)}
+          onChanged={() => void refresh()}
           copy={copy}
           notify={notify}
         />

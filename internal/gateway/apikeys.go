@@ -58,7 +58,11 @@ type keyView struct {
 }
 
 func (k keyRecord) view() keyView {
-	return keyView{ProviderQuotas: k.ProviderQuotas, ProviderUsage: keyPercentUsage(k, time.Now()), ID: k.ID, Name: k.Name, Prefix: k.Prefix, CreatedAt: k.CreatedAt, RevokedAt: k.RevokedAt, ExpiresAt: k.ExpiresAt, UsedRequests: k.UsedRequests, UsedTokens: k.UsedTokens}
+	quotas := k.ProviderQuotas
+	if quotas == nil {
+		quotas = map[string]providerPercentQuota{}
+	}
+	return keyView{ProviderQuotas: quotas, ProviderUsage: keyPercentUsage(k, time.Now()), ID: k.ID, Name: k.Name, Prefix: k.Prefix, CreatedAt: k.CreatedAt, RevokedAt: k.RevokedAt, ExpiresAt: k.ExpiresAt, UsedRequests: k.UsedRequests, UsedTokens: k.UsedTokens}
 }
 
 const keySecretPrefix = "vr_"

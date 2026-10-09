@@ -2,8 +2,8 @@
 
 export type PercentQuota = { fiveHour?: number; sevenDay?: number };
 export type APIKey = {
-  providerQuotas?: Record<string, PercentQuota>;
-  providerUsage?: Record<
+  providerQuotas: Record<string, PercentQuota>;
+  providerUsage: Record<
     string,
     { fiveHour: number; sevenDay: number; uncertain: boolean }
   >;

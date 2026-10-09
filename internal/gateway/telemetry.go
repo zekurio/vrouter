@@ -107,10 +107,6 @@ func (m *manager) telemetry(gatewayID string) telemetryResponse {
 }
 
 func (s *server) telemetryHandler(w http.ResponseWriter, r *http.Request) {
-	if s.manager == nil {
-		writeJSON(w, 200, telemetryResponse{Requests: []telemetryRecord{}, RetentionLimit: telemetryRetention})
-		return
-	}
 	writeJSON(w, 200, s.manager.telemetry(s.gatewayID))
 }
 
@@ -153,7 +149,7 @@ type inferenceAttempt struct {
 // usageTrusted reports whether the provider response was delivered to a
 // terminal state carrying a usable final usage report. A stream that ends
 // early, a terminal event without usage, or a truncated body may carry stale
-// or partial usage, so its numbers must not reopen a measured token budget.
+// or partial usage, so its numbers are not counted as known usage.
 func (a *inferenceAttempt) usageTrusted() bool {
 	if a.usage.stream {
 		return a.usage.terminal && !a.usage.terminalFailure && (a.usage.terminalUsage || a.usage.finalUsage)

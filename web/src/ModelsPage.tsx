@@ -7,7 +7,7 @@ import {
 } from "react";
 import { Check, Copy, RefreshCw, Search, Undo2, X } from "lucide-react";
 import { ProviderBrand, providerColor, providerName } from "./ProviderBrand";
-import type { APIRequest } from "./AccountsPage";
+import { errorMessage, isStale, statusOf, type APIRequest } from "./api";
 import { CodeBlock } from "./CodeBlock";
 import { ConnectionTest } from "./ConnectionTest";
 import { isDialogBackdropClick } from "./dialog";
@@ -50,28 +50,30 @@ const compact = (n: number) =>
     maximumFractionDigits: 1,
   }).format(n);
 const keyOf = (m: { provider: string; id: string }) => `${m.provider}\n${m.id}`;
-const message = (err: unknown, fallback: string) =>
-  err instanceof Error ? err.message : fallback;
 
 export function ModelsPage({
   models,
   request,
-  live,
+  active,
   reloadKey,
   endpoint,
   copy,
   notify,
   onSaved,
+  onDirty,
   onAddAccount,
 }: {
   models: Model[];
   request: APIRequest;
-  live: boolean;
+  // False while another page is shown. The page stays mounted to keep drafts.
+  active: boolean;
   reloadKey: string;
   endpoint: string;
   copy: (value: string) => Promise<boolean>;
   notify: (text: string) => void;
   onSaved: () => void;
+  // Reports unsaved drafts, and clears the report when the page unmounts.
+  onDirty: (dirty: boolean) => void;
   onAddAccount: () => void;
 }) {
   const [settings, setSettings] = useState<ModelSettings | null>(null);
@@ -103,25 +105,19 @@ export function ModelsPage({
       setConflict(false);
       setSaveError("");
     } catch (err) {
-      if (current !== sequence.current) return;
-      setLoadError(message(err, "Could not load model settings."));
+      if (current !== sequence.current || isStale(err)) return;
+      setLoadError(errorMessage(err, "Could not load model settings."));
     } finally {
       if (current === sequence.current) setLoading(false);
     }
   }, [request]);
   useEffect(() => {
-    if (live) void load();
-    else {
-      sequence.current++;
-      setSettings(null);
-      setLoadError("");
-      setLoading(false);
-    }
-  }, [live, reloadKey, load]);
+    void load();
+  }, [reloadKey, load]);
 
   const rows: ManagedModel[] =
     settings?.models ?? models.map((m) => ({ ...m, enabled: true, alias: "" }));
-  const editable = live && !!settings;
+  const editable = !!settings;
   const value = (m: ManagedModel): Draft =>
     drafts[keyOf(m)] ?? { enabled: m.enabled, alias: m.alias };
   const isChanged = (m: ManagedModel) => {
@@ -145,14 +141,22 @@ export function ModelsPage({
 
   useEffect(() => {
     if (!changed.length) return;
+    onDirty(true);
     const warn = (e: BeforeUnloadEvent) => e.preventDefault();
     window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
+    return () => {
+      window.removeEventListener("beforeunload", warn);
+      onDirty(false);
+    };
   }, [changed.length > 0]);
   useEffect(() => {
     if (selected) dialog.current?.showModal();
     else dialog.current?.close();
   }, [selected]);
+  // A modal left open inside the hidden page would block the page shown.
+  useEffect(() => {
+    if (!active) setSelected(null);
+  }, [active]);
   useEffect(() => {
     if (!copied) return;
     const timer = setTimeout(() => setCopied(""), 1800);
@@ -196,8 +200,8 @@ export function ModelsPage({
       notify(changed.length === 1 ? "Change saved" : "Changes saved");
       onSaved();
     } catch (err) {
-      setConflict((err as { status?: number }).status === 409);
-      setSaveError(message(err, "Could not save changes."));
+      setConflict(statusOf(err) === 409);
+      setSaveError(errorMessage(err, "Could not save changes."));
     } finally {
       setSaving(false);
     }
@@ -235,13 +239,11 @@ export function ModelsPage({
     : `${location.origin}/v1`;
   // Drafts are not live until saved, so a test can only use the saved state.
   const testBlock = (m: ManagedModel) =>
-    !live
-      ? "Connect an account first."
-      : isChanged(m)
-        ? "Save your changes to this model first."
-        : !m.enabled
-          ? "Enable this model and save to test it."
-          : undefined;
+    isChanged(m)
+      ? "Save your changes to this model first."
+      : !m.enabled
+        ? "Enable this model and save to test it."
+        : undefined;
 
   return (
     <>
@@ -430,7 +432,7 @@ export function ModelsPage({
       })}
       {!filtered.length &&
         (loading && !rows.length ? (
-          <div className="loading">
+          <div className="loading" role="status" aria-label="Loading">
             <RefreshCw size={22} className="spinning" />
           </div>
         ) : (
@@ -448,11 +450,7 @@ export function ModelsPage({
                 Clear filters
               </button>
             ) : (
-              <button
-                className="secondary"
-                disabled={!live}
-                onClick={onAddAccount}
-              >
+              <button className="secondary" onClick={onAddAccount}>
                 Add account
               </button>
             )}

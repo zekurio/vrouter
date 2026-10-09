@@ -57,7 +57,7 @@ func (s *server) startOAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if requested != "codex" {
-			writeJSON(w, 400, map[string]string{"error": "ChatGPT sign-in is no longer supported. Use Codex sign-in."})
+			writeJSON(w, 400, map[string]string{"error": "Unsupported sign-in method. Use Codex sign-in."})
 			return
 		}
 	}
@@ -105,7 +105,7 @@ func (s *server) startOAuth(w http.ResponseWriter, r *http.Request) {
 			// refresh. A record stored with a different client cannot complete
 			// this flow, so it is refused instead of authorizing the wrong
 			// registration.
-			if selected.ClientID != "" && selected.ClientID != claudeClientID {
+			if selected.ClientID != claudeClientID {
 				writeJSON(w, 400, map[string]string{"error": "Saved Claude connection uses a different sign-in client and cannot be renewed"})
 				return
 			}
@@ -118,7 +118,7 @@ func (s *server) startOAuth(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, 400, map[string]string{"error": "This connection cannot be renewed. Add the account using Codex sign-in."})
 				return
 			}
-			if selected.ClientID != "" && selected.ClientID != codexNativeClientID {
+			if selected.ClientID != codexNativeClientID {
 				writeJSON(w, 400, map[string]string{"error": "Saved Codex connection uses a different sign-in client and cannot be renewed"})
 				return
 			}
@@ -400,15 +400,14 @@ func (s *server) completeOAuth(ctx context.Context, id string, q url.Values) err
 // appending a duplicate. Codex requires the same verified workspace and user
 // subject, so users of a shared workspace are never folded into one entry.
 func oauthSameAccount(old, fresh storedAccount) bool {
-	if old.Provider != fresh.Provider || old.AuthMode != fresh.AuthMode {
+	if old.Provider != fresh.Provider || old.AuthMode != fresh.AuthMode || fresh.ClientID == "" || old.ClientID != fresh.ClientID {
 		return false
 	}
 	if old.Provider == "claude" && old.AuthMode == "oauth" {
-		return claudeClientCompatible(old.ClientID, fresh.ClientID) && claudeIdentityMatch(old, fresh)
+		return claudeIdentityMatch(old, fresh)
 	}
 	if old.Provider == "codex" && old.AuthMode == "codex" {
-		return codexNativeClientCompatible(old.ClientID, fresh.ClientID) &&
-			old.AccountID != "" && old.AccountID == fresh.AccountID &&
+		return old.AccountID != "" && old.AccountID == fresh.AccountID &&
 			old.Subject != "" && old.Subject == fresh.Subject
 	}
 	return false
@@ -418,27 +417,24 @@ func oauthSameAccount(old, fresh storedAccount) bool {
 // saved registration that changed while the sign-in was pending, or one that
 // no longer describes the verified identity. Native Codex records must already
 // bind both a verified workspace and user subject; an email match is never
-// sufficient and an unbound legacy import is never rebound.
+// sufficient and an unverified import is never rebound.
 func oauthReconnectAllowed(old, fresh storedAccount) error {
 	if old.Provider != fresh.Provider || old.AuthMode != fresh.AuthMode {
 		return errors.New("saved account changed during sign-in")
 	}
+	if fresh.ClientID == "" || old.ClientID != fresh.ClientID {
+		return errors.New("saved registration uses a different sign-in client")
+	}
 	if old.Provider == "claude" && old.AuthMode == "oauth" {
-		if !claudeClientCompatible(old.ClientID, fresh.ClientID) {
-			return errors.New("saved registration uses a different sign-in client")
-		}
 		if !claudeIdentityMatch(old, fresh) {
 			return errors.New("verified identity does not match the saved account")
 		}
 		return nil
 	}
 	if old.Provider == "codex" && old.AuthMode == "codex" {
-		if !codexNativeClientCompatible(old.ClientID, fresh.ClientID) {
-			return errors.New("saved registration uses a different sign-in client")
-		}
 		// Native reconnect requires the workspace and user subject that were
-		// stored by an earlier native login. A record that predates subject
-		// binding is never rebound, even to the same workspace.
+		// stored by a verified sign-in. An import without a verified subject
+		// must be added again, even for the same workspace.
 		if old.AccountID == "" || old.Subject == "" {
 			return errors.New("saved account has no verified identity to reconnect")
 		}
@@ -448,27 +444,6 @@ func oauthReconnectAllowed(old, fresh storedAccount) error {
 		return nil
 	}
 	return errors.New("unsupported sign-in method")
-}
-
-// claudeClientCompatible reports whether old may be renewed by fresh. Earlier
-// imports stored no client ID, so an empty value means the shared Claude
-// client; any other stored value belongs to a different OAuth application.
-func claudeClientCompatible(oldClientID, freshClientID string) bool {
-	if freshClientID != claudeClientID {
-		return false
-	}
-	return oldClientID == "" || oldClientID == claudeClientID
-}
-
-// codexNativeClientCompatible reports whether a saved native Codex record may
-// be renewed by the static Codex CLI client. Earlier imports stored no client
-// ID, so an empty value is accepted; any other stored value belongs to a
-// different OAuth application and is refused rather than replaced.
-func codexNativeClientCompatible(oldClientID, freshClientID string) bool {
-	if freshClientID != codexNativeClientID {
-		return false
-	}
-	return oldClientID == "" || oldClientID == codexNativeClientID
 }
 
 // claudeIdentityMatch compares a saved Claude identity with the identity the

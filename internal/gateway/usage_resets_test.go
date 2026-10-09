@@ -262,3 +262,33 @@ func TestPendingResetDoesNotRedeemForFiveHourOnly(t *testing.T) {
 		})
 	}
 }
+
+func TestRoutingReconcilesResetOnlyWhenEveryModelIsUsable(t *testing.T) {
+	s, f := setupResetTest(t, "claude")
+	for _, q := range f.quotas {
+		q.weekly = 20
+	}
+	f.quotas["far"].opus = 100
+	attempt := resetAttempt{RequestID: "opus-request", GrantID: "included", OrganizationID: "org-far", LastTry: time.Now().Add(-2 * time.Minute)}
+	if err := s.saveResetAttempt("far", &attempt); err != nil {
+		t.Fatal(err)
+	}
+	pool := s.store.snapshot().Accounts
+	if got := s.usableAccounts(context.Background(), pool, "claude-sonnet-test"); len(got) != 3 {
+		t.Fatalf("sonnet routing used %d accounts", len(got))
+	}
+	if s.store.snapshot().ResetAttempts["far"].RequestID != attempt.RequestID {
+		t.Fatal("a sonnet request discarded the unresolved opus reset")
+	}
+	if got := s.usableAccounts(context.Background(), pool, "claude-opus-test"); len(got) != 2 {
+		t.Fatalf("opus routing used %d accounts", len(got))
+	}
+	f.quotas["far"].opus = 0
+	s.quotaMu.Lock()
+	clear(s.quotas)
+	s.quotaMu.Unlock()
+	s.usableAccounts(context.Background(), pool, "claude-sonnet-test")
+	if len(s.store.snapshot().ResetAttempts) != 0 {
+		t.Fatal("a fully usable account retained its reset attempt")
+	}
+}

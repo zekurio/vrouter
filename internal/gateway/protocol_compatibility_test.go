@@ -53,7 +53,11 @@ func prepareCompatibility(t *testing.T, s *server, path string, payload map[stri
 	if err != nil {
 		t.Fatal(err)
 	}
-	return s.prepareInference(httptest.NewRecorder(), httptest.NewRequest("POST", path, strings.NewReader(string(body))), &inferenceAttempt{})
+	prepared, refused := s.prepareInference(httptest.NewRecorder(), httptest.NewRequest("POST", path, strings.NewReader(string(body))), &inferenceAttempt{})
+	if refused != nil {
+		return nil, refused.status, refused.message
+	}
+	return prepared, 0, ""
 }
 
 func TestCompatibilityCodexClientControls(t *testing.T) {
@@ -380,7 +384,7 @@ func TestCompatibilityNativeReasoningContentReplay(t *testing.T) {
 				})
 			}
 		}
-		state, err := encodeReasoningState("codex", item)
+		state, err := encodeReasoningState("codex", item, "")
 		if err != nil {
 			t.Fatal(err)
 		}

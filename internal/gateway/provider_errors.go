@@ -61,24 +61,35 @@ var (
 // and validated. Nothing is logged.
 func readProviderError(resp *http.Response, a storedAccount) map[string]any {
 	status := 0
+	var body io.Reader
 	if resp != nil {
 		status = resp.StatusCode
-	}
-	fallback := http.StatusText(status)
-	if fallback == "" {
-		fallback = providerGenericMessage
-	}
-	message, typeName, code := "", "", ""
-	if resp != nil && resp.Body != nil {
-		rawMessage, rawType, rawCode := providerErrorFields(resp.Body)
-		typeName = providerErrorTag(rawType, true, a)
-		code = providerErrorTag(rawCode, false, a)
-		if sanitized, ok := sanitizeProviderMessage(rawMessage, a); ok {
-			message = sanitized
+		if resp.Body != nil {
+			body = resp.Body
 		}
 	}
+	out := map[string]any{"error": sanitizedProviderError(body, status, a)}
+	if id := providerRequestID(resp, a); id != "" {
+		out["request_id"] = id
+	}
+	return out
+}
+
+// sanitizedProviderError builds the sanitized error object from a provider body.
+// The status only selects the fallback message.
+func sanitizedProviderError(reader io.Reader, status int, a storedAccount) map[string]any {
+	message, typeName, code := "", "", ""
+	if reader != nil {
+		rawMessage, rawType, rawCode := providerErrorFields(reader)
+		typeName = providerErrorTag(rawType, true, a)
+		code = providerErrorTag(rawCode, false, a)
+		message, _ = sanitizeProviderMessage(rawMessage, a)
+	}
 	if message == "" {
-		message = fallback
+		message = http.StatusText(status)
+	}
+	if message == "" {
+		message = providerGenericMessage
 	}
 	if typeName == "" {
 		typeName = providerErrorType
@@ -87,11 +98,7 @@ func readProviderError(resp *http.Response, a storedAccount) map[string]any {
 	if code != "" {
 		body["code"] = code
 	}
-	out := map[string]any{"error": body}
-	if id := providerRequestID(resp, a); id != "" {
-		out["request_id"] = id
-	}
-	return out
+	return body
 }
 
 // providerErrorFields extracts the error fields from a bounded, JSON-only
@@ -176,16 +183,9 @@ func sanitizeProviderMessage(raw string, a storedAccount) (string, bool) {
 	if raw == "" || providerMessageUnsafe(raw) {
 		return "", false
 	}
-	message := strings.Join(strings.Fields(raw), " ")
-	if message == "" {
-		return "", false
-	}
-	message = redactProviderSecrets(message, a)
+	message := redactProviderSecrets(strings.Join(strings.Fields(raw), " "), a)
 	if runes := []rune(message); len(runes) > providerErrorMessageMax {
 		message = string(runes[:providerErrorMessageMax])
-	}
-	if message == "" {
-		return "", false
 	}
 	return message, true
 }
@@ -239,7 +239,7 @@ func providerFieldContainsSecret(value string, a storedAccount) bool {
 // split a longer match.
 func providerSecretVariants(a storedAccount) []string {
 	variants := map[string]struct{}{}
-	for _, secret := range []string{a.AccessToken, a.RefreshToken, a.IDToken, a.ClientSecret} {
+	for _, secret := range []string{a.AccessToken, a.RefreshToken, a.IDToken} {
 		addProviderSecretVariants(variants, secret)
 	}
 	ordered := make([]string, 0, len(variants))
