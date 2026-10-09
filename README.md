@@ -159,6 +159,10 @@ Stored Responses are unsupported. Set `store` to `false`.
 
 Messages `metadata.user_id` has no equivalent on the other side. vrouter drops it and lists it in the same header.
 
+Claude caches a prompt only when the request asks for it. vrouter asks for automatic caching on every Responses or Chat request it converts for Claude. Messages requests keep their own `cache_control`.
+
+Responses and Chat clients may send `prompt_cache_key`. vrouter forwards it to Codex and drops it for Claude.
+
 ### Thinking budgets
 
 When a Messages request sets a fixed thinking budget for a Responses model, vrouter turns the budget into a reasoning effort.
