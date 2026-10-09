@@ -280,6 +280,8 @@ type protocolRequest struct {
 	effort                       string
 	parallel                     *bool
 	stop                         any
+	// cacheKey is a Responses and Chat routing hint. Claude has no equivalent.
+	cacheKey string
 }
 
 func unsupported(field string) error { return unsupportedFeature(field) }
@@ -334,6 +336,9 @@ func adaptInferenceRequest(payload map[string]any, source, target wireProtocol) 
 			messages = append(messages, map[string]any{"role": m.role, "content": encodeBlocks(m.blocks, target, m.role)})
 		}
 		out["messages"] = messages
+		// Claude caches only on request, and the other protocols carry no
+		// breakpoints. Let Claude place one and move it as the conversation grows.
+		out["cache_control"] = map[string]any{"type": "ephemeral"}
 		if r.stop != nil {
 			out["stop_sequences"] = r.stop
 		}
@@ -417,6 +422,9 @@ func adaptInferenceRequest(payload map[string]any, source, target wireProtocol) 
 		if r.parallel != nil {
 			out["parallel_tool_calls"] = *r.parallel
 		}
+		if r.cacheKey != "" {
+			out["prompt_cache_key"] = r.cacheKey
+		}
 	}
 	if len(r.tools) > 0 {
 		tools := []any{}
@@ -474,14 +482,21 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 	allowed := "model stream temperature top_p tools tool_choice"
 	switch source {
 	case responsesProtocol:
-		allowed += " input instructions max_output_tokens reasoning parallel_tool_calls store include text truncation background metadata service_tier"
+		allowed += " input instructions max_output_tokens reasoning parallel_tool_calls store include text truncation background metadata service_tier prompt_cache_key"
 	case messagesProtocol:
 		allowed += " messages system max_tokens stop_sequences thinking output_config cache_control metadata service_tier"
 	case chatProtocol:
-		allowed += " messages max_tokens max_completion_tokens reasoning_effort parallel_tool_calls stop stream_options n logprobs top_logprobs response_format frequency_penalty presence_penalty service_tier store modalities verbosity"
+		allowed += " messages max_tokens max_completion_tokens reasoning_effort parallel_tool_calls stop stream_options n logprobs top_logprobs response_format frequency_penalty presence_penalty service_tier store modalities verbosity prompt_cache_key"
 	}
 	if err := fields(p, allowed); err != nil {
 		return r, err
+	}
+	if v := p["prompt_cache_key"]; v != nil {
+		key, ok := v.(string)
+		if !ok {
+			return r, fmt.Errorf("prompt_cache_key must be a string")
+		}
+		r.cacheKey = key
 	}
 	if v, exists := p["store"]; exists && v != false {
 		return r, unsupported("stored responses")
