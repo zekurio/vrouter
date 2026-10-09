@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"math"
 	"net/http"
 	"time"
@@ -127,23 +128,17 @@ type inferenceKey struct {
 // inferenceAttempt accumulates everything the settlement needs for one
 // supported inference POST, including usage parsed from the provider response.
 type inferenceAttempt struct {
-	percentForwarded bool
-	percent          *percentMeasurement
-	percentCharges   []percentCharge
-	percentUnknown   map[string]bool
-	principal        inferenceKey
-	startedAt        time.Time
-	model            string
-	native           string
-	provider         string
-	accountID        string
-	stream           bool
-	outcome          string
-	reserved         bool
-	bodyComplete     bool
-	dispatchFailed   bool
-	durationMs       int64
-	usage            usageParser
+	principal    inferenceKey
+	startedAt    time.Time
+	model        string
+	native       string
+	provider     string
+	accountID    string
+	stream       bool
+	outcome      string
+	bodyComplete bool
+	durationMs   int64
+	usage        usageParser
 }
 
 // usageTrusted reports whether the provider response was delivered to a
@@ -157,54 +152,23 @@ func (a *inferenceAttempt) usageTrusted() bool {
 	return a.bodyComplete
 }
 
-// update applies a registry mutation and records that persistence is healthy
-// again after a previous failure, so percentage-limited keys recover once the
-// disk is writable.
-func (m *manager) update(mutate func(*diskRegistry) error) error {
-	err := m.registry.update(mutate)
-	if err == nil {
-		m.degraded.Store(false)
-	}
-	return err
-}
-
-// reserve admits one inference attempt. It enforces the key's expiry and
-// provider percentage quotas atomically, and permits at most one in-flight
-// request for a percentage-limited key. The reservation is persisted before
-// the request may be forwarded.
+// reserve admits one inference attempt. It checks that the key is still
+// active and unexpired, and counts the request.
 func (m *manager) reserve(principal inferenceKey) (bool, int, string) {
 	if principal.KeyID == "" {
 		return true, 0, ""
 	}
 	allowed, status, message := true, 0, ""
-	err := m.update(func(registry *diskRegistry) error {
+	err := m.registry.update(func(registry *diskRegistry) error {
 		key := findKey(registry, principal.KeyID)
 		if key == nil || key.RevokedAt != nil {
 			allowed, status, message = false, http.StatusUnauthorized, "A valid vrouter client API key is required"
 			return errRegistryNoChange
 		}
-		now := time.Now()
-		if key.expired(now) {
+		if key.expired(time.Now()) {
 			allowed, status, message = false, http.StatusUnauthorized, keyExpiredMessage
 			return errRegistryNoChange
 		}
-		if reason := percentAdmission(*key, principal.Provider, now); reason != "" {
-			allowed, status, message = false, 429, reason
-			return errRegistryNoChange
-		}
-		if hasPercentLimit(key.ProviderQuotas[principal.Provider]) {
-			if m.degraded.Load() {
-				allowed, status, message = false, http.StatusServiceUnavailable, "Usage accounting is unavailable; percentage-limited requests are paused."
-				return errRegistryNoChange
-			}
-			// A cap added while uncapped requests are still running must see
-			// them, so every reservation is counted, not only capped ones.
-			if key.InFlight > 0 {
-				allowed, status, message = false, http.StatusTooManyRequests, "This key already has a request in flight using its measured provider quota. Retry when it finishes."
-				return errRegistryNoChange
-			}
-		}
-		key.InFlight++
 		key.UsedRequests = clampTokenCount(saturatingAdd(key.UsedRequests, 1))
 		return nil
 	})
@@ -212,42 +176,25 @@ func (m *manager) reserve(principal inferenceKey) (bool, int, string) {
 		return false, status, message
 	}
 	if err != nil {
-		m.degraded.Store(true)
 		return false, http.StatusServiceUnavailable, "Usage accounting is unavailable. Try again shortly."
 	}
 	return allowed, status, message
 }
 
-// settle persists the completed attempt: it releases this attempt's in-flight
-// reservation, adds measured tokens and percentage charges, and appends the
-// telemetry row. All of it happens in one atomic registry write. A write
-// failure fails closed by keeping percentage-limited keys blocked until a
-// later successful write.
-func (m *manager) settle(principal inferenceKey, record telemetryRecord, totals usageTotals, usageAccepted, reserved bool, charges []percentCharge, unknown map[string]bool) {
-	err := m.update(func(registry *diskRegistry) error {
-		if principal.KeyID != "" {
+// settle adds measured tokens to the key and appends the telemetry row in one
+// atomic registry write.
+func (m *manager) settle(principal inferenceKey, record telemetryRecord, totals usageTotals, usageAccepted bool) {
+	err := m.registry.update(func(registry *diskRegistry) error {
+		if principal.KeyID != "" && usageAccepted {
 			if key := findKey(registry, principal.KeyID); key != nil {
-				settlePercent(key, charges, unknown)
-				// Only the attempt that took the reservation may release it;
-				// a rejected request must never free another's budget.
-				if reserved && key.InFlight > 0 {
-					key.InFlight--
-				}
-				if usageAccepted {
-					key.UsedTokens = clampTokenCount(saturatingAdd(key.UsedTokens, totals.Total))
-				}
+				key.UsedTokens = clampTokenCount(saturatingAdd(key.UsedTokens, totals.Total))
 			}
 		}
 		registry.Telemetry[record.GatewayID] = append(registry.Telemetry[record.GatewayID], record)
 		return nil
 	})
 	if err != nil {
-		m.degraded.Store(true)
-		// Release only this admitted request after a failed write. Require
-		// owner acknowledgement before trusting its percentage usage again.
-		if reserved {
-			m.registry.markUncertain(principal.KeyID)
-		}
+		slog.Warn("request telemetry not saved", "gateway", record.GatewayID, "error", err)
 	}
 }
 

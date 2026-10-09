@@ -1,12 +1,6 @@
 // Gateway API key expiry and status.
 
-export type PercentQuota = { fiveHour?: number; sevenDay?: number };
 export type APIKey = {
-  providerQuotas: Record<string, PercentQuota>;
-  providerUsage: Record<
-    string,
-    { fiveHour: number; sevenDay: number; uncertain: boolean }
-  >;
   id: string;
   name: string;
   prefix: string;

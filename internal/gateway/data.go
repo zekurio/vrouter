@@ -184,18 +184,5 @@ func (s *dataStore) load() error {
 	if err := normalizeData(&s.state); err != nil {
 		return err
 	}
-	recoverReservations(&s.state.Registry)
-	// Persist recovery before serving requests. A failed start never opens an
-	// accounting window after an unfinished request.
 	return s.write(s.state)
-}
-
-func recoverReservations(state *diskRegistry) {
-	for i := range state.Keys {
-		key := &state.Keys[i]
-		if key.InFlight > 0 {
-			key.PercentUncertain = map[string]bool{"claude": true, "codex": true}
-			key.InFlight = 0
-		}
-	}
 }

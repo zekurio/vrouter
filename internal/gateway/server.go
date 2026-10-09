@@ -69,34 +69,32 @@ type State struct {
 }
 
 type server struct {
-	cfg             Config
-	handler         http.Handler
-	mux             *http.ServeMux
-	mgmt            *http.ServeMux
-	manager         *manager
-	gatewayID       string
-	store           *accountStore
-	client          *http.Client
-	streamClient    *http.Client
-	quotaMu         sync.Mutex
-	quotas          map[string]quotaCache
-	quotaPending    map[string]chan struct{}
-	lastQuotas      map[string]quotaCache
-	oauthMu         sync.Mutex
-	oauth           map[string]oauthSession
-	callbacks       map[string][]*http.Server
-	modelMu         sync.Mutex
-	catalogMu       sync.Mutex
-	catalogs        map[string]catalogCache
-	refreshMu       sync.Mutex
-	windowMu        sync.Mutex
-	windowWatch     map[string]windowWatch
-	stopWindows     context.CancelFunc
-	windowsDone     chan struct{}
-	claudeUsageGate sync.RWMutex
-	codexUsageGate  sync.RWMutex
-	resetMu         sync.Mutex
-	sequence        atomic.Uint64
+	cfg          Config
+	handler      http.Handler
+	mux          *http.ServeMux
+	mgmt         *http.ServeMux
+	manager      *manager
+	gatewayID    string
+	store        *accountStore
+	client       *http.Client
+	streamClient *http.Client
+	quotaMu      sync.Mutex
+	quotas       map[string]quotaCache
+	quotaPending map[string]chan struct{}
+	lastQuotas   map[string]quotaCache
+	oauthMu      sync.Mutex
+	oauth        map[string]oauthSession
+	callbacks    map[string][]*http.Server
+	modelMu      sync.Mutex
+	catalogMu    sync.Mutex
+	catalogs     map[string]catalogCache
+	refreshMu    sync.Mutex
+	windowMu     sync.Mutex
+	windowWatch  map[string]windowWatch
+	stopWindows  context.CancelFunc
+	windowsDone  chan struct{}
+	resetMu      sync.Mutex
+	sequence     atomic.Uint64
 }
 
 func DefaultDataDir() string {
