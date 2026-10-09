@@ -315,15 +315,6 @@ func (m *manager) hasGateway(id string) bool {
 	return false
 }
 
-func (m *manager) hasKeys(gatewayID string) bool {
-	for _, key := range m.registry.snapshot().Keys {
-		if key.GatewayID == gatewayID && key.RevokedAt == nil && !key.expired(time.Now()) {
-			return true
-		}
-	}
-	return false
-}
-
 func (m *manager) hasAnyKeys() bool {
 	for _, key := range m.registry.snapshot().Keys {
 		if key.RevokedAt == nil && !key.expired(time.Now()) {

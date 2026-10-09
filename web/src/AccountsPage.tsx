@@ -243,6 +243,11 @@ export function AccountsPage({
                             </Private>
                           </p>
                         )}
+                        {!!a.windows?.length && a.quotaError && (
+                          <p className="quota-error">
+                            <Private>{a.quotaError}</Private>
+                          </p>
+                        )}
                       </div>
                       <div className="account-row-actions">
                         {a.reconnectable && (

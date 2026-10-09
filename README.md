@@ -52,7 +52,7 @@ Put vrouter behind an HTTPS reverse proxy and set `VROUTER_PUBLIC_URL` to the ad
 Management has three modes.
 
 - With neither variable set, management accepts loopback peers and loopback hosts only.
-- With `VROUTER_ADMIN_TOKEN`, every management request needs the bearer token.
+- With `VROUTER_ADMIN_TOKEN`, every management request needs the bearer token. The dashboard exchanges the token for a sign-in cookie that lasts 30 days, so it stays signed in across reloads. The cookie is HTTP-only and stops working when the token changes.
 - With `VROUTER_EXTERNAL_AUTH=1`, an authentication proxy such as TinyAuth protects the dashboard and every `/api` route. Keep the backend private so clients cannot bypass the proxy.
 
 vrouter does not read identity headers or keep user sessions, so everyone the proxy admits is a full administrator. Restrict its users or groups. If you set both variables, management still requires the token.

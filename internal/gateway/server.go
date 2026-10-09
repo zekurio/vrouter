@@ -81,6 +81,7 @@ type server struct {
 	quotaMu         sync.Mutex
 	quotas          map[string]quotaCache
 	quotaPending    map[string]chan struct{}
+	lastQuotas      map[string]quotaCache
 	oauthMu         sync.Mutex
 	oauth           map[string]oauthSession
 	callbacks       map[string][]*http.Server
@@ -126,6 +127,8 @@ func New(cfg Config, assets fs.FS) (http.Handler, error) {
 	}
 	s := newGatewayStore(cfg, assets, store)
 	s.mux.HandleFunc("GET /api/auth", s.authStatus)
+	s.mux.HandleFunc("POST /api/auth/session", s.startSession)
+	s.mux.HandleFunc("DELETE /api/auth/session", s.endSession)
 	attachManager(s, assets)
 	if cfg.StartWindows {
 		var ctx context.Context
@@ -142,7 +145,7 @@ func newGatewayStore(cfg Config, assets fs.FS, store *accountStore) *server {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = 60 * time.Second
 	noRedirect := func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-	s := &server{cfg: cfg, gatewayID: defaultGatewayID, client: &http.Client{Transport: transport, Timeout: 12 * time.Second, CheckRedirect: noRedirect}, streamClient: &http.Client{Transport: transport, CheckRedirect: noRedirect}, quotas: map[string]quotaCache{}, oauth: map[string]oauthSession{}, catalogs: map[string]catalogCache{}, windowWatch: map[string]windowWatch{}}
+	s := &server{cfg: cfg, gatewayID: defaultGatewayID, client: &http.Client{Transport: transport, Timeout: 12 * time.Second, CheckRedirect: noRedirect}, streamClient: &http.Client{Transport: transport, CheckRedirect: noRedirect}, quotas: map[string]quotaCache{}, lastQuotas: map[string]quotaCache{}, oauth: map[string]oauthSession{}, catalogs: map[string]catalogCache{}, windowWatch: map[string]windowWatch{}}
 	s.store = store
 	mux := http.NewServeMux()
 	s.mux = mux
@@ -226,19 +229,33 @@ func tokenEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare(x[:], y[:]) == 1
 }
 
+// sameOrigin rejects writes a browser sent from another origin.
+func (s *server) sameOrigin(r *http.Request) bool {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		return true
+	}
+	header := r.Header.Get("Origin")
+	if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+		return false
+	}
+	if header == "" {
+		return true
+	}
+	origin, err := url.Parse(header)
+	return err == nil && origin.Host == r.Host && (origin.Scheme == "http" || origin.Scheme == "https") && (s.cfg.PublicURL == "" || header == s.cfg.PublicURL)
+}
+
 func (s *server) authorize(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			origin, err := url.Parse(r.Header.Get("Origin"))
-			if r.Header.Get("Sec-Fetch-Site") == "cross-site" || (r.Header.Get("Origin") != "" && (err != nil || origin.Host != r.Host || (origin.Scheme != "http" && origin.Scheme != "https") || (s.cfg.PublicURL != "" && r.Header.Get("Origin") != s.cfg.PublicURL))) {
-				writeJSON(w, 403, map[string]string{"error": "Cross-origin management requests are not allowed"})
-				return
-			}
+		if !s.sameOrigin(r) {
+			writeJSON(w, 403, map[string]string{"error": "Cross-origin management requests are not allowed"})
+			return
 		}
 		if s.cfg.AdminToken != "" {
 			value := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || !tokenEqual(value, s.cfg.AdminToken) {
+			bearer := strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") && tokenEqual(value, s.cfg.AdminToken)
+			if !bearer && !s.hasSession(r) {
 				writeJSON(w, 401, map[string]string{"error": "Sign in with your vrouter admin token"})
 				return
 			}
@@ -271,9 +288,6 @@ func (s *server) state(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 	if err != nil {
 		state.Warnings = append(state.Warnings, "Some provider model catalogs could not be loaded. Reconnect expired accounts or refresh to retry.")
-	}
-	if !s.manager.hasKeys(s.gatewayID) {
-		state.Warnings = append(state.Warnings, "Create an API key in the Keys page to enable client requests.")
 	}
 	writeJSON(w, 200, state)
 }

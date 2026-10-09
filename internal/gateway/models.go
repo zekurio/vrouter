@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -108,19 +109,41 @@ func (s *server) accountModels(ctx context.Context, a storedAccount) ([]Model, e
 	return result, err
 }
 func (s *server) rawModels(ctx context.Context) ([]Model, error) {
+	var pool []storedAccount
+	for _, a := range s.store.snapshot().Accounts {
+		if !a.Disabled && routableAuth(a) {
+			pool = append(pool, a)
+		}
+	}
+	// Catalogs load side by side so one slow provider does not hold up the rest.
+	catalogs := make([][]Model, len(pool))
+	failed := make([]error, len(pool))
+	var wg sync.WaitGroup
+	limit := make(chan struct{}, 4)
+	for i, a := range pool {
+		wg.Add(1)
+		go func(i int, a storedAccount) {
+			defer wg.Done()
+			select {
+			case limit <- struct{}{}:
+				defer func() { <-limit }()
+			case <-ctx.Done():
+				failed[i] = ctx.Err()
+				return
+			}
+			catalogs[i], failed[i] = s.accountModels(ctx, a)
+		}(i, a)
+	}
+	wg.Wait()
 	result := []Model{}
 	seen := map[string]bool{}
 	var failures []error
-	for _, a := range s.store.snapshot().Accounts {
-		if a.Disabled || !routableAuth(a) {
+	for i := range pool {
+		if failed[i] != nil {
+			failures = append(failures, failed[i])
 			continue
 		}
-		models, err := s.accountModels(ctx, a)
-		if err != nil {
-			failures = append(failures, err)
-			continue
-		}
-		for _, m := range models {
+		for _, m := range catalogs[i] {
 			key := modelKey(m.Provider, m.ID)
 			if !seen[key] {
 				result = append(result, m)

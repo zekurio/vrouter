@@ -67,14 +67,11 @@ function App() {
   const [error, setError] = useState("");
   const [loginError, setLoginError] = useState("");
   const [token, setToken] = useState("");
-  const bearer = useRef("");
   const sequence = useRef(0);
   // Several requests can report the same expired session.
   const ending = useRef(false);
   // Not scoped to a gateway: sign-in and the gateway list work without one.
-  const [client] = useState(() =>
-    createClient({ token: () => bearer.current }),
-  );
+  const [client] = useState(() => createClient({}));
   const [toast, setToast] = useState<{ text: string; failed?: boolean } | null>(
     null,
   );
@@ -88,27 +85,23 @@ function App() {
   const [help, setHelp] = useState(false);
   const light = theme === "system" ? systemLight : theme === "light";
 
-  function signedOut(info: AuthInfo | null, message: string) {
-    bearer.current = "";
+  function signedOut(info: AuthInfo | null) {
     setAuth(info);
     setGateways([]);
     setSelected(null);
-    if (message) setLoginError(message);
     setPhase("login");
   }
-  // Checks management access, then loads the available account stores. `tried` is set
-  // when the user has just submitted an admin token.
-  async function load(tried = false) {
+  // Checks management access, then loads the available account stores. With an
+  // admin token the server keeps the sign-in in a cookie this page cannot read,
+  // so a reload stays signed in.
+  async function load() {
     const current = ++sequence.current;
     setPhase("loading");
     setError("");
     let info: AuthInfo | null = null;
-    const rejected = tried ? "That admin token was not accepted." : "";
     try {
       info = await client.request<AuthInfo>("/api/auth");
       if (current !== sequence.current) return;
-      if (info.mode === "token" && !bearer.current)
-        return signedOut(info, rejected);
       const list = await client.request<{ gateways: Gateway[] }>(
         "/api/gateways",
       );
@@ -122,7 +115,7 @@ function App() {
       setPhase("ready");
     } catch (err) {
       if (current !== sequence.current) return;
-      if (info && statusOf(err) === 401) return signedOut(info, rejected);
+      if (info && statusOf(err) === 401) return signedOut(info);
       setError(errorMessage(err, "Could not load vrouter."));
       setPhase("error");
     }
@@ -165,15 +158,35 @@ function App() {
   }, [light, theme]);
   useEffect(() => storeHideEmails(hideEmails), [hideEmails]);
 
-  const canSignOut = phase === "ready" && !!bearer.current;
-  function signOut() {
+  async function signIn() {
+    const current = ++sequence.current;
+    const value = token;
+    setToken("");
+    setLoginError("");
+    setPhase("loading");
+    try {
+      await client.request("/api/auth/session", "POST", { token: value });
+    } catch (err) {
+      if (current !== sequence.current) return;
+      setLoginError(errorMessage(err, "Could not sign in."));
+      setPhase("login");
+      return;
+    }
+    if (current === sequence.current) void load();
+  }
+  const canSignOut = phase === "ready" && auth?.mode === "token";
+  async function signOut() {
     if (
       unsaved.current &&
       !confirm("Discard unsaved model changes and sign out?")
     )
       return;
-    bearer.current = "";
     setLoginError("");
+    try {
+      await client.request("/api/auth/session", "DELETE");
+    } catch {
+      // The reload below shows whether the session is still open.
+    }
     void load();
   }
   const sessionEnded = () => {
@@ -184,12 +197,7 @@ function App() {
       location.reload();
       return;
     }
-    setLoginError(
-      bearer.current
-        ? "The admin token is no longer accepted. Sign in again."
-        : "Your session ended. Sign in again.",
-    );
-    bearer.current = "";
+    setLoginError("Your session ended. Sign in again.");
     void load();
   };
   const select = (id: string) => {
@@ -340,10 +348,7 @@ function App() {
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
-                  bearer.current = token;
-                  setToken("");
-                  setLoginError("");
-                  void load(true);
+                  void signIn();
                 }}
               >
                 <label htmlFor="admin-token">Admin token</label>
@@ -375,7 +380,6 @@ function App() {
             gateway={gateway}
             page={page}
             navigate={navigate}
-            token={() => bearer.current}
             authMode={auth.mode}
             publicUrl={auth.publicUrl}
             onUnauthorized={sessionEnded}
