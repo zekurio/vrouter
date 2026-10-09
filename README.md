@@ -33,7 +33,15 @@ One `vrouter.json` file in the data directory holds accounts, model settings, cl
 
 Run one instance per data directory. Stop the server before you restore data or import provider credentials.
 
-This testing build does not migrate older files. Use a fresh data directory or convert the data by hand.
+This testing build does not migrate older files. Use a fresh data directory. Files with the removed `chatgpt_registration`, `client_secret`, or retired model-policy fields are not supported.
+
+To import existing provider logins, stop vrouter and pass native Codex or Claude CLI credential files:
+
+```sh
+./bin/vrouter import ~/.codex/auth.json ~/.claude/.credentials.json
+```
+
+The import skips files already saved in the store. It does not replace credentials that vrouter has refreshed. It accepts native CLI files only.
 
 ## Remote hosting
 
@@ -105,7 +113,7 @@ The frontend dependency hash lives in `nix/package.nix`. After changing `web/pnp
 
 Create a key for each person or tool on the API keys page. vrouter shows the secret once and stores only its hash. You can rename, revoke, or delete a key.
 
-Client keys cannot open management endpoints, and admin tokens cannot authorize inference. vrouter no longer reads `VROUTER_API_KEY` or the old `client-key` file.
+Client keys cannot open management endpoints, and admin tokens cannot authorize inference.
 
 ### Percentage limits
 
@@ -226,7 +234,7 @@ On an update, omitting `providerQuotas` keeps the existing limits. Supplying it 
 
 `GET /api/telemetry` returns recent requests.
 
-Select older gateways with the `X-Vrouter-Gateway` header. Inference always takes its gateway from the client key.
+Select a gateway with the `X-Vrouter-Gateway` header. Inference always takes its gateway from the client key.
 
 ## Development
 

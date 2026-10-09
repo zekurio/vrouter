@@ -121,7 +121,7 @@ func (s *server) accessAccount(ctx context.Context, id string) (storedAccount, e
 		return a, errors.New("account needs sign-in")
 	}
 	fields := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {a.RefreshToken}}
-	endpoint := codexNativeTokenURL
+	var endpoint string
 	switch a.AuthMode {
 	case "codex":
 		endpoint = codexNativeTokenURL

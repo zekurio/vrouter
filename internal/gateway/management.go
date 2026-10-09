@@ -6,8 +6,8 @@ import (
 	"strings"
 )
 
-// staticHandler serves the embedded frontend with the same cache and path
-// rules as the legacy server.
+// staticHandler serves the embedded frontend. Only files are served, and
+// index.html is revalidated on every load so a new build is picked up.
 func staticHandler(assets fs.FS) http.HandlerFunc {
 	files := http.FileServer(http.FS(assets))
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -19,7 +19,7 @@ func staticHandler(assets fs.FS) http.HandlerFunc {
 		if path == "" {
 			path = "index.html"
 		}
-		if _, err := fs.Stat(assets, path); err != nil {
+		if info, err := fs.Stat(assets, path); err != nil || info.IsDir() {
 			http.NotFound(w, r)
 			return
 		}

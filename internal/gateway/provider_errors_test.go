@@ -137,10 +137,9 @@ func TestProviderErrorRedactsCredentials(t *testing.T) {
 		AccessToken:  "access token+1/2",
 		RefreshToken: "refresh-token-ABCDEF",
 		IDToken:      "id-token-GHIJKL",
-		ClientSecret: "client-secret-MNOPQR",
 	}
 	message := "provider rejected " + account.AccessToken + " and " + account.RefreshToken +
-		" id " + account.IDToken + " secret " + account.ClientSecret +
+		" id " + account.IDToken +
 		" plus Bearer abcdef123456 and sk-live-1234567890 and sk_test_1234567890 and vr_key_1234567890" +
 		" encoded " + url.QueryEscape(account.AccessToken) +
 		" hex " + hex.EncodeToString([]byte(account.RefreshToken))
@@ -151,7 +150,7 @@ func TestProviderErrorRedactsCredentials(t *testing.T) {
 	out := readProviderError(providerResponse(401, string(raw), nil), account)
 	text, _ := providerErrorBody(t, out)["message"].(string)
 	for _, secret := range []string{
-		account.AccessToken, account.RefreshToken, account.IDToken, account.ClientSecret,
+		account.AccessToken, account.RefreshToken, account.IDToken,
 		"abcdef123456", "sk-live-1234567890", "sk_test_1234567890", "vr_key_1234567890",
 		url.QueryEscape(account.AccessToken), hex.EncodeToString([]byte(account.RefreshToken)),
 	} {
@@ -169,7 +168,7 @@ func TestProviderErrorRedactsCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{"access token", account.RefreshToken, account.IDToken, account.ClientSecret} {
+	for _, secret := range []string{"access token", account.RefreshToken, account.IDToken} {
 		if strings.Contains(string(encoded), secret) {
 			t.Fatalf("response leaked credential: %q", secret)
 		}
@@ -260,8 +259,8 @@ func TestProviderErrorOptionalFieldsDoNotEchoCredentials(t *testing.T) {
 			},
 		},
 		{
-			name:    "client secret embedded in code",
-			account: storedAccount{ClientSecret: "short-secret"},
+			name:    "refresh token embedded in code",
+			account: storedAccount{RefreshToken: "short-secret"},
 			body:    `{"error":{"message":"boom","code":"wrap_short-secret_x"}}`,
 			check: func(t *testing.T, out map[string]any) {
 				if _, exists := providerErrorBody(t, out)["code"]; exists {
@@ -289,7 +288,7 @@ func TestProviderErrorOptionalFieldsDoNotEchoCredentials(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, secret := range []string{tc.account.AccessToken, tc.account.RefreshToken, tc.account.IDToken, tc.account.ClientSecret} {
+			for _, secret := range []string{tc.account.AccessToken, tc.account.RefreshToken, tc.account.IDToken} {
 				if secret != "" && strings.Contains(string(encoded), secret) {
 					t.Fatalf("credential %q leaked: %s", secret, encoded)
 				}

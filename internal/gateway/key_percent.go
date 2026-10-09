@@ -104,15 +104,13 @@ func (s *server) lockPercentUsage(provider string) (func(), bool) {
 	if !gate.TryRLock() {
 		return nil, false
 	}
-	if s.manager != nil {
-		for _, key := range s.manager.registry.snapshot().Keys {
-			if key.GatewayID == s.gatewayID && key.RevokedAt == nil && !key.expired(time.Now()) && hasPercentLimit(key.ProviderQuotas[provider]) {
-				gate.RUnlock()
-				if !gate.TryLock() {
-					return nil, false
-				}
-				return gate.Unlock, true
+	for _, key := range s.manager.registry.snapshot().Keys {
+		if key.GatewayID == s.gatewayID && key.RevokedAt == nil && !key.expired(time.Now()) && hasPercentLimit(key.ProviderQuotas[provider]) {
+			gate.RUnlock()
+			if !gate.TryLock() {
+				return nil, false
 			}
+			return gate.Unlock, true
 		}
 	}
 	return gate.RUnlock, true
@@ -126,7 +124,7 @@ type percentMeasurement struct {
 }
 
 func (s *server) beginPercentMeasurement(ctx context.Context, attempt *inferenceAttempt, account storedAccount) error {
-	if attempt == nil || s.manager == nil || attempt.principal.KeyID == "" {
+	if attempt == nil || attempt.principal.KeyID == "" {
 		return nil
 	}
 	registry := s.manager.registry.snapshot()

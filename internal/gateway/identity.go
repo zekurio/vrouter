@@ -184,15 +184,6 @@ type idTokenAuthClaims struct {
 	ChatGPTPlanType  string `json:"chatgpt_plan_type"`
 }
 
-// validateIDTokenClaims checks the claims of a token whose signature already
-// verified and returns the identity to store. Browser flows require a nonce.
-func validateIDTokenClaims(payload []byte, clientID, nonce string) (verifiedIdentity, error) {
-	if clientID == "" || nonce == "" {
-		return verifiedIdentity{}, errors.New("id token verification requires an expected client ID and nonce")
-	}
-	return validateOpenAIIDTokenClaims(payload, clientID, &nonce)
-}
-
 func validateOpenAIIDTokenClaims(payload []byte, clientID string, nonce *string) (verifiedIdentity, error) {
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	var claims idTokenClaims

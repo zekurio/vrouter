@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -25,9 +24,8 @@ const (
 )
 
 // ImportCredentials copies provider credentials from JSON files into the
-// account store in dataDir. It understands the files the previous
-// CLIProxyAPI-based scripts wrote, the Codex CLI's auth.json, and the Claude
-// CLI's .credentials.json.
+// account store in dataDir. It accepts the Codex CLI's auth.json and the
+// Claude CLI's .credentials.json.
 //
 // All files are parsed before the store is touched, so a malformed or
 // unsupported file leaves every existing account unchanged. A credential
@@ -150,273 +148,88 @@ type importTokens struct {
 	AccountID    string `json:"account_id"`
 }
 
-func (t *importTokens) accessToken() string {
-	if t == nil {
-		return ""
-	}
-	return t.AccessToken
-}
-
-func (t *importTokens) refreshToken() string {
-	if t == nil {
-		return ""
-	}
-	return t.RefreshToken
-}
-
-func (t *importTokens) idToken() string {
-	if t == nil {
-		return ""
-	}
-	return t.IDToken
-}
-
-func (t *importTokens) accountID() string {
-	if t == nil {
-		return ""
-	}
-	return t.AccountID
-}
-
-// importClaudeOAuth is the nested "claudeAiOauth" object of the Claude CLI's
-// .credentials.json.
+// importClaudeOAuth is the native Claude CLI credential object.
 type importClaudeOAuth struct {
-	AccessToken      string     `json:"accessToken"`
-	RefreshToken     string     `json:"refreshToken"`
-	ExpiresAt        importTime `json:"expiresAt"`
-	SubscriptionType string     `json:"subscriptionType"`
-	Scopes           []string   `json:"scopes"`
+	AccessToken      string   `json:"accessToken"`
+	RefreshToken     string   `json:"refreshToken"`
+	ExpiresAt        int64    `json:"expiresAt"`
+	SubscriptionType string   `json:"subscriptionType"`
+	Scopes           []string `json:"scopes"`
 }
 
-func (c *importClaudeOAuth) accessToken() string {
-	if c == nil {
-		return ""
-	}
-	return c.AccessToken
-}
-
-func (c *importClaudeOAuth) refreshToken() string {
-	if c == nil {
-		return ""
-	}
-	return c.RefreshToken
-}
-
-func (c *importClaudeOAuth) subscriptionType() string {
-	if c == nil {
-		return ""
-	}
-	return c.SubscriptionType
-}
-
-func (c *importClaudeOAuth) scopes() []string {
-	if c == nil {
-		return nil
-	}
-	return c.Scopes
-}
-
-func (c *importClaudeOAuth) expiresAt() time.Time {
-	if c == nil {
-		return time.Time{}
-	}
-	return c.ExpiresAt.value
-}
-
-// importFile is the union of the supported credential shapes. Unknown fields,
-// such as the Codex CLI's OPENAI_API_KEY, are ignored.
+// Native files must contain exactly one provider credential object.
 type importFile struct {
-	Type             string             `json:"type"`
-	Label            string             `json:"label"`
-	Email            string             `json:"email"`
-	Disabled         *bool              `json:"disabled"`
-	AccessToken      string             `json:"access_token"`
-	RefreshToken     string             `json:"refresh_token"`
-	IDToken          string             `json:"id_token"`
-	AccountID        string             `json:"account_id"`
-	PlanType         string             `json:"plan_type"`
-	SubscriptionType string             `json:"subscription_type"`
-	ClientID         string             `json:"client_id"`
-	Expires          importTime         `json:"expired"`
-	ExpiresAt        importTime         `json:"expiresAt"`
-	Scopes           []string           `json:"scopes"`
-	Tokens           *importTokens      `json:"tokens"`
-	ClaudeAiOauth    *importClaudeOAuth `json:"claudeAiOauth"`
+	Tokens        *importTokens      `json:"tokens"`
+	ClaudeAiOauth *importClaudeOAuth `json:"claudeAiOauth"`
 }
 
-// provider classifies a file. Legacy import files carry a "type"; the raw CLI
-// files are recognized by their nested objects, and a flat file by fields
-// only one provider uses.
 func (f *importFile) provider() (string, error) {
-	switch strings.ToLower(strings.TrimSpace(f.Type)) {
-	case "codex", "openai":
+	switch {
+	case f.Tokens != nil && f.ClaudeAiOauth != nil:
+		return "", errors.New("credential file contains more than one provider")
+	case f.Tokens != nil:
 		return "codex", nil
-	case "claude", "anthropic":
+	case f.ClaudeAiOauth != nil:
 		return "claude", nil
-	case "":
-		// Fall through to shape-based detection.
 	default:
-		return "", errors.New("unsupported credential type")
+		return "", errors.New("expected a native Codex or Claude CLI credential file")
 	}
-	if f.Tokens != nil && (f.Tokens.AccessToken != "" || f.Tokens.RefreshToken != "") {
-		return "codex", nil
-	}
-	if f.ClaudeAiOauth != nil && (f.ClaudeAiOauth.AccessToken != "" || f.ClaudeAiOauth.RefreshToken != "") {
-		return "claude", nil
-	}
-	if f.AccountID != "" || f.IDToken != "" || f.PlanType != "" {
-		return "codex", nil
-	}
-	if f.SubscriptionType != "" || len(f.Scopes) > 0 {
-		return "claude", nil
-	}
-	return "", errors.New("unrecognized credential file")
 }
 
-// account converts one parsed file into a stored credential. Legacy Codex
-// logins keep the "codex" auth mode because they refresh through the Codex
-// CLI client; Claude logins use the "oauth" mode. JWTs are decoded only to
-// fill metadata such as email, plan, and expiry fallbacks.
 func (f *importFile) account(provider, canonicalPath string) (storedAccount, error) {
 	account := storedAccount{
 		ID:        credentialSourceID(provider, canonicalPath),
 		Provider:  provider,
-		Label:     strings.TrimSpace(f.Label),
+		Label:     providerLabel(provider),
 		CreatedAt: time.Now().UTC(),
 	}
-	if f.Disabled != nil {
-		account.Disabled = *f.Disabled
-	}
-	var access, refresh, idToken string
-	switch provider {
-	case "codex":
-		access = firstNonEmpty(f.AccessToken, f.Tokens.accessToken())
-		refresh = firstNonEmpty(f.RefreshToken, f.Tokens.refreshToken())
-		idToken = firstNonEmpty(f.IDToken, f.Tokens.idToken())
+	if provider == "codex" {
+		account.AccessToken = strings.TrimSpace(f.Tokens.AccessToken)
+		account.RefreshToken = strings.TrimSpace(f.Tokens.RefreshToken)
+		account.IDToken = strings.TrimSpace(f.Tokens.IDToken)
 		account.AuthMode = "codex"
-		account.AccountID = strings.TrimSpace(firstNonEmpty(f.AccountID, f.Tokens.accountID()))
-		account.Plan = strings.TrimSpace(f.PlanType)
-	default:
-		access = firstNonEmpty(f.AccessToken, f.ClaudeAiOauth.accessToken())
-		refresh = firstNonEmpty(f.RefreshToken, f.ClaudeAiOauth.refreshToken())
+		account.ClientID = codexNativeClientID
+		account.AccountID = strings.TrimSpace(f.Tokens.AccountID)
+	} else {
+		account.AccessToken = strings.TrimSpace(f.ClaudeAiOauth.AccessToken)
+		account.RefreshToken = strings.TrimSpace(f.ClaudeAiOauth.RefreshToken)
 		account.AuthMode = "oauth"
-		account.Plan = strings.TrimSpace(firstNonEmpty(f.SubscriptionType, f.ClaudeAiOauth.subscriptionType()))
-		account.Scopes = firstNonEmptyScopes(f.Scopes, f.ClaudeAiOauth.scopes())
-		account.ClientID = strings.TrimSpace(f.ClientID)
-		if account.ClientID == "" {
-			account.ClientID = claudeClientID
+		account.ClientID = claudeClientID
+		account.Plan = strings.TrimSpace(f.ClaudeAiOauth.SubscriptionType)
+		account.Scopes = f.ClaudeAiOauth.Scopes
+		if f.ClaudeAiOauth.ExpiresAt > 0 {
+			account.ExpiresAt = time.UnixMilli(f.ClaudeAiOauth.ExpiresAt).UTC()
 		}
 	}
-	if firstNonEmpty(access) == "" || firstNonEmpty(refresh) == "" {
+	if account.AccessToken == "" || account.RefreshToken == "" {
 		return storedAccount{}, errors.New("missing OAuth credentials")
 	}
-	account.AccessToken = access
-	account.RefreshToken = refresh
-	account.IDToken = idToken
-	if provider == "codex" {
-		account.ClientID = strings.TrimSpace(f.ClientID)
-	}
-	if account.Label == "" {
-		if provider == "codex" {
-			account.Label = "Codex"
-		} else {
-			account.Label = "Claude"
-		}
-	}
-	accessClaims := tokenClaims(access)
+	accessClaims := tokenClaims(account.AccessToken)
 	idClaims := tokenClaims(account.IDToken)
-	if account.Email == "" {
-		account.Email = firstNonEmpty(
-			strings.TrimSpace(f.Email),
-			claimString(idClaims, "email"),
-			claimNested(idClaims, importOpenAIProfileClaim, "email"),
-			claimString(accessClaims, "email"),
-			claimNested(accessClaims, importOpenAIProfileClaim, "email"),
+	account.Email = firstNonEmpty(
+		claimString(idClaims, "email"),
+		claimNested(idClaims, importOpenAIProfileClaim, "email"),
+		claimString(accessClaims, "email"),
+		claimNested(accessClaims, importOpenAIProfileClaim, "email"),
+	)
+	if provider == "codex" {
+		account.AccountID = firstNonEmpty(
+			account.AccountID,
+			claimNested(idClaims, importOpenAIAuthClaim, "chatgpt_account_id"),
+			claimNested(accessClaims, importOpenAIAuthClaim, "chatgpt_account_id"),
+		)
+		account.Plan = firstNonEmpty(
+			claimNested(accessClaims, importOpenAIAuthClaim, "chatgpt_plan_type"),
+			claimNested(idClaims, importOpenAIAuthClaim, "chatgpt_plan_type"),
 		)
 	}
-	if provider == "codex" {
-		if account.AccountID == "" {
-			account.AccountID = firstNonEmpty(
-				claimNested(idClaims, importOpenAIAuthClaim, "chatgpt_account_id"),
-				claimNested(accessClaims, importOpenAIAuthClaim, "chatgpt_account_id"),
-			)
-		}
-		if account.Plan == "" {
-			account.Plan = firstNonEmpty(
-				claimNested(accessClaims, importOpenAIAuthClaim, "chatgpt_plan_type"),
-				claimNested(idClaims, importOpenAIAuthClaim, "chatgpt_plan_type"),
-			)
-		}
+	if account.ExpiresAt.IsZero() {
+		account.ExpiresAt = claimTime(accessClaims, "exp")
 	}
-	account.ExpiresAt = f.expiry(idClaims, accessClaims)
+	if account.ExpiresAt.IsZero() {
+		account.ExpiresAt = claimTime(idClaims, "exp")
+	}
 	return account, nil
-}
-
-// expiry prefers a timestamp from the file itself and falls back to an
-// unverified JWT exp claim. The claim is metadata only; it never authenticates
-// the credential.
-func (f *importFile) expiry(idClaims, accessClaims map[string]any) time.Time {
-	for _, candidate := range []time.Time{
-		f.Expires.value,
-		f.ExpiresAt.value,
-		f.ClaudeAiOauth.expiresAt(),
-		claimTime(accessClaims, "exp"),
-		claimTime(idClaims, "exp"),
-	} {
-		if !candidate.IsZero() {
-			return candidate.UTC()
-		}
-	}
-	return time.Time{}
-}
-
-// importTime accepts the timestamp shapes the supported files use: an RFC3339
-// string, or unix seconds/milliseconds as a number or numeric string.
-// Unrecognized metadata formats are ignored rather than rejected.
-type importTime struct{ value time.Time }
-
-func (t *importTime) UnmarshalJSON(data []byte) error {
-	raw := strings.TrimSpace(string(data))
-	if raw == "" || raw == "null" {
-		return nil
-	}
-	if raw[0] == '"' {
-		var text string
-		if json.Unmarshal(data, &text) != nil {
-			return nil
-		}
-		t.value = parseImportTimeString(text)
-		return nil
-	}
-	var number float64
-	if json.Unmarshal(data, &number) != nil || number <= 0 {
-		return nil
-	}
-	t.value = importUnixTime(number)
-	return nil
-}
-
-func parseImportTimeString(text string) time.Time {
-	text = strings.TrimSpace(text)
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
-		if parsed, err := time.Parse(layout, text); err == nil {
-			return parsed
-		}
-	}
-	if number, err := strconv.ParseFloat(text, 64); err == nil && number > 0 {
-		return importUnixTime(number)
-	}
-	return time.Time{}
-}
-
-// importUnixTime interprets a numeric timestamp: values that large must be
-// milliseconds (the Claude CLI's expiresAt), smaller values are seconds
-// (a JWT exp claim).
-func importUnixTime(value float64) time.Time {
-	if value > 1e12 {
-		return time.UnixMilli(int64(value)).UTC()
-	}
-	return time.Unix(int64(value), 0).UTC()
 }
 
 // tokenClaims decodes a JWT payload without verifying its signature. The
@@ -428,15 +241,12 @@ func tokenClaims(token string) map[string]any {
 		return nil
 	}
 	parts := strings.Split(token, ".")
-	if len(parts) < 2 {
+	if len(parts) != 3 {
 		return nil
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		payload, err = base64.URLEncoding.DecodeString(parts[1])
-		if err != nil {
-			return nil
-		}
+		return nil
 	}
 	var claims map[string]any
 	if json.Unmarshal(payload, &claims) != nil {
@@ -473,7 +283,7 @@ func claimTime(claims map[string]any, key string) time.Time {
 	if !ok || value <= 0 {
 		return time.Time{}
 	}
-	return importUnixTime(value)
+	return time.Unix(int64(value), 0).UTC()
 }
 
 func firstNonEmpty(values ...string) string {
@@ -483,13 +293,4 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func firstNonEmptyScopes(values ...[]string) []string {
-	for _, value := range values {
-		if len(value) > 0 {
-			return value
-		}
-	}
-	return nil
 }

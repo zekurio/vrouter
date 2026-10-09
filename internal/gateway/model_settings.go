@@ -15,17 +15,12 @@ import (
 )
 
 type modelAlias struct {
-	Name         string `json:"name"`
-	Alias        string `json:"alias"`
-	Fork         bool   `json:"fork,omitempty"`
-	DisplayName  string `json:"display-name,omitempty"`
-	ForceMapping bool   `json:"force-mapping,omitempty"`
+	Name  string `json:"name"`
+	Alias string `json:"alias"`
 }
 type modelPolicy struct {
 	Excluded map[string][]string     `json:"excluded-models"`
 	Aliases  map[string][]modelAlias `json:"model-alias"`
-	// Retired: still decoded so older state loads, then dropped by storeNormalize.
-	LegacyContext map[string]map[string]int `json:"context-overrides,omitempty"`
 }
 type managedModel struct {
 	Model
@@ -170,9 +165,7 @@ func (s *server) putModelSettings(w http.ResponseWriter, r *http.Request) {
 
 func applyModelChanges(settings modelSettings, p modelPolicy, changes []modelChange) (modelSettings, modelPolicy, error) {
 	// Clone policy so failed validation cannot mutate a caller's snapshot.
-	data, _ := json.Marshal(p)
-	var nextPolicy modelPolicy
-	_ = json.Unmarshal(data, &nextPolicy)
+	nextPolicy := storeClonePolicy(p)
 	result := modelSettings{Models: append([]managedModel(nil), settings.Models...)}
 	indices := map[string]int{}
 	for i, m := range result.Models {

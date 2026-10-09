@@ -34,10 +34,8 @@ func (r inferenceBodyReader) Read(p []byte) (int, error) {
 
 func (s *server) deliverInference(w http.ResponseWriter, r *http.Request, resp *http.Response, attempt *inferenceAttempt, p *preparedInference, account storedAccount) {
 	reader := inferenceBodyReader{source: resp.Body, attempt: attempt}
-	for _, header := range []string{"Retry-After"} {
-		if value := resp.Header.Get(header); value != "" {
-			w.Header().Set(header, value)
-		}
+	if retry := resp.Header.Get("Retry-After"); retry != "" {
+		w.Header().Set("Retry-After", retry)
 	}
 	if id := providerRequestID(resp, account); id != "" {
 		w.Header().Set("X-Request-ID", id)
@@ -267,7 +265,7 @@ func consumeMessagesEvent(body map[string]any, sink *replySink) error {
 			kind = "tool"
 			text = ""
 			if len(object(b["input"])) > 0 {
-				raw, _ := marshalProtocolValue(b["input"])
+				raw, _ := json.Marshal(b["input"])
 				text = string(raw)
 			}
 		case "thinking":
@@ -665,7 +663,7 @@ func consumeProtocolJSON(body map[string]any, protocol wireProtocol, sink *reply
 				}
 			case "tool_use":
 				kind = "tool"
-				raw, err := marshalProtocolValue(part["input"])
+				raw, err := json.Marshal(part["input"])
 				if err != nil {
 					return err
 				}
@@ -690,10 +688,8 @@ func consumeProtocolJSON(body map[string]any, protocol wireProtocol, sink *reply
 	return sink.finish()
 }
 
-func marshalProtocolValue(value any) ([]byte, error) { return json.Marshal(value) }
-
+// Errors inside a provider stream get the same redaction as HTTP errors.
 func safeProtocolError(value any, account storedAccount) any {
 	body, _ := json.Marshal(map[string]any{"error": value})
-	response := &http.Response{StatusCode: 502, Header: http.Header{}, Body: io.NopCloser(bytes.NewReader(body))}
-	return readProviderError(response, account)["error"]
+	return sanitizedProviderError(bytes.NewReader(body), http.StatusBadGateway, account)
 }

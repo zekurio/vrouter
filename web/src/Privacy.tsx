@@ -1,4 +1,5 @@
 import { createContext, useContext, useState } from "react";
+import { readStored, writeStored } from "./storage";
 
 const storageKey = "vrouter-hide-emails";
 const email = /[^\s@<>()]+@[^\s@<>()]+\.[^\s@<>()]+/g;
@@ -7,20 +8,9 @@ const standIn = "hidden@email.address";
 
 // Hidden unless the user has explicitly chosen "visible", including when
 // storage is unavailable.
-export const storedHideEmails = () => {
-  try {
-    return localStorage.getItem(storageKey) !== "visible";
-  } catch {
-    return true;
-  }
-};
-export const storeHideEmails = (hidden: boolean) => {
-  try {
-    localStorage.setItem(storageKey, hidden ? "hidden" : "visible");
-  } catch {
-    // Storage is unavailable; the choice lasts for this page load only.
-  }
-};
+export const storedHideEmails = () => readStored(storageKey) !== "visible";
+export const storeHideEmails = (hidden: boolean) =>
+  writeStored(storageKey, hidden ? "hidden" : "visible");
 
 const HideEmails = createContext(false);
 export const PrivacyProvider = HideEmails.Provider;

@@ -4,22 +4,20 @@ import { ConnectDialog, connectable } from "./ConnectDialog";
 import { ProviderBrand, providerColor, providerLabel } from "./ProviderBrand";
 import { Private, usePrivateLabel } from "./Privacy";
 import { isDialogBackdropClick } from "./dialog";
-import type { APIRequest } from "./api";
+import { errorMessage, type APIRequest } from "./api";
 
-export type { APIRequest };
 export type Account = {
   id: string;
   name: string;
   provider: string;
   status: string;
   plan: string;
+  // Copied from the weekly window, or the first one. Null without windows.
   remaining: number | null;
   window: string;
-  reset: string;
   email?: string;
   statusMessage?: string;
   createdAt?: string;
-  manageable: boolean;
   reconnectable?: boolean;
   authMode?: string;
   windows?: {
@@ -35,7 +33,6 @@ export type Account = {
 type Props = {
   accounts: Account[];
   request: APIRequest;
-  live: boolean;
   // null is closed, "" asks which provider, otherwise the provider to sign in to.
   connect: string | null;
   setConnect: (provider: string | null) => void;
@@ -47,10 +44,10 @@ export function accountLabel(account: Account) {
   return account.email || `${providerLabel(account.provider)} account`;
 }
 
-// Badge for an account that is not routing. "connected" (formerly "ready")
-// only says credentials are stored, so it gets no badge of its own.
+// Badge for an account that is not routing. "connected" only says credentials
+// are stored, so it gets no badge of its own.
 export function accountState(account: Account) {
-  if (account.status === "connected" || account.status === "ready") return "";
+  if (account.status === "connected") return "";
   return account.status === "disabled" ? "Disabled" : "Unavailable";
 }
 
@@ -66,13 +63,10 @@ export function resetTime(value?: string) {
       ? `Resets in ${hours}h ${minutes % 60}m`
       : `Resets in ${minutes}m`;
 }
-const message = (err: unknown, fallback: string) =>
-  err instanceof Error ? err.message : fallback;
 
 export function AccountsPage({
   accounts,
   request,
-  live,
   connect,
   setConnect,
   onChanged,
@@ -115,7 +109,7 @@ export function AccountsPage({
       notify(next ? "Account enabled" : "Account disabled");
       onChanged();
     } catch (err) {
-      setError(message(err, "Could not update the account."));
+      setError(errorMessage(err, "Could not update the account."));
     } finally {
       setBusy("");
     }
@@ -130,7 +124,7 @@ export function AccountsPage({
       notify("Account removed");
       onChanged();
     } catch (err) {
-      setRemoveError(message(err, "Could not remove the account."));
+      setRemoveError(errorMessage(err, "Could not remove the account."));
     } finally {
       setBusy("");
     }
@@ -168,7 +162,6 @@ export function AccountsPage({
                 {canConnect && (
                   <button
                     className="secondary"
-                    disabled={!live}
                     onClick={() => {
                       setReauth(null);
                       setConnect(provider);
@@ -189,7 +182,6 @@ export function AccountsPage({
                     accountLabel(a),
                     `${provider} account ${i + 1}`,
                   );
-                  const locked = !live || !a.manageable;
                   return (
                     <li
                       className={`account-row ${on ? "" : "is-off"}`}
@@ -200,21 +192,13 @@ export function AccountsPage({
                         role="switch"
                         aria-checked={on}
                         aria-label={`Route requests through ${name}`}
-                        title={
-                          live && !a.manageable
-                            ? "This account cannot be changed here"
-                            : undefined
-                        }
-                        disabled={locked || busy === a.id}
+                        disabled={busy === a.id}
                         onClick={() => void toggle(a)}
                       />
                       <div className="account-identity">
                         <h3>
                           <Private peek>{accountLabel(a)}</Private>
                         </h3>
-                        {live && !a.manageable && (
-                          <p>This account cannot be changed here.</p>
-                        )}
                         {a.availableResets !== undefined && (
                           <p>
                             {a.availableResets} usage{" "}
@@ -252,23 +236,6 @@ export function AccountsPage({
                               )}
                             </div>
                           ))
-                        ) : a.remaining !== null ? (
-                          <div
-                            data-window={
-                              a.window === "Weekly window"
-                                ? "weekly"
-                                : undefined
-                            }
-                          >
-                            <div className="account-allowance">
-                              <span>{a.window}</span>
-                              <strong>{a.remaining}% left</strong>
-                            </div>
-                            <div className="progress">
-                              <span style={{ width: `${a.remaining}%` }} />
-                            </div>
-                            {a.reset && <p>Resets in {a.reset}</p>}
-                          </div>
                         ) : (
                           <p className={a.quotaError ? "quota-error" : ""}>
                             <Private>
@@ -283,7 +250,7 @@ export function AccountsPage({
                             className="icon-button"
                             aria-label={`Reconnect ${name}`}
                             title={`Reconnect ${name}`}
-                            disabled={!live || busy === a.id}
+                            disabled={busy === a.id}
                             onClick={() => {
                               setReauth(a);
                               setConnect(provider);
@@ -295,7 +262,6 @@ export function AccountsPage({
                         <button
                           className="icon-button is-danger"
                           aria-label={`Remove ${name}`}
-                          disabled={locked}
                           onClick={() => setRemoving(a)}
                         >
                           <Trash2 size={15} />

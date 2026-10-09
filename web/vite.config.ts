@@ -6,7 +6,6 @@ export default defineConfig({
       "/api": { target: "http://127.0.0.1:8080", changeOrigin: false },
       "/auth": { target: "http://127.0.0.1:8080", changeOrigin: false },
       "/v1": "http://127.0.0.1:8080",
-      "/v1beta": "http://127.0.0.1:8080",
     },
   },
 });

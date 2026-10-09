@@ -26,8 +26,8 @@ type storedAccount struct {
 	AccountID       string    `json:"account_id,omitempty"`
 	// Subject is the verified ID-token subject of a native Codex sign-in. It
 	// binds a saved record to one user, so reconnecting a workspace shared by
-	// several users can never silently switch accounts. Legacy imports have no
-	// subject until their first native reconnect.
+	// several users can never silently switch accounts. Imports have no
+	// verified subject and require a new sign-in to bind one.
 	Subject      string    `json:"subject,omitempty"`
 	AccessToken  string    `json:"access_token"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
@@ -37,17 +37,7 @@ type storedAccount struct {
 	Disabled     bool      `json:"disabled"`
 	AuthMode     string    `json:"auth_mode"`
 	ClientID     string    `json:"client_id,omitempty"`
-	ClientSecret string    `json:"client_secret,omitempty"`
 	Scopes       []string  `json:"scopes,omitempty"`
-}
-
-// chatGPTRegistration preserves old state files without losing stored data.
-// Experimental ChatGPT connections are no longer usable or refreshable.
-type chatGPTRegistration struct {
-	HostID       string `json:"host_id"`
-	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret,omitempty"`
-	RedirectURI  string `json:"redirect_uri"`
 }
 
 // diskState holds one gateway's accounts and model settings in the shared file.
@@ -55,7 +45,6 @@ type diskState struct {
 	Version       int                     `json:"version"`
 	Accounts      []storedAccount         `json:"accounts"`
 	Policy        modelPolicy             `json:"policy"`
-	Registration  chatGPTRegistration     `json:"chatgpt_registration"`
 	ResetAttempts map[string]resetAttempt `json:"reset_attempts,omitempty"`
 }
 
@@ -210,7 +199,6 @@ func storeNormalize(state *diskState) {
 	if state.Policy.Aliases == nil {
 		state.Policy.Aliases = map[string][]modelAlias{}
 	}
-	state.Policy.LegacyContext = nil
 	for i := range state.Accounts {
 		state.Accounts[i].Provider = strings.ToLower(strings.TrimSpace(state.Accounts[i].Provider))
 		state.Accounts[i].AuthMode = strings.ToLower(strings.TrimSpace(state.Accounts[i].AuthMode))
@@ -239,7 +227,7 @@ func storeValidate(state diskState) error {
 			return fmt.Errorf("gateway: account %d has an unsupported provider", i)
 		}
 		switch account.AuthMode {
-		case "chatgpt", "codex", "oauth", "api_key":
+		case "codex", "oauth", "api_key":
 		default:
 			return fmt.Errorf("gateway: account %d has an unsupported auth mode", i)
 		}

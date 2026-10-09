@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Check, ExternalLink, RefreshCw, X } from "lucide-react";
-import type { APIRequest } from "./AccountsPage";
+import { errorMessage, isStale, statusOf, type APIRequest } from "./api";
 import { ProviderBrand, providerColor, providerLabel } from "./ProviderBrand";
 
 // Providers vrouter can sign in to. Codex is the pool for OpenAI sign-in.
@@ -25,8 +25,6 @@ type Props = {
   onClose: () => void;
   onConnected: () => void;
 };
-const message = (err: unknown, fallback: string) =>
-  err instanceof Error ? err.message : fallback;
 
 export function ConnectDialog({
   provider,
@@ -61,54 +59,41 @@ export function ConnectDialog({
   const deviceCode = session?.flow === "device";
   const action = `Open ${name} sign-in`;
 
-  // Clear the old session in the same render so its link cannot be clicked.
-  function clear() {
+  // Clears the old session in the same render so its link cannot be clicked.
+  function restart(next: string) {
     setSession(null);
     setPhase("starting");
     setError("");
     setCallback("");
     setCallbackError("");
     setSubmitted(false);
-  }
-  function restart(next: string) {
-    clear();
     setTarget(next);
     setAttempt((n) => n + 1);
   }
 
   useEffect(() => dialog.current?.showModal(), []);
-  // Leaving the dialog releases a sign-in that is still waiting.
+  // Frees a sign-in the server still holds. DELETE goes out even after the
+  // gateway's client has closed.
+  const cancel = (id: string) =>
+    void request(`/api/oauth/sessions/${id}`, "DELETE").catch(() => {});
+  // Leaving the dialog or starting over releases the session.
   const release = () => {
     const pending = live.current;
     live.current = null;
     if (pending && new Date(pending.expiresAt).getTime() > Date.now())
-      void request(`/api/oauth/sessions/${pending.id}`, "DELETE").catch(
-        () => {},
-      );
+      cancel(pending.id);
   };
-  useEffect(() => release, []);
 
   useEffect(() => {
     if (!provider) return;
     let stopped = false;
-    setSession(null);
-    setPhase("starting");
-    setError("");
-    setCallback("");
-    setCallbackError("");
-    setSubmitted(false);
     request<Connection>(
       `/api/oauth/${provider}`,
       "POST",
-      target ? { accountId: target } : provider === "codex" ? {} : undefined,
+      target ? { accountId: target } : undefined,
     )
       .then((next) => {
-        if (stopped) {
-          void request(`/api/oauth/sessions/${next.id}`, "DELETE").catch(
-            () => {},
-          );
-          return;
-        }
+        if (stopped) return cancel(next.id);
         live.current = next;
         setNow(Date.now());
         setSession(next);
@@ -117,7 +102,7 @@ export function ConnectDialog({
       .catch((err) => {
         if (stopped) return;
         setPhase("error");
-        setError(message(err, "Could not start sign-in."));
+        setError(errorMessage(err, "Could not start sign-in."));
       });
     return () => {
       stopped = true;
@@ -149,7 +134,6 @@ export function ConnectDialog({
           return;
         }
         if (result.status === "error") {
-          live.current = null;
           setPhase("error");
           setError(result.error || "Provider sign-in failed.");
           return;
@@ -157,10 +141,16 @@ export function ConnectDialog({
         setError("");
         timer = setTimeout(poll, 2500);
       } catch (err) {
-        if (!stopped) {
-          setError(message(err, "Could not check sign-in."));
-          timer = setTimeout(poll, 5000);
+        if (stopped || isStale(err)) return;
+        // The server dropped the session, so waiting longer cannot help.
+        if (statusOf(err) === 410) {
+          live.current = null;
+          setPhase("error");
+          setError(errorMessage(err, "Sign-in expired."));
+          return;
         }
+        setError(errorMessage(err, "Could not check sign-in."));
+        timer = setTimeout(poll, 5000);
       }
     };
     timer = setTimeout(poll, 1500);
@@ -188,7 +178,7 @@ export function ConnectDialog({
       setSubmitted(true);
     } catch (err) {
       setCallbackError(
-        message(
+        errorMessage(
           err,
           "Could not finish sign-in. Check what you pasted and try again.",
         ),

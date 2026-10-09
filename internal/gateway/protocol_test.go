@@ -318,6 +318,22 @@ func TestAmbiguousModelsNeedAnAlias(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("alias %d %s", w.Code, w.Body.String())
 	}
+	// Refusals carry the error type of their status, not one catch-all code.
+	for body, want := range map[string][2]any{
+		`{"model":"absent","input":"hi"}`:                                        {404, "not_found_error"},
+		`{"model":"claude-public","input":"hi","previous_response_id":"resp_1"}`: {400, "invalid_request_error"},
+	} {
+		w = call(t, s, "POST", "/v1/responses", body, secret)
+		var refused struct {
+			Error struct{ Type, Code string }
+		}
+		if json.Unmarshal(w.Body.Bytes(), &refused) != nil || w.Code != want[0] || refused.Error.Type != want[1] {
+			t.Fatalf("refusal %d %s", w.Code, w.Body.String())
+		}
+		if unsupported := refused.Error.Code == "unsupported_protocol_feature"; unsupported != (w.Code == 400) {
+			t.Fatalf("refusal code %s", w.Body.String())
+		}
+	}
 }
 
 type brokenProtocolReader struct{ data string }
@@ -343,7 +359,7 @@ func TestProtocolFailureOutcomes(t *testing.T) {
 				}
 				data := responsesToolStream("incomplete")
 				if scenario == "provider-error" {
-					data = frame("error", `{"type":"error","code":"broken","message":"provider failed"}`)
+					data = frame("error", `{"type":"error","code":"broken","message":"provider failed for test-token"}`)
 				}
 				if scenario == "missing-terminal" || scenario == "read-error" {
 					data = strings.Split(data, "event: response.incomplete")[0]
@@ -358,6 +374,9 @@ func TestProtocolFailureOutcomes(t *testing.T) {
 			w := call(t, s, "POST", "/v1/chat/completions", `{"model":"model","messages":[{"role":"user","content":"hi"}],"stream":true}`, secret)
 			if w.Code != 200 {
 				t.Fatalf("status %d %s", w.Code, w.Body.String())
+			}
+			if scenario == "provider-error" && (strings.Contains(w.Body.String(), "test-token") || !strings.Contains(w.Body.String(), providerRedacted)) {
+				t.Fatal("streamed provider error did not redact the account credential")
 			}
 			row := s.manager.telemetry(defaultGatewayID).Requests[0]
 			if scenario == "incomplete" {
@@ -782,7 +801,7 @@ func TestProtocolPortableReasoningAndRefusalReplay(t *testing.T) {
 }
 
 func TestProtocolRejectsForeignSignedReasoning(t *testing.T) {
-	state, err := encodeReasoningState("claude", map[string]any{"type": "thinking", "thinking": "think", "signature": "signed"})
+	state, err := encodeReasoningState("claude", map[string]any{"type": "thinking", "thinking": "think", "signature": "signed"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -876,5 +895,41 @@ func TestProtocolChatKeepsNativeReasoningOrder(t *testing.T) {
 				t.Fatalf("visible text changed %q", text)
 			}
 		})
+	}
+}
+
+// OpenAI clients send empty strings where Claude rejects empty text blocks.
+func TestProtocolClaudeRequestOmitsEmptyText(t *testing.T) {
+	p, _ := decodeProtocolJSON([]byte(`{"messages":[{"role":"system","content":""},{"role":"user","content":"hi"},{"role":"assistant","content":"","tool_calls":[{"id":"call_test","type":"function","function":{"name":"lookup","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_test","content":""}],"tools":[{"type":"function","function":{"name":"lookup"}}],"tool_choice":"none","parallel_tool_calls":false}`))
+	out, err := adaptInferenceRequest(p, chatProtocol, messagesProtocol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := out["system"]; exists {
+		t.Fatalf("empty system was sent: %#v", out["system"])
+	}
+	messages := list(out["messages"])
+	call := list(object(messages[1])["content"])
+	if len(call) != 1 || object(call[0])["type"] != "tool_use" {
+		t.Fatalf("assistant turn %#v", call)
+	}
+	result := object(list(object(messages[2])["content"])[0])
+	if result["tool_use_id"] != "call_test" || len(list(result["content"])) != 0 {
+		t.Fatalf("tool result %#v", result)
+	}
+	if choice := object(out["tool_choice"]); !reflect.DeepEqual(choice, map[string]any{"type": "none"}) {
+		t.Fatalf("tool choice %#v", choice)
+	}
+	// Without tools there is nothing for the parallel flag to configure.
+	delete(p, "tools")
+	delete(p, "tool_choice")
+	if out, err = adaptInferenceRequest(p, chatProtocol, messagesProtocol); err != nil || out["tool_choice"] != nil {
+		t.Fatalf("tool choice without tools %#v %v", out["tool_choice"], err)
+	}
+	p["tools"] = []any{map[string]any{"type": "function", "function": map[string]any{"name": "lookup"}}}
+	p["tool_choice"] = "required"
+	out, err = adaptInferenceRequest(p, chatProtocol, messagesProtocol)
+	if err != nil || !reflect.DeepEqual(out["tool_choice"], map[string]any{"type": "any", "disable_parallel_tool_use": true}) {
+		t.Fatalf("required tool choice %#v %v", out["tool_choice"], err)
 	}
 }

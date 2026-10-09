@@ -51,11 +51,9 @@ type Account struct {
 	Plan            string        `json:"plan"`
 	Remaining       *float64      `json:"remaining"`
 	Window          string        `json:"window"`
-	Reset           string        `json:"reset"`
 	Email           string        `json:"email,omitempty"`
 	StatusMessage   string        `json:"statusMessage,omitempty"`
 	CreatedAt       *time.Time    `json:"createdAt,omitempty"`
-	Manageable      bool          `json:"manageable"`
 	Reconnectable   bool          `json:"reconnectable"`
 	Windows         []QuotaWindow `json:"windows,omitempty"`
 	QuotaUpdatedAt  *time.Time    `json:"quotaUpdatedAt,omitempty"`
@@ -64,24 +62,10 @@ type Account struct {
 }
 
 type State struct {
-	Mode       string    `json:"mode"`
-	Connected  bool      `json:"connected"`
 	ObservedAt time.Time `json:"observedAt"`
 	Models     []Model   `json:"models"`
 	Accounts   []Account `json:"accounts"`
 	Warnings   []string  `json:"warnings"`
-	Engine     Engine    `json:"engine"`
-}
-
-// Engine reports which parts of the server configuration are working, without
-// returning any configured secret. Check values are "ok", "missing", or "error".
-type Engine struct {
-	Storage    string `json:"storage"`
-	ClientKey  bool   `json:"clientKey"`
-	Version    string `json:"version,omitempty"`
-	Catalog    string `json:"catalog"`
-	Management string `json:"management"`
-	AdminToken bool   `json:"adminToken"`
 }
 
 type server struct {
@@ -136,15 +120,13 @@ func New(cfg Config, assets fs.FS) (http.Handler, error) {
 			return nil, errors.New("set VROUTER_DATA_DIR: home directory is unavailable")
 		}
 	}
-	s, err := newGateway(cfg, assets)
+	store, err := openStore(cfg.DataDir)
 	if err != nil {
 		return nil, err
 	}
+	s := newGatewayStore(cfg, assets, store)
 	s.mux.HandleFunc("GET /api/auth", s.authStatus)
-	if _, err := openManager(s, assets); err != nil {
-		_ = s.Close()
-		return nil, err
-	}
+	attachManager(s, assets)
 	if cfg.StartWindows {
 		var ctx context.Context
 		ctx, s.stopWindows = context.WithCancel(context.Background())
@@ -154,17 +136,9 @@ func New(cfg Config, assets fs.FS) (http.Handler, error) {
 	return s, nil
 }
 
-// newGateway builds an account store and its handlers. The root authorizes
-// management once and can dispatch to preserved gateway stores via mgmt.
-func newGateway(cfg Config, assets fs.FS) (*server, error) {
-	store, err := openStore(cfg.DataDir)
-	if err != nil {
-		return nil, err
-	}
-	return newGatewayStore(cfg, assets, store)
-}
-
-func newGatewayStore(cfg Config, assets fs.FS, store *accountStore) (*server, error) {
+// newGatewayStore builds one gateway's handlers over its view of the store.
+// The root authorizes management once, then dispatches to a gateway's mgmt mux.
+func newGatewayStore(cfg Config, assets fs.FS, store *accountStore) *server {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = 60 * time.Second
 	noRedirect := func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
@@ -209,7 +183,7 @@ func newGatewayStore(cfg Config, assets fs.FS, store *accountStore) (*server, er
 	})
 	mux.HandleFunc("/", staticHandler(assets))
 	s.handler = mux
-	return s, nil
+	return s
 }
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -285,14 +259,10 @@ func (s *server) authorize(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (s *server) hasClientKey() bool {
-	return s.manager != nil && s.manager.hasKeys(s.gatewayID)
-}
-
 func (s *server) state(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
-	state := State{Mode: "live", Connected: true, ObservedAt: time.Now().UTC(), Models: []Model{}, Accounts: []Account{}, Warnings: []string{}, Engine: Engine{Version: "native", Storage: "local", Catalog: "ok", Management: "ok", AdminToken: s.cfg.AdminToken != "", ClientKey: s.hasClientKey()}}
+	state := State{ObservedAt: time.Now().UTC(), Models: []Model{}, Accounts: []Account{}, Warnings: []string{}}
 	var err error
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -300,10 +270,9 @@ func (s *server) state(w http.ResponseWriter, r *http.Request) {
 	go func() { defer wg.Done(); state.Accounts = s.accounts(ctx) }()
 	wg.Wait()
 	if err != nil {
-		state.Engine.Catalog = "error"
 		state.Warnings = append(state.Warnings, "Some provider model catalogs could not be loaded. Reconnect expired accounts or refresh to retry.")
 	}
-	if !s.hasClientKey() {
+	if !s.manager.hasKeys(s.gatewayID) {
 		state.Warnings = append(state.Warnings, "Create an API key in the Keys page to enable client requests.")
 	}
 	writeJSON(w, 200, state)

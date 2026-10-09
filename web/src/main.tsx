@@ -10,6 +10,7 @@ import {
   Moon,
   RefreshCw,
   Sun,
+  TriangleAlert,
 } from "lucide-react";
 import "./style.css";
 import "@fontsource-variable/dm-sans";
@@ -24,6 +25,7 @@ import {
 import { GatewaySwitcher } from "./GatewaySwitcher";
 import { HelpDialog } from "./HelpDialog";
 import { PrivacyProvider, storedHideEmails, storeHideEmails } from "./Privacy";
+import { readStored, writeStored } from "./storage";
 import { pages, Workspace, type Page } from "./Workspace";
 
 const pageOf = (hash: string) =>
@@ -31,27 +33,12 @@ const pageOf = (hash: string) =>
 const themes = ["system", "dark", "light"] as const;
 type Theme = (typeof themes)[number];
 const themeIcons = { system: Monitor, dark: Moon, light: Sun };
+const themeKey = "vrouter-theme";
 const storedTheme = (): Theme => {
-  const value = localStorage.getItem("vrouter-theme");
+  const value = readStored(themeKey);
   return value === "system" || value === "light" ? value : "dark";
 };
-// Only the gateway ID is remembered. Tokens and key secrets never touch storage.
 const gatewayKey = "vrouter-gateway";
-const storedGateway = () => {
-  try {
-    return localStorage.getItem(gatewayKey);
-  } catch {
-    return null;
-  }
-};
-const storeGateway = (id: string | null) => {
-  try {
-    if (id) localStorage.setItem(gatewayKey, id);
-    else localStorage.removeItem(gatewayKey);
-  } catch {
-    // Storage is unavailable; the choice lasts for this page load only.
-  }
-};
 function RouterLogo() {
   return (
     <svg
@@ -88,7 +75,11 @@ function App() {
   const [client] = useState(() =>
     createClient({ token: () => bearer.current }),
   );
-  const [toast, setToast] = useState("");
+  const [toast, setToast] = useState<{ text: string; failed?: boolean } | null>(
+    null,
+  );
+  // Set by the open gateway while it has unsaved model drafts.
+  const unsaved = useRef(false);
   const [theme, setTheme] = useState<Theme>(storedTheme);
   const [systemLight, setSystemLight] = useState(
     () => matchMedia("(prefers-color-scheme: light)").matches,
@@ -125,7 +116,7 @@ function App() {
       const next = list.gateways || [];
       setAuth(info);
       setGateways(next);
-      setSelected(pickGateway(next, storedGateway()));
+      setSelected(pickGateway(next, readStored(gatewayKey)));
       setLoginError("");
       ending.current = false;
       setPhase("ready");
@@ -165,17 +156,22 @@ function App() {
   }, []);
   useEffect(() => {
     if (!toast) return;
-    const id = setTimeout(() => setToast(""), 2500);
+    const id = setTimeout(() => setToast(null), 2500);
     return () => clearTimeout(id);
   }, [toast]);
   useEffect(() => {
     document.documentElement.dataset.theme = light ? "light" : "dark";
-    localStorage.setItem("vrouter-theme", theme);
+    writeStored(themeKey, theme);
   }, [light, theme]);
   useEffect(() => storeHideEmails(hideEmails), [hideEmails]);
 
   const canSignOut = phase === "ready" && !!bearer.current;
-  async function signOut() {
+  function signOut() {
+    if (
+      unsaved.current &&
+      !confirm("Discard unsaved model changes and sign out?")
+    )
+      return;
     bearer.current = "";
     setLoginError("");
     void load();
@@ -197,7 +193,13 @@ function App() {
     void load();
   };
   const select = (id: string) => {
-    storeGateway(id);
+    if (id === selected) return;
+    if (
+      unsaved.current &&
+      !confirm("Discard unsaved model changes and switch gateways?")
+    )
+      return;
+    writeStored(gatewayKey, id);
     setSelected(id);
   };
   const navigate = (next: Page) => {
@@ -207,10 +209,13 @@ function App() {
   const copy = async (value: string) => {
     try {
       await navigator.clipboard.writeText(value);
-      setToast("Copied to clipboard");
+      setToast({ text: "Copied to clipboard" });
       return true;
     } catch {
-      setToast("Clipboard unavailable. Select and copy the text.");
+      setToast({
+        text: "Clipboard unavailable. Select and copy the text.",
+        failed: true,
+      });
       return false;
     }
   };
@@ -231,7 +236,7 @@ function App() {
             <strong>vrouter</strong>
           </span>
         </a>
-        {phase === "ready" && gateways.length > 1 && (
+        {phase === "ready" && gateways.length > (gateway ? 1 : 0) && (
           <GatewaySwitcher
             gateways={gateways}
             selected={gateway ? gateway.id : null}
@@ -285,7 +290,7 @@ function App() {
               className="icon-button"
               aria-label="Sign out"
               title="Sign out"
-              onClick={() => void signOut()}
+              onClick={signOut}
             >
               <LogOut size={16} />
             </button>
@@ -294,7 +299,7 @@ function App() {
       </header>
       <main>
         {phase === "loading" && (
-          <div className="loading">
+          <div className="loading" role="status" aria-label="Loading">
             <RefreshCw size={22} className="spinning" />
           </div>
         )}
@@ -321,35 +326,47 @@ function App() {
                   Try again
                 </button>
               </>
-            ) : (
+            ) : auth.mode === "external" ? (
               <>
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    bearer.current = token;
-                    setToken("");
-                    setLoginError("");
-                    void load(true);
-                  }}
-                >
-                  <label htmlFor="admin-token">Admin token</label>
-                  <input
-                    id="admin-token"
-                    type="password"
-                    value={token}
-                    onChange={(e) => setToken(e.target.value)}
-                    required
-                    autoComplete="current-password"
-                  />
-                  <button className="primary">Sign in with token</button>
-                </form>
+                <p className="login-note">
+                  Your sign-in proxy did not accept this session.
+                </p>
+                {/* A document navigation lets the proxy start login again. */}
+                <button className="primary" onClick={() => location.reload()}>
+                  Sign in again
+                </button>
               </>
+            ) : (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  bearer.current = token;
+                  setToken("");
+                  setLoginError("");
+                  void load(true);
+                }}
+              >
+                <label htmlFor="admin-token">Admin token</label>
+                <input
+                  id="admin-token"
+                  type="password"
+                  value={token}
+                  onChange={(e) => setToken(e.target.value)}
+                  required
+                  autoComplete="current-password"
+                />
+                <button className="primary">Sign in with token</button>
+              </form>
             )}
           </section>
         )}
         {phase === "ready" && !gateway && (
           <div className="empty">
-            <p>No gateway is available.</p>
+            <p>
+              {gateways.length
+                ? "That gateway is no longer available. Choose another."
+                : "No gateway is available."}
+            </p>
           </div>
         )}
         {phase === "ready" && gateway && auth && (
@@ -364,7 +381,8 @@ function App() {
             onUnauthorized={sessionEnded}
             onGone={() => void reloadGateways()}
             copy={copy}
-            notify={setToast}
+            notify={(text) => setToast({ text })}
+            onDirty={(dirty) => (unsaved.current = dirty)}
           />
         )}
       </main>
@@ -376,9 +394,9 @@ function App() {
         />
       )}
       {toast && (
-        <div className="toast" role="status">
-          <Check size={15} />
-          {toast}
+        <div className="toast" role={toast.failed ? "alert" : "status"}>
+          {toast.failed ? <TriangleAlert size={15} /> : <Check size={15} />}
+          {toast.text}
         </div>
       )}
     </PrivacyProvider>

@@ -23,6 +23,15 @@ type protocolReply struct {
 	raw                     map[string]any
 	nativeItems             map[int]map[string]any
 	started, terminal       bool
+	created                 int64
+}
+
+// Every event of one reply reports the same creation time.
+func (r *protocolReply) createdAt() int64 {
+	if r.created == 0 {
+		r.created = time.Now().Unix()
+	}
+	return r.created
 }
 
 func (r *protocolReply) find(key string) *replyBlock {
@@ -131,7 +140,7 @@ func (r *protocolReply) encode(protocol wireProtocol) map[string]any {
 		for _, b := range r.blocks {
 			items = append(items, r.responseItem(b, r.terminal))
 		}
-		response := map[string]any{"id": r.id, "object": "response", "created_at": time.Now().Unix(), "model": r.model, "status": r.status, "output": items, "usage": r.wireUsage(protocol), "error": r.errorBody, "incomplete_details": nil}
+		response := map[string]any{"id": r.id, "object": "response", "created_at": r.createdAt(), "model": r.model, "status": r.status, "output": items, "usage": r.wireUsage(protocol), "error": r.errorBody, "incomplete_details": nil}
 		if r.status == "incomplete" {
 			response["incomplete_details"] = map[string]any{"reason": "max_output_tokens"}
 		}
@@ -185,7 +194,7 @@ func (r *protocolReply) encode(protocol wireProtocol) map[string]any {
 		if len(calls) > 0 {
 			message["tool_calls"] = calls
 		}
-		return map[string]any{"id": r.id, "object": "chat.completion", "created": time.Now().Unix(), "model": r.model, "choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": r.finishReason(protocol)}}, "usage": r.wireUsage(protocol)}
+		return map[string]any{"id": r.id, "object": "chat.completion", "created": r.createdAt(), "model": r.model, "choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": r.finishReason(protocol)}}, "usage": r.wireUsage(protocol)}
 	}
 }
 
@@ -200,19 +209,13 @@ type protocolEmitter struct {
 type protocolWriteError struct{ error }
 
 func (e *protocolEmitter) event(name string, body any) error {
+	if m := object(body); m != nil && e.protocol == responsesProtocol {
+		m["sequence_number"] = e.sequence
+		e.sequence++
+	}
 	data, err := json.Marshal(body)
 	if err != nil {
 		return err
-	}
-	if e.protocol == responsesProtocol {
-		if m := object(body); m != nil {
-			m["sequence_number"] = e.sequence
-			e.sequence++
-			data, err = json.Marshal(m)
-			if err != nil {
-				return err
-			}
-		}
 	}
 	frame := "data: " + string(data) + "\n\n"
 	if e.protocol != chatProtocol {
@@ -231,7 +234,7 @@ func (e *protocolEmitter) chat(delta map[string]any, finish any, usage bool) err
 	if usage {
 		choices = []any{}
 	}
-	body := map[string]any{"id": e.reply.id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": e.reply.model, "choices": choices}
+	body := map[string]any{"id": e.reply.id, "object": "chat.completion.chunk", "created": e.reply.createdAt(), "model": e.reply.model, "choices": choices}
 	if usage {
 		body["usage"] = e.reply.wireUsage(chatProtocol)
 	}
@@ -258,7 +261,6 @@ func (e *protocolEmitter) begin() error {
 	case messagesProtocol:
 		message := e.reply.encode(messagesProtocol)
 		message["stop_reason"] = nil
-		message["usage"] = e.reply.wireUsage(messagesProtocol)
 		return e.event("message_start", map[string]any{"type": "message_start", "message": message})
 	default:
 		return e.chat(map[string]any{"role": "assistant", "content": ""}, nil, false)

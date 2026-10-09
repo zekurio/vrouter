@@ -122,23 +122,3 @@ func parseQuota(provider string, body []byte, now time.Time) ([]QuotaWindow, str
 	}
 	return windows, "", nil
 }
-
-func resetLabel(reset *time.Time, now time.Time) string {
-	if reset == nil {
-		return "Not reported"
-	}
-	remaining := reset.Sub(now)
-	if remaining <= 0 {
-		return "Reset due"
-	}
-	days := int(remaining.Hours()) / 24
-	hours := int(remaining.Hours()) % 24
-	minutes := int(remaining.Minutes()) % 60
-	if days > 0 {
-		return fmt.Sprintf("%dd %dh", days, hours)
-	}
-	if hours > 0 {
-		return fmt.Sprintf("%dh %dm", hours, minutes)
-	}
-	return fmt.Sprintf("%dm", minutes)
-}

@@ -125,7 +125,7 @@ export function UsagePage({ request, reloadKey }: Props) {
         </div>
       )}
       {loading && !data && !error && (
-        <div className="loading">
+        <div className="loading" role="status" aria-label="Loading">
           <RefreshCw size={22} className="spinning" />
         </div>
       )}

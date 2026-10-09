@@ -119,13 +119,9 @@ export function createClient(options: Options) {
   };
 }
 
-// Preserve a saved gateway selection, otherwise open the default store.
+// Keeps a saved selection, otherwise opens the default gateway, then the first.
 export function pickGateway(gateways: Gateway[], stored: string | null) {
-  if (stored && gateways.some((g) => g.id === stored)) return stored;
-  if (gateways.length === 1) return gateways[0].id;
-  if (gateways.length === 0) return null;
-  const legacy = gateways
-    .filter((g) => g.ownerId === "local-admin")
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
-  return (legacy ?? gateways[0]).id;
+  const has = (id: string) => gateways.some((g) => g.id === id);
+  if (stored && has(stored)) return stored;
+  return has("default") ? "default" : (gateways[0]?.id ?? null);
 }

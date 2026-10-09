@@ -72,14 +72,14 @@ func (s *server) authorizeInference(w http.ResponseWriter, r *http.Request) (inf
 // Each supported POST settles one telemetry row, including failed requests.
 func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request, principal inferenceKey) {
 	if r.Method != http.MethodPost || inferenceProtocol(r.URL.Path) == "" {
-		s.inference(w, r, nil)
+		s.inference(w, r)
 		return
 	}
 	recorder := &attemptWriter{ResponseWriter: w}
 	attempt := &inferenceAttempt{principal: principal, startedAt: time.Now().UTC()}
-	prepared, status, message := s.prepareInference(recorder, r, attempt)
-	if prepared == nil {
-		writeJSON(recorder, status, protocolError(message))
+	prepared, refused := s.prepareInference(recorder, r, attempt)
+	if refused != nil {
+		writeJSON(recorder, refused.status, refused.body())
 		s.finishAttempt(attempt, recorder)
 		return
 	}
@@ -177,7 +177,8 @@ func (s *server) finishAttempt(attempt *inferenceAttempt, recorder *attemptWrite
 	s.manager.settle(attempt.principal, record, totals, usageAccepted, attempt.reserved, attempt.percentCharges, attempt.percentUnknown)
 }
 
-func (s *server) inference(w http.ResponseWriter, r *http.Request, attempt *inferenceAttempt) {
+// inference answers every /v1 request that is not a supported POST.
+func (s *server) inference(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
 		models, err := s.models(r.Context())
 		if err != nil && len(models) == 0 {
@@ -204,10 +205,9 @@ func (s *server) inference(w http.ResponseWriter, r *http.Request, attempt *infe
 }
 
 func (s *server) forwardInference(w http.ResponseWriter, r *http.Request, attempt *inferenceAttempt, prepared *preparedInference) {
-	channel, native, payload, candidates := prepared.provider, prepared.native, prepared.payload, prepared.accounts
+	channel, native, payload, pool := prepared.provider, prepared.native, prepared.payload, prepared.accounts
 	upstreamStream := prepared.upstreamStream
-	pool := candidates
-	candidates = s.usableAccounts(r.Context(), pool, native)
+	candidates := s.usableAccounts(r.Context(), pool, native)
 	resetTried := false
 	if len(candidates) == 0 {
 		resetTried = true
@@ -248,19 +248,14 @@ retryInference:
 			}
 			req.Header.Set("anthropic-beta", beta)
 		}
-		if attempt != nil {
-			attempt.provider = a.Provider
-			attempt.accountID = a.ID
-		}
+		attempt.provider, attempt.accountID = a.Provider, a.ID
 		if err := s.beginPercentMeasurement(r.Context(), attempt, a); err != nil {
 			writeJSON(w, 503, map[string]string{"error": err.Error()})
 			return
 		}
 		resp, err := s.streamClient.Do(req)
 		if err != nil {
-			if attempt != nil {
-				attempt.dispatchFailed = true
-			}
+			attempt.dispatchFailed = true
 			writeJSON(w, 502, map[string]string{"error": "Provider connection failed"})
 			return
 		}
@@ -291,10 +286,8 @@ retryInference:
 			return
 		}
 		defer resp.Body.Close()
-		if attempt != nil {
-			attempt.percentForwarded = true
-			attempt.usage.begin(upstreamStream)
-		}
+		attempt.percentForwarded = true
+		attempt.usage.begin(upstreamStream)
 		s.deliverInference(w, r, resp, attempt, prepared, a)
 		return
 	}

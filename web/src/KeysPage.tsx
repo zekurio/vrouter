@@ -13,16 +13,18 @@ import {
 
 type Props = {
   request: APIRequest;
-  live: boolean;
   reloadKey: string;
   // The page heading owns the create button.
   creating: boolean;
   onCreateClose: () => void;
+  onChanged: () => void;
   copy: (value: string) => Promise<boolean>;
   notify: (text: string) => void;
 };
 type Confirm = { action: "revoke" | "delete"; key: APIKey };
 
+// Providers whose subscription pools can be rationed per key.
+const quotaProviders = ["claude", "codex"];
 const number = (n: number) => n.toLocaleString();
 const day = (value: string) =>
   new Date(value).toLocaleDateString(undefined, {
@@ -41,15 +43,15 @@ const moment = (value: string) =>
 
 export function KeysPage({
   request,
-  live,
   reloadKey,
   creating,
   onCreateClose,
+  onChanged,
   copy,
   notify,
 }: Props) {
   const [keys, setKeys] = useState<APIKey[] | null>(null);
-  const [loading, setLoading] = useState(live);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<APIKey | null>(null);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
@@ -73,8 +75,8 @@ export function KeysPage({
     }
   }, [request]);
   useEffect(() => {
-    if (live) void load();
-  }, [live, reloadKey, load]);
+    void load();
+  }, [reloadKey, load]);
 
   const put = (key: APIKey) =>
     setKeys((list) =>
@@ -103,6 +105,7 @@ export function KeysPage({
         notify("Key deleted");
       }
       setConfirm(null);
+      onChanged();
     } catch (err) {
       setConfirmError(
         errorMessage(
@@ -124,23 +127,18 @@ export function KeysPage({
 
   return (
     <div className="keys">
-      {live && keys?.length === 0 && <p className="empty">No keys yet</p>}
-      {!live && (
-        <div className="notice">
-          API keys are unavailable until the gateway's local store loads.
-        </div>
-      )}
+      {keys?.length === 0 && <p className="empty">No keys yet</p>}
       {error && (
         <div className="notice error" role="alert">
           {error} <button onClick={() => void load()}>Try again</button>
         </div>
       )}
-      {live && loading && !keys && !error && (
-        <div className="loading">
+      {loading && !keys && !error && (
+        <div className="loading" role="status" aria-label="Loading">
           <RefreshCw size={22} className="spinning" />
         </div>
       )}
-      {live && !!keys?.length && (
+      {!!keys?.length && (
         <div className="table-scroll">
           <table className="key-table">
             <thead>
@@ -164,7 +162,8 @@ export function KeysPage({
             {keys.map((key) => {
               const state = keyState(key);
               const dead = state === "revoked";
-              const quotas = Object.entries(key.providerQuotas ?? {}).filter(
+              const label = key.name || "Unnamed key";
+              const quotas = Object.entries(key.providerQuotas).filter(
                 ([, q]) => q.fiveHour != null || q.sevenDay != null,
               );
               return (
@@ -173,7 +172,7 @@ export function KeysPage({
                   key={key.id}
                 >
                   <tr>
-                    <th scope="row">{key.name || "Unnamed key"}</th>
+                    <th scope="row">{label}</th>
                     <td>
                       <code>{key.prefix}…</code>
                     </td>
@@ -199,7 +198,7 @@ export function KeysPage({
                       <div className="account-row-actions">
                         <button
                           className="icon-button"
-                          aria-label={`Edit ${key.name}`}
+                          aria-label={`Edit ${label}`}
                           title="Edit name, quotas and expiry"
                           disabled={dead}
                           onClick={() => setEditing(key)}
@@ -208,7 +207,7 @@ export function KeysPage({
                         </button>
                         <button
                           className="icon-button is-danger"
-                          aria-label={`Revoke ${key.name}`}
+                          aria-label={`Revoke ${label}`}
                           title="Revoke"
                           disabled={dead}
                           onClick={() => setConfirm({ action: "revoke", key })}
@@ -217,7 +216,7 @@ export function KeysPage({
                         </button>
                         <button
                           className="icon-button is-danger"
-                          aria-label={`Delete ${key.name}`}
+                          aria-label={`Delete ${label}`}
                           title="Delete"
                           onClick={() => setConfirm({ action: "delete", key })}
                         >
@@ -230,7 +229,7 @@ export function KeysPage({
                     <tr className="key-provider-usage">
                       <td colSpan={8}>
                         {quotas.map(([provider, q]) => {
-                          const usage = key.providerUsage?.[provider];
+                          const usage = key.providerUsage[provider];
                           return (
                             <div key={provider}>
                               <strong>{providerLabel(provider)}</strong>
@@ -267,7 +266,7 @@ export function KeysPage({
           </table>
         </div>
       )}
-      {live && !!keys?.length && (
+      {!!keys?.length && (
         <p className="keys-footnote">
           Request and token counts are totals since the key was created.
           Provider percentages reset with each account's window.
@@ -280,6 +279,7 @@ export function KeysPage({
           copy={copy}
           onSaved={(key, created) => {
             put(key);
+            onChanged();
             if (!created) notify("Key updated");
           }}
           onClose={() => {
@@ -359,13 +359,13 @@ function KeyDialog({
     Record<string, Record<string, string>>
   >(() =>
     Object.fromEntries(
-      ["claude", "codex"].map((provider) => [
+      quotaProviders.map((provider) => [
         provider,
         {
           fiveHour:
-            target?.providerQuotas?.[provider]?.fiveHour?.toString() ?? "",
+            target?.providerQuotas[provider]?.fiveHour?.toString() ?? "",
           sevenDay:
-            target?.providerQuotas?.[provider]?.sevenDay?.toString() ?? "",
+            target?.providerQuotas[provider]?.sevenDay?.toString() ?? "",
         },
       ]),
     ),
@@ -510,7 +510,7 @@ function KeyDialog({
             provider. Usage is measured after each response, so the last request
             can pass a limit.
           </p>
-          {["claude", "codex"].map((provider) => (
+          {quotaProviders.map((provider) => (
             <div className="provider-quota-inputs" key={provider}>
               <strong>{providerLabel(provider)}</strong>
               {(["fiveHour", "sevenDay"] as const).map((window) => (
@@ -541,9 +541,7 @@ function KeyDialog({
             </div>
           ))}
           {target &&
-            Object.values(target.providerUsage ?? {}).some(
-              (u) => u.uncertain,
-            ) && (
+            Object.values(target.providerUsage).some((u) => u.uncertain) && (
               <p className="notice">
                 Saving these quotas acknowledges incomplete percentage
                 accounting and resumes access within the remaining allowance.

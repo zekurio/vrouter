@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 )
 
@@ -19,8 +20,8 @@ type reasoningState struct {
 	BlockID  string         `json:"block_id,omitempty"`
 }
 
-func encodeReasoningState(provider string, item map[string]any) (string, error) {
-	data, err := json.Marshal(reasoningState{Provider: provider, Item: item})
+func encodeReasoningState(provider string, item map[string]any, blockID string) (string, error) {
+	data, err := json.Marshal(reasoningState{Provider: provider, Item: item, BlockID: blockID})
 	if err != nil || len(data) > maxReasoningStateBytes {
 		return "", fmt.Errorf("Provider reasoning state exceeds 1 MiB")
 	}
@@ -170,12 +171,9 @@ func prepareReplyReasoning(b *replyBlock) error {
 	if provider == "" {
 		provider, item = "summary", map[string]any{"text": b.text}
 	}
-	data, err := json.Marshal(reasoningState{Provider: provider, Item: item, BlockID: b.id})
-	if err != nil || len(data) > maxReasoningStateBytes {
-		return fmt.Errorf("Provider reasoning state exceeds 1 MiB")
-	}
-	b.opaque = reasoningStatePrefix + base64.RawURLEncoding.EncodeToString(data)
-	return nil
+	var err error
+	b.opaque, err = encodeReasoningState(provider, item, b.id)
+	return err
 }
 
 func chatReasoningWithOrder(state string, blocks []*replyBlock) string {
@@ -313,13 +311,9 @@ func unwrapNativeReasoning(payload map[string]any, protocol wireProtocol) error 
 			if err := reasoningTarget(b, protocol); err != nil {
 				return err
 			}
-			for k := range item {
-				delete(item, k)
-			}
+			clear(item)
 			if b.native != nil {
-				for k, v := range b.native {
-					item[k] = v
-				}
+				maps.Copy(item, b.native)
 			} else {
 				item["type"], item["role"], item["content"] = "message", "assistant", b.text
 			}
@@ -338,13 +332,9 @@ func unwrapNativeReasoning(payload map[string]any, protocol wireProtocol) error 
 				if err := reasoningTarget(b, protocol); err != nil {
 					return err
 				}
-				for k := range item {
-					delete(item, k)
-				}
+				clear(item)
 				if b.native != nil {
-					for k, v := range b.native {
-						item[k] = v
-					}
+					maps.Copy(item, b.native)
 				} else {
 					item["type"], item["text"] = "text", b.text
 				}

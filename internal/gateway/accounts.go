@@ -35,13 +35,13 @@ func (s *server) accounts(ctx context.Context) []Account {
 			note = "Sign in again to renew this connection."
 		}
 		// A native Codex record is only safe to renew in place when it already
-		// binds a verified workspace and user subject; a legacy import stays
+		// binds a verified workspace and user subject; an unverified import stays
 		// usable but is never rebound to a new user. A Claude OAuth record is
 		// only safe to renew in place when a prior identity (account UUID or
 		// email) can tell it apart from another Claude account.
 		reconnectable := (a.Provider == "codex" && a.AuthMode == "codex" && a.AccountID != "" && a.Subject != "") ||
 			(a.Provider == "claude" && a.AuthMode == "oauth" && (a.AccountID != "" || a.Email != ""))
-		accounts[i] = Account{ID: a.ID, Name: name, Provider: provider(a.Provider), AuthMode: a.AuthMode, Status: status, StatusMessage: note, Plan: planName(provider(a.Provider), a.Plan), Window: "Allowance not reported", Email: a.Email, CreatedAt: &a.CreatedAt, Manageable: true, Reconnectable: reconnectable}
+		accounts[i] = Account{ID: a.ID, Name: name, Provider: provider(a.Provider), AuthMode: a.AuthMode, Status: status, StatusMessage: note, Plan: planName(provider(a.Provider), a.Plan), Window: "Allowance not reported", Email: a.Email, CreatedAt: &a.CreatedAt, Reconnectable: reconnectable}
 		if a.Disabled || !routableAuth(a) || a.AuthMode == "api_key" {
 			continue
 		}
@@ -85,7 +85,6 @@ func applyAccountQuota(account *Account, q quotaCache) {
 		}
 		account.Window = primary.Label
 		account.Remaining = &primary.Remaining
-		account.Reset = resetLabel(primary.ResetAt, time.Now())
 	}
 }
 
@@ -97,7 +96,11 @@ func (s *server) changeAccount(w http.ResponseWriter, r *http.Request, remove bo
 		Enabled *bool  `json:"enabled"`
 	}
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body) != nil || body.ID == "" || (!remove && body.Enabled == nil) {
-		writeJSON(w, 400, map[string]string{"error": "Choose an account and its enabled state"})
+		message := "Choose an account and its enabled state"
+		if remove {
+			message = "Choose an account to remove"
+		}
+		writeJSON(w, 400, map[string]string{"error": message})
 		return
 	}
 	s.refreshMu.Lock()
