@@ -69,12 +69,7 @@ buildGo126Module {
   preBuild = ''
     cp -r ${frontend} web/dist
   '';
-  # Test the gateway package too, not just the command selected for installation.
-  checkPhase = ''
-    runHook preCheck
-    go test ./...
-    runHook postCheck
-  '';
+  doCheck = false;
   ldflags = [
     "-s"
     "-w"

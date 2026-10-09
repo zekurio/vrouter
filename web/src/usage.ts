@@ -4,10 +4,12 @@ import { keyLabel, type RequestRecord } from "./telemetry";
 
 // Dollars per million tokens. Cache writes default to the input rate.
 type Rate = { input: number; read: number; write?: number; output: number };
+type ModelRate = Rate & { longContext?: Rate & { above: number } };
 
 // Published list prices, checked October 2026. Subscription traffic is not
 // billed this way; these only size the estimate.
-const rates: Record<string, Rate> = {
+// Claude: https://platform.claude.com/docs/en/about-claude/pricing
+const rates: Record<string, ModelRate> = {
   "claude-fable-5-1": { input: 10, read: 0.25, write: 12.5, output: 50 },
   "claude-fable-5": { input: 10, read: 1, write: 12.5, output: 50 },
   "claude-opus-5-5": { input: 4, read: 0.2, write: 5, output: 20 },
@@ -17,6 +19,19 @@ const rates: Record<string, Rate> = {
   "claude-sonnet-5-5": { input: 2, read: 0.2, write: 2.5, output: 10 },
   "claude-sonnet-5": { input: 2, read: 0.2, write: 2.5, output: 10 },
   "claude-sonnet-4": { input: 3, read: 0.3, write: 3.75, output: 15 },
+  "claude-haiku-5-5": {
+    input: 0.1,
+    read: 0.01,
+    write: 0.125,
+    output: 0.5,
+    longContext: {
+      above: 100_000,
+      input: 0.5,
+      read: 0.05,
+      write: 0.625,
+      output: 2.5,
+    },
+  },
   "claude-haiku-4-5": { input: 1, read: 0.1, write: 1.25, output: 5 },
   "gpt-6-astra": { input: 10, read: 1, output: 50 },
   "gpt-6.1-sol": { input: 2, read: 0.1, output: 10 },
@@ -29,7 +44,12 @@ const known = Object.keys(rates).sort((a, b) => b.length - a.length);
 function rateFor(record: RequestRecord) {
   const id = (record.nativeModel || record.model).toLowerCase();
   const match = known.find((k) => id === k || id.startsWith(k));
-  return match ? rates[match] : null;
+  if (!match) return null;
+  const rate = rates[match];
+  // Prompt length includes cache reads and writes, already in inputTokens.
+  return rate.longContext && record.inputTokens > rate.longContext.above
+    ? rate.longContext
+    : rate;
 }
 
 export const costTypes = ["input", "read", "write", "output"] as const;

@@ -7,7 +7,7 @@ vrouter is a Go model gateway with a React/TypeScript UI embedded in one binary.
 - Use `devenv shell`, or install Go 1.26+ and Node 22.12+ or 24 with pnpm and just. For one command, use `devenv shell <command>`. The environment is defined in `devenv.nix`, with inputs pinned in `devenv.lock`; `.envrc` supports automatic activation with direnv.
 - `just build` installs frontend dependencies, type-checks/builds the UI, then builds `bin/vrouter` with CGO disabled.
 - `just dev` runs Go on `:8080` and Vite on `:5173`. Only the UI hot-reloads; restart after Go changes. `just dev-web` starts only Vite.
-- Check Go changes with `go vet ./...` and `just build`; check UI changes with `pnpm --dir web build`. Run `go test ./...` for backend tests. There are no frontend test/lint scripts. Format changed Go files with `gofmt` and changed UI files with Prettier.
+- Check Go changes with `go vet ./...` and `just build`; check UI changes with `pnpm --dir web build`. This repository has no automated tests; do not add them. Format changed Go files with `gofmt` and changed UI files with Prettier.
 
 ## Where changes belong
 

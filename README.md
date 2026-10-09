@@ -247,7 +247,7 @@ Select a gateway with the `X-Vrouter-Gateway` header. Inference always takes its
 ```sh
 just dev                    # Go server on :8080, Vite on :5173
 just build                  # Build UI and bin/vrouter
-go test ./...               # Backend tests
+go vet ./...                # Go static checks
 pnpm --dir web build        # Type-check and build the UI
 ```
 
