@@ -1,16 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  Boxes,
+  ChartColumn,
   Check,
   CircleHelp,
   Eye,
   EyeOff,
+  KeyRound,
+  LayoutGrid,
   LogOut,
   Monitor,
   Moon,
   RefreshCw,
   Sun,
   TriangleAlert,
+  Users,
 } from "lucide-react";
 import "./style.css";
 import "@fontsource-variable/dm-sans";
@@ -30,6 +35,13 @@ import { pages, Workspace, type Page } from "./Workspace";
 
 const pageOf = (hash: string) =>
   pages.find((p) => p.toLowerCase() === hash.slice(1)) || "Overview";
+const pageIcons = {
+  Overview: LayoutGrid,
+  Models: Boxes,
+  Accounts: Users,
+  Keys: KeyRound,
+  Usage: ChartColumn,
+} satisfies Record<Page, unknown>;
 const themes = ["system", "dark", "light"] as const;
 type Theme = (typeof themes)[number];
 const themeIcons = { system: Monitor, dark: Moon, light: Sun };
@@ -253,17 +265,21 @@ function App() {
         )}
         {gateway && (
           <nav aria-label="Main navigation">
-            {pages.map((item) => (
-              <a
-                key={item}
-                href={`#${item.toLowerCase()}`}
-                className={page === item ? "active" : ""}
-                aria-current={page === item ? "page" : undefined}
-                onClick={() => navigate(item)}
-              >
-                {item}
-              </a>
-            ))}
+            {pages.map((item) => {
+              const Icon = pageIcons[item];
+              return (
+                <a
+                  key={item}
+                  href={`#${item.toLowerCase()}`}
+                  className={page === item ? "active" : ""}
+                  aria-current={page === item ? "page" : undefined}
+                  onClick={() => navigate(item)}
+                >
+                  <Icon size={19} aria-hidden="true" />
+                  {item}
+                </a>
+              );
+            })}
           </nav>
         )}
         <div className="header-actions">
