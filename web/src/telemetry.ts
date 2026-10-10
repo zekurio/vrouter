@@ -22,8 +22,16 @@ export type RequestRecord = {
   // placeholders, not a measured zero.
   usageKnown: boolean;
   usagePartial?: boolean;
+  // The premium tier the provider served. Absent means the standard rate.
+  speed?: Speed;
   stream: boolean;
   outcome: "success" | "error" | "incomplete";
+};
+export const speeds = ["fast", "ultrafast"] as const;
+export type Speed = (typeof speeds)[number];
+export const speedLabel: Record<Speed, string> = {
+  fast: "Fast",
+  ultrafast: "Ultrafast",
 };
 export type Telemetry = {
   requests: RequestRecord[];

@@ -1,10 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { RefreshCw } from "lucide-react";
 import { errorMessage, isStale, type APIRequest } from "./api";
 import { CostChart, series } from "./CostChart";
 import { ProviderBrand, providerLabel } from "./ProviderBrand";
 import { RequestLog } from "./RequestLog";
-import type { RequestRecord, Telemetry } from "./telemetry";
+import {
+  speedLabel,
+  speeds,
+  type RequestRecord,
+  type Telemetry,
+} from "./telemetry";
 import {
   compact,
   costTypeLabel,
@@ -101,7 +113,7 @@ export function UsagePage({ request, reloadKey }: Props) {
 
           <UsageTotals total={total} />
 
-          {total.cost > 0 && <CostByType total={total} />}
+          {total.cost > 0 && <CostSplits usage={usage} total={total} />}
 
           <Breakdown
             view={view}
@@ -236,34 +248,90 @@ function UsageTotals({ total }: { total: Tally }) {
   );
 }
 
-function CostByType({ total }: { total: Tally }) {
+type Part = {
+  key: string;
+  label: string;
+  cost: number;
+  // Colours the segment and its legend key.
+  className: string;
+  style?: CSSProperties;
+};
+
+const sum = (costs: Record<string, number>) =>
+  Object.values(costs).reduce((a, b) => a + b, 0);
+
+function CostSplits({ usage, total }: { usage: Usage; total: Tally }) {
+  // Premium spend splits by provider, in the chart's order and colours.
+  const premium: Part[] = speeds.flatMap((speed) =>
+    usage.providers.flatMap((p) => {
+      const cost = total.byTier[speed][p.name] ?? 0;
+      if (cost <= 0) return [];
+      return {
+        key: `${speed}/${p.name}`,
+        label: `${providerLabel(p.provider)} ${speedLabel[speed].toLowerCase()}`,
+        cost,
+        className: `premium ${speed}`,
+        style: series(p.provider),
+      };
+    }),
+  );
   return (
-    <section className="usage-types" aria-label="Cost by type">
-      <h2>Cost by type</h2>
+    <div className="usage-costs">
+      <CostSplit
+        title="Cost by type"
+        parts={costTypes
+          .filter((type) => total.byType[type] > 0)
+          .map((type) => ({
+            key: type,
+            label: costTypeLabel[type],
+            cost: total.byType[type],
+            className: type,
+          }))}
+      />
+      <CostSplit
+        title="Cost by tier"
+        parts={[
+          {
+            key: "standard",
+            label: "Standard",
+            cost: sum(total.byTier.standard),
+            className: "standard",
+          },
+          // Listed at zero, so no premium spend reads as checked.
+          ...(premium.length > 0
+            ? premium
+            : [{ key: "fast", label: "Fast", cost: 0, className: "premium" }]),
+        ]}
+      />
+    </div>
+  );
+}
+
+function CostSplit({ title, parts }: { title: string; parts: Part[] }) {
+  return (
+    <section className="usage-types" aria-label={title}>
+      <h2>{title}</h2>
       <div className="type-bar" aria-hidden="true">
-        {costTypes.map(
-          (type) =>
-            total.byType[type] > 0 && (
+        {parts.map(
+          (p) =>
+            p.cost > 0 && (
               <span
-                key={type}
-                className={type}
-                style={{ flexGrow: total.byType[type] }}
-                title={`${costTypeLabel[type]} ${money(total.byType[type])}`}
+                key={p.key}
+                className={p.className}
+                style={{ ...p.style, flexGrow: p.cost }}
+                title={`${p.label} ${money(p.cost)}`}
               />
             ),
         )}
       </div>
       <ul>
-        {costTypes.map(
-          (type) =>
-            total.byType[type] > 0 && (
-              <li key={type}>
-                <span className={`type-key ${type}`} />
-                {costTypeLabel[type]}
-                <strong>{money(total.byType[type])}</strong>
-              </li>
-            ),
-        )}
+        {parts.map((p) => (
+          <li key={p.key}>
+            <span className={`type-key ${p.className}`} style={p.style} />
+            {p.label}
+            <strong>{money(p.cost)}</strong>
+          </li>
+        ))}
       </ul>
     </section>
   );

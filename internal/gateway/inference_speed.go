@@ -9,6 +9,40 @@ import (
 
 const claudeFastBeta = "fast-mode-2026-02-01"
 
+// Premium speed tiers recorded in telemetry. A request served at the
+// standard rate records none.
+const (
+	speedFast      = "fast"
+	speedUltrafast = "ultrafast"
+)
+
+// servedSpeed maps a Claude speed or an OpenAI service tier to a telemetry
+// speed. It reports false for a value that does not settle the rate, such as
+// auto.
+func servedSpeed(value string) (string, bool) {
+	switch value {
+	case "fast", "priority":
+		return speedFast, true
+	case "ultrafast":
+		return speedUltrafast, true
+	case "standard", "default":
+		return "", true
+	}
+	return "", false
+}
+
+// requestedSpeed is the tier an upstream request asks for. It stands in for
+// the served tier when the provider response does not report one.
+func requestedSpeed(payload map[string]any, protocol wireProtocol) string {
+	field := "service_tier"
+	if protocol == messagesProtocol {
+		field = "speed"
+	}
+	value, _ := payload[field].(string)
+	speed, _ := servedSpeed(value)
+	return speed
+}
+
 func inferenceFastMode(payload map[string]any, protocol wireProtocol) (bool, error) {
 	field := "service_tier"
 	if protocol == messagesProtocol {

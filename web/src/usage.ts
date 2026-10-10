@@ -1,6 +1,6 @@
 // What the logged requests would cost on each provider's public API.
 
-import { keyLabel, type RequestRecord } from "./telemetry";
+import { keyLabel, type RequestRecord, type Speed } from "./telemetry";
 
 // Dollars per million tokens. Cache writes default to the input rate.
 type Rate = { input: number; read: number; write?: number; output: number };
@@ -41,6 +41,13 @@ const rates: Record<string, ModelRate> = {
 // Longest ID first, so a dated or suffixed ID matches its own family.
 const known = Object.entries(rates).toSorted(([a], [b]) => b.length - a.length);
 
+// Premium tiers multiply every rate above, cache reads and writes included.
+// Claude fast mode (Opus 5.5, 5 and 4.8) and OpenAI Fast, formerly Priority,
+// on GPT-6 cost twice the standard rate. OpenAI Ultrafast on gpt-6-astra and
+// gpt-6.1-sol costs six times.
+// OpenAI: https://developers.openai.com/api/docs/pricing
+const speedMultiplier: Record<Speed, number> = { fast: 2, ultrafast: 6 };
+
 function rateFor(record: RequestRecord) {
   const id = (record.nativeModel || record.model).toLowerCase();
   const match = known.find(([k]) => id === k || id.startsWith(k));
@@ -60,6 +67,7 @@ export const costTypeLabel: Record<CostType, string> = {
   write: "Cache write",
   output: "Output",
 };
+export type Tier = "standard" | Speed;
 
 export type Tally = {
   requests: number;
@@ -69,6 +77,8 @@ export type Tally = {
   unpriced: number;
   cost: number;
   byType: Record<CostType, number>;
+  // Cost by speed tier, then by provider.
+  byTier: Record<Tier, Record<string, number>>;
   // What the cached input would have cost at the full input rate.
   saved: number;
   tokens: number;
@@ -83,6 +93,7 @@ const tally = (): Tally => ({
   unpriced: 0,
   cost: 0,
   byType: { input: 0, read: 0, write: 0, output: 0 },
+  byTier: { standard: {}, fast: {}, ultrafast: {} },
   saved: 0,
   tokens: 0,
   uncached: 0,
@@ -107,17 +118,23 @@ function add(into: Tally, r: RequestRecord) {
     into.unpriced++;
     return;
   }
+  // Rates are per million tokens.
+  const scale = (r.speed ? speedMultiplier[r.speed] : 1) / 1e6;
   const part = {
-    input: input * rate.input,
-    read: read * rate.read,
-    write: write * (rate.write ?? rate.input),
-    output: r.outputTokens * rate.output,
+    input: input * rate.input * scale,
+    read: read * rate.read * scale,
+    write: write * (rate.write ?? rate.input) * scale,
+    output: r.outputTokens * rate.output * scale,
   };
+  let cost = 0;
   for (const type of costTypes) {
-    into.byType[type] += part[type] / 1e6;
-    into.cost += part[type] / 1e6;
+    into.byType[type] += part[type];
+    cost += part[type];
   }
-  into.saved += (read * (rate.input - rate.read)) / 1e6;
+  into.cost += cost;
+  const tier = into.byTier[r.speed ?? "standard"];
+  tier[r.provider] = (tier[r.provider] ?? 0) + cost;
+  into.saved += read * (rate.input - rate.read) * scale;
 }
 
 export type Group = Tally & { name: string; provider: string };

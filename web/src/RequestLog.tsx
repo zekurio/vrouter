@@ -7,6 +7,7 @@ import {
   formatDuration,
   keyLabel,
   resultLabel,
+  speedLabel,
   type OutcomeFilter,
   type RequestRecord,
 } from "./telemetry";
@@ -112,6 +113,7 @@ function Row({ record: r }: { record: RequestRecord }) {
         {r.nativeModel && r.nativeModel !== r.model && (
           <code>{r.nativeModel}</code>
         )}
+        {r.speed && <span className="cell-sub">{speedLabel[r.speed]}</span>}
       </td>
       <td>{keyLabel(r)}</td>
       <td>

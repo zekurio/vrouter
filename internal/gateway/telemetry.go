@@ -39,9 +39,13 @@ type telemetryRecord struct {
 	// UsagePartial is set when counts were observed but the provider never
 	// delivered a trustworthy final usage report (a stream cut short, a
 	// terminal event without usage). The token fields are then partial.
-	UsagePartial bool   `json:"usagePartial,omitempty"`
-	Stream       bool   `json:"stream"`
-	Outcome      string `json:"outcome"`
+	UsagePartial bool `json:"usagePartial,omitempty"`
+	// Speed is the premium tier the provider served: "fast" for Claude fast
+	// mode or OpenAI Fast (formerly Priority), "ultrafast" for OpenAI
+	// Ultrafast. Empty means the standard rate.
+	Speed   string `json:"speed,omitempty"`
+	Stream  bool   `json:"stream"`
+	Outcome string `json:"outcome"`
 }
 
 const (
@@ -61,10 +65,8 @@ func validateTelemetryRecord(record telemetryRecord) error {
 			return errors.New("gateway: telemetry record has an oversized field")
 		}
 	}
-	switch record.Outcome {
-	case outcomeSuccess, outcomeError, outcomeIncomplete:
-	default:
-		return errors.New("gateway: telemetry record has an unknown outcome")
+	if err := validateTelemetryLabels(record); err != nil {
+		return err
 	}
 	if record.Status < 0 || record.Status > 999 || record.DurationMs < 0 {
 		return errors.New("gateway: telemetry record has invalid counters")
@@ -73,6 +75,21 @@ func validateTelemetryRecord(record telemetryRecord) error {
 		if value < 0 || value > 1<<62 {
 			return errors.New("gateway: telemetry record has invalid token counts")
 		}
+	}
+	return nil
+}
+
+// validateTelemetryLabels checks the fields limited to a fixed set of values.
+func validateTelemetryLabels(record telemetryRecord) error {
+	switch record.Outcome {
+	case outcomeSuccess, outcomeError, outcomeIncomplete:
+	default:
+		return errors.New("gateway: telemetry record has an unknown outcome")
+	}
+	switch record.Speed {
+	case "", speedFast, speedUltrafast:
+	default:
+		return errors.New("gateway: telemetry record has an unknown speed")
 	}
 	return nil
 }
@@ -128,13 +145,15 @@ type inferenceKey struct {
 // inferenceAttempt accumulates everything the settlement needs for one
 // supported inference POST, including usage parsed from the provider response.
 type inferenceAttempt struct {
-	principal    inferenceKey
-	startedAt    time.Time
-	model        string
-	native       string
-	provider     string
-	accountID    string
-	stream       bool
+	principal inferenceKey
+	startedAt time.Time
+	model     string
+	native    string
+	provider  string
+	accountID string
+	stream    bool
+	// speed is the premium tier the request asked for.
+	speed        string
 	outcome      string
 	bodyComplete bool
 	durationMs   int64
@@ -150,6 +169,19 @@ func (a *inferenceAttempt) usageTrusted() bool {
 		return a.usage.terminal && !a.usage.terminalFailure && (a.usage.terminalUsage || a.usage.finalUsage)
 	}
 	return a.bodyComplete
+}
+
+// billedSpeed is the tier the provider says it served, or the requested tier
+// when the response did not say. Claude Opus 4.6 runs a fast request at
+// standard speed, and OpenAI can downgrade Fast to default under load.
+func (a *inferenceAttempt) billedSpeed(forwarded bool) string {
+	if !forwarded {
+		return ""
+	}
+	if a.usage.speedReported {
+		return a.usage.speed
+	}
+	return a.speed
 }
 
 // reserve admits one inference attempt. It checks that the key is still
@@ -225,26 +257,31 @@ type usagePayload struct {
 	TotalTokens              *int64 `json:"total_tokens"`
 	CacheReadInputTokens     *int64 `json:"cache_read_input_tokens"`
 	CacheCreationInputTokens *int64 `json:"cache_creation_input_tokens"`
-	InputTokensDetails       *struct {
+	// Speed is the speed Claude served, "fast" or "standard".
+	Speed              string `json:"speed"`
+	InputTokensDetails *struct {
 		CachedTokens *int64 `json:"cached_tokens"`
 	} `json:"input_tokens_details"`
 }
 
 type rawUsageEnvelope struct {
-	Type       string          `json:"type"`
-	Usage      json.RawMessage `json:"usage"`
-	Error      json.RawMessage `json:"error"`
-	StopReason string          `json:"stop_reason"`
-	Delta      *struct {
+	Type  string          `json:"type"`
+	Usage json.RawMessage `json:"usage"`
+	// ServiceTier is the tier OpenAI served a non-streamed response at.
+	ServiceTier string          `json:"service_tier"`
+	Error       json.RawMessage `json:"error"`
+	StopReason  string          `json:"stop_reason"`
+	Delta       *struct {
 		StopReason string `json:"stop_reason"`
 	} `json:"delta"`
 	Message *struct {
 		Usage json.RawMessage `json:"usage"`
 	} `json:"message"`
 	Response *struct {
-		Usage  json.RawMessage `json:"usage"`
-		Error  json.RawMessage `json:"error"`
-		Status string          `json:"status"`
+		Usage       json.RawMessage `json:"usage"`
+		Error       json.RawMessage `json:"error"`
+		Status      string          `json:"status"`
+		ServiceTier string          `json:"service_tier"`
 	} `json:"response"`
 }
 
@@ -284,6 +321,10 @@ type usageParser struct {
 	// provider stopped the response early, so it is not a success.
 	providerIncomplete bool
 	lastEvent          string
+	// speed is the tier the provider reported serving, from Claude usage.speed
+	// or the OpenAI service_tier. speedReported stays false until one arrives.
+	speed         string
+	speedReported bool
 }
 
 func (u *usageParser) begin(stream bool) {
@@ -444,6 +485,10 @@ func (u *usageParser) parseJSON(data []byte) {
 		u.invalidateUsage()
 		return
 	}
+	u.observeSpeed(envelope.ServiceTier)
+	if envelope.Response != nil {
+		u.observeSpeed(envelope.Response.ServiceTier)
+	}
 	usable := u.applyEnvelopeUsage(&envelope)
 	if envelope.StopReason == "max_tokens" || envelope.Delta != nil && envelope.Delta.StopReason == "max_tokens" {
 		u.providerIncomplete = true
@@ -529,7 +574,16 @@ func (u *usageParser) applyRawUsage(raw json.RawMessage) bool {
 		u.invalidateUsage()
 		return false
 	}
+	u.observeSpeed(sample.Speed)
 	return u.applyUsage(&sample)
+}
+
+// observeSpeed keeps the latest tier the provider reported. A Responses stream
+// settles it in response.completed, after earlier events.
+func (u *usageParser) observeSpeed(value string) {
+	if speed, ok := servedSpeed(value); ok {
+		u.speed, u.speedReported = speed, true
+	}
 }
 
 // invalidateUsage discards all accumulated counts and marks the usage

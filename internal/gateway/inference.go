@@ -158,6 +158,7 @@ func (s *server) finishAttempt(attempt *inferenceAttempt, recorder *attemptWrite
 		TotalTokens:      totals.Total,
 		UsageKnown:       usageKnown,
 		UsagePartial:     usagePartial,
+		Speed:            attempt.billedSpeed(forwarded),
 		Stream:           attempt.stream,
 		Outcome:          outcome,
 	}
