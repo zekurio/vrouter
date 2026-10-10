@@ -3,13 +3,6 @@ version: "2"
 linters:
   default: all
   disable:
-    # Complexity limits. The protocol converter would need restructuring first.
-    - cyclop
-    - funlen
-    - gocognit
-    - gocyclo
-    - maintidx
-    - nestif
     # Whitespace and naming preferences that fight the codebase's compact style.
     - lll
     - nlreturn
@@ -35,7 +28,20 @@ linters:
     - depguard
     # Reports helpers that sweep shared state with their own context.
     - contextcheck
+    # Deprecated in favour of gomodguard_v2, which default: all also enables.
+    - gomodguard
   settings:
+    cyclop:
+      max-complexity: 15
+    funlen:
+      lines: 100
+      statements: 60
+    gocognit:
+      min-complexity: 30
+    gocyclo:
+      min-complexity: 20
+    nestif:
+      min-complexity: 5
     errchkjson:
       # Allow ignoring errors from types that cannot fail to encode.
       check-error-free-encoding: true
@@ -55,10 +61,6 @@ linters:
         - unnamedResult
         # Conflicts with exhaustive when the default branch also serves a listed case.
         - emptyFallthrough
-    modernize:
-      disable:
-        # Swapping omitempty for omitzero changes the stored and served JSON.
-        - omitzero
     staticcheck:
       checks:
         - all

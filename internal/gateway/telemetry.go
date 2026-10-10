@@ -444,16 +444,28 @@ func (u *usageParser) parseJSON(data []byte) {
 		u.invalidateUsage()
 		return
 	}
-	usable := u.applyRawUsage(envelope.Usage)
+	usable := u.applyEnvelopeUsage(&envelope)
 	if envelope.StopReason == "max_tokens" || envelope.Delta != nil && envelope.Delta.StopReason == "max_tokens" {
 		u.providerIncomplete = true
 	}
+	u.applyEnvelopeType(&envelope, usable)
+	u.applyEnvelopeFailure(&envelope)
+}
+
+// applyEnvelopeUsage folds every usage object of one event and reports
+// whether any contributed usable counts.
+func (u *usageParser) applyEnvelopeUsage(envelope *rawUsageEnvelope) bool {
+	usable := u.applyRawUsage(envelope.Usage)
 	if envelope.Message != nil {
 		usable = u.applyRawUsage(envelope.Message.Usage) || usable
 	}
 	if envelope.Response != nil {
 		usable = u.applyRawUsage(envelope.Response.Usage) || usable
 	}
+	return usable
+}
+
+func (u *usageParser) applyEnvelopeType(envelope *rawUsageEnvelope, usable bool) {
 	switch envelope.Type {
 	case "message_stop":
 		u.terminal = true
@@ -472,11 +484,14 @@ func (u *usageParser) parseJSON(data []byte) {
 		u.terminal = true
 		u.terminalFailure = true
 	}
+}
+
+func (u *usageParser) applyEnvelopeFailure(envelope *rawUsageEnvelope) {
 	if u.lastEvent == "error" {
 		u.terminal = true
 		u.terminalFailure = true
 	}
-	if len(envelope.Error) > 0 && !bytes.Equal(bytes.TrimSpace(envelope.Error), []byte("null")) {
+	if rawUsageError(envelope.Error) {
 		u.terminalFailure = true
 	}
 	if envelope.Response != nil {
@@ -484,10 +499,15 @@ func (u *usageParser) parseJSON(data []byte) {
 			u.terminal = true
 			u.terminalFailure = true
 		}
-		if len(envelope.Response.Error) > 0 && !bytes.Equal(bytes.TrimSpace(envelope.Response.Error), []byte("null")) {
+		if rawUsageError(envelope.Response.Error) {
 			u.terminalFailure = true
 		}
 	}
+}
+
+// rawUsageError reports whether an error field is present and not null.
+func rawUsageError(raw json.RawMessage) bool {
+	return len(raw) > 0 && !bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
 func finalUsageReport(raw json.RawMessage, requireInput bool) bool {
@@ -533,15 +553,9 @@ func (u *usageParser) applyUsage(sample *usagePayload) bool {
 	if sample == nil {
 		return false
 	}
-	counts := []*int64{sample.InputTokens, sample.OutputTokens, sample.TotalTokens, sample.CacheReadInputTokens, sample.CacheCreationInputTokens}
-	if sample.InputTokensDetails != nil {
-		counts = append(counts, sample.InputTokensDetails.CachedTokens)
-	}
-	for _, count := range counts {
-		if count != nil && (*count < 0 || *count > maxTokenCount) {
-			u.invalidateUsage()
-			return false
-		}
+	if !usageCountsValid(sample) {
+		u.invalidateUsage()
+		return false
 	}
 	seen := false
 	if sample.InputTokens != nil {
@@ -554,39 +568,15 @@ func (u *usageParser) applyUsage(sample *usagePayload) bool {
 		if sample.CacheCreationInputTokens != nil {
 			input = saturatingAdd(input, *sample.CacheCreationInputTokens)
 		}
-		if input > u.input {
-			u.input = input
-		}
+		u.input = max(u.input, input)
 	}
-	if sample.CacheReadInputTokens != nil {
-		seen = true
-		if cached := *sample.CacheReadInputTokens; cached > u.cached {
-			u.cached = cached
-		}
+	seen = raiseUsageCount(&u.cached, sample.CacheReadInputTokens) || seen
+	raiseUsageCount(&u.cacheWrite, sample.CacheCreationInputTokens)
+	if sample.InputTokensDetails != nil {
+		seen = raiseUsageCount(&u.cached, sample.InputTokensDetails.CachedTokens) || seen
 	}
-	if sample.CacheCreationInputTokens != nil {
-		if written := *sample.CacheCreationInputTokens; written > u.cacheWrite {
-			u.cacheWrite = written
-		}
-	}
-	if sample.InputTokensDetails != nil && sample.InputTokensDetails.CachedTokens != nil {
-		seen = true
-		if cached := *sample.InputTokensDetails.CachedTokens; cached > u.cached {
-			u.cached = cached
-		}
-	}
-	if sample.OutputTokens != nil {
-		seen = true
-		if output := *sample.OutputTokens; output > u.output {
-			u.output = output
-		}
-	}
-	if sample.TotalTokens != nil {
-		seen = true
-		if total := *sample.TotalTokens; total > u.total {
-			u.total = total
-		}
-	}
+	seen = raiseUsageCount(&u.output, sample.OutputTokens) || seen
+	seen = raiseUsageCount(&u.total, sample.TotalTokens) || seen
 	if !seen {
 		if u.known {
 			u.invalidateUsage()
@@ -594,6 +584,30 @@ func (u *usageParser) applyUsage(sample *usagePayload) bool {
 		return false
 	}
 	u.known = true
+	return true
+}
+
+// usageCountsValid reports whether every count in a sample is in range.
+func usageCountsValid(sample *usagePayload) bool {
+	counts := []*int64{sample.InputTokens, sample.OutputTokens, sample.TotalTokens, sample.CacheReadInputTokens, sample.CacheCreationInputTokens}
+	if sample.InputTokensDetails != nil {
+		counts = append(counts, sample.InputTokensDetails.CachedTokens)
+	}
+	for _, count := range counts {
+		if count != nil && (*count < 0 || *count > maxTokenCount) {
+			return false
+		}
+	}
+	return true
+}
+
+// raiseUsageCount keeps the larger of a cumulative count and a sample's value,
+// and reports whether the sample carried one.
+func raiseUsageCount(current, sample *int64) bool {
+	if sample == nil {
+		return false
+	}
+	*current = max(*current, *sample)
 	return true
 }
 

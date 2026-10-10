@@ -31,7 +31,6 @@ export function HelpDialog({
   onClose: () => void;
 }) {
   const [protocol, setProtocol] = useState<Protocol>("responses");
-  const [provider, setProvider] = useState("claude");
   const origin = publicUrl || location.origin;
   const base = `${origin}/v1`;
   const addresses = [
@@ -83,15 +82,6 @@ export function HelpDialog({
       </ul>
       <div className="protocol-choice">
         <span>Example request</span>
-        <Select
-          label="Provider for example"
-          value={provider}
-          options={[
-            { value: "claude", label: "Claude" },
-            { value: "codex", label: "Codex" },
-          ]}
-          onChange={setProvider}
-        />
         <Select
           label="Client protocol"
           value={protocol}

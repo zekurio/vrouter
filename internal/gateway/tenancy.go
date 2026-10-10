@@ -115,52 +115,12 @@ func registryValidate(state diskRegistry) error {
 	if state.Version != registryVersion {
 		return fmt.Errorf("gateway: registry version %d is not supported", state.Version)
 	}
-
-	seenGateways := make(map[string]struct{}, len(state.Gateways))
-	for i := range state.Gateways {
-		gateway := &state.Gateways[i]
-		if !recordIDPattern.MatchString(gateway.ID) {
-			return fmt.Errorf("gateway: gateway %d has an invalid ID", i)
-		}
-		if _, duplicate := seenGateways[gateway.ID]; duplicate {
-			return errors.New("gateway: gateway IDs must be unique")
-		}
-		seenGateways[gateway.ID] = struct{}{}
-		if strings.TrimSpace(gateway.Name) == "" || len(gateway.Name) > 128 {
-			return fmt.Errorf("gateway: gateway %d has an invalid name", i)
-		}
-		if strings.TrimSpace(gateway.OwnerID) == "" || len(gateway.OwnerID) > 256 {
-			return fmt.Errorf("gateway: gateway %d has an invalid owner", i)
-		}
+	seenGateways, err := registryValidateGateways(state.Gateways)
+	if err != nil {
+		return err
 	}
-	seenKeys := make(map[string]struct{}, len(state.Keys))
-	for i := range state.Keys {
-		key := &state.Keys[i]
-		if !recordIDPattern.MatchString(key.ID) {
-			return fmt.Errorf("gateway: key %d has an invalid ID", i)
-		}
-		if _, duplicate := seenKeys[key.ID]; duplicate {
-			return errors.New("gateway: key IDs must be unique")
-		}
-		seenKeys[key.ID] = struct{}{}
-		if _, exists := seenGateways[key.GatewayID]; !exists {
-			return fmt.Errorf("gateway: key %d references an unknown gateway", i)
-		}
-		if !keyHashPattern.MatchString(key.Hash) {
-			return fmt.Errorf("gateway: key %d has an invalid hash", i)
-		}
-		if !strings.HasPrefix(key.Prefix, "vr_") || len(key.Prefix) > 32 {
-			return fmt.Errorf("gateway: key %d has an invalid prefix", i)
-		}
-		if strings.TrimSpace(key.Name) == "" || len(key.Name) > 128 {
-			return fmt.Errorf("gateway: key %d has an invalid name", i)
-		}
-		if key.ExpiresAt != nil && key.ExpiresAt.IsZero() {
-			return fmt.Errorf("gateway: key %d has an invalid expiry", i)
-		}
-		if key.UsedRequests < 0 || key.UsedRequests > maxTokenCount || key.UsedTokens < 0 || key.UsedTokens > maxTokenCount {
-			return fmt.Errorf("gateway: key %d has invalid counters", i)
-		}
+	if err := registryValidateKeys(state.Keys, seenGateways); err != nil {
+		return err
 	}
 	for gatewayID, records := range state.Telemetry {
 		if _, exists := seenGateways[gatewayID]; !exists {
@@ -174,6 +134,68 @@ func registryValidate(state diskRegistry) error {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+// registryValidateGateways checks gateway records and returns their IDs.
+func registryValidateGateways(gateways []gatewayRecord) (map[string]struct{}, error) {
+	seen := make(map[string]struct{}, len(gateways))
+	for i := range gateways {
+		gateway := &gateways[i]
+		if !recordIDPattern.MatchString(gateway.ID) {
+			return nil, fmt.Errorf("gateway: gateway %d has an invalid ID", i)
+		}
+		if _, duplicate := seen[gateway.ID]; duplicate {
+			return nil, errors.New("gateway: gateway IDs must be unique")
+		}
+		seen[gateway.ID] = struct{}{}
+		if strings.TrimSpace(gateway.Name) == "" || len(gateway.Name) > 128 {
+			return nil, fmt.Errorf("gateway: gateway %d has an invalid name", i)
+		}
+		if strings.TrimSpace(gateway.OwnerID) == "" || len(gateway.OwnerID) > 256 {
+			return nil, fmt.Errorf("gateway: gateway %d has an invalid owner", i)
+		}
+	}
+	return seen, nil
+}
+
+func registryValidateKeys(keys []keyRecord, gateways map[string]struct{}) error {
+	seen := make(map[string]struct{}, len(keys))
+	for i := range keys {
+		key := &keys[i]
+		if !recordIDPattern.MatchString(key.ID) {
+			return fmt.Errorf("gateway: key %d has an invalid ID", i)
+		}
+		if _, duplicate := seen[key.ID]; duplicate {
+			return errors.New("gateway: key IDs must be unique")
+		}
+		seen[key.ID] = struct{}{}
+		if _, exists := gateways[key.GatewayID]; !exists {
+			return fmt.Errorf("gateway: key %d references an unknown gateway", i)
+		}
+		if err := registryKeyFieldsError(i, key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func registryKeyFieldsError(i int, key *keyRecord) error {
+	if !keyHashPattern.MatchString(key.Hash) {
+		return fmt.Errorf("gateway: key %d has an invalid hash", i)
+	}
+	if !strings.HasPrefix(key.Prefix, "vr_") || len(key.Prefix) > 32 {
+		return fmt.Errorf("gateway: key %d has an invalid prefix", i)
+	}
+	if strings.TrimSpace(key.Name) == "" || len(key.Name) > 128 {
+		return fmt.Errorf("gateway: key %d has an invalid name", i)
+	}
+	if key.ExpiresAt != nil && key.ExpiresAt.IsZero() {
+		return fmt.Errorf("gateway: key %d has an invalid expiry", i)
+	}
+	if key.UsedRequests < 0 || key.UsedRequests > maxTokenCount || key.UsedTokens < 0 || key.UsedTokens > maxTokenCount {
+		return fmt.Errorf("gateway: key %d has invalid counters", i)
 	}
 	return nil
 }

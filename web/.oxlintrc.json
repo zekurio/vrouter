@@ -41,10 +41,20 @@
     // DOM and React types are mutable, so nearly every parameter would need a
     // hand-written readonly wrapper.
     "typescript/prefer-readonly-parameter-types": "off",
-    // Size and nesting limits wait for a refactor, as on the Go side.
-    "eslint/max-lines": "off",
-    "eslint/max-lines-per-function": "off",
-    "eslint/max-depth": "off",
+    // Size and complexity limits, roughly matching .golangci.yml.
+    "eslint/complexity": ["error", { "max": 15 }],
+    "eslint/max-depth": ["error", { "max": 4 }],
+    "eslint/max-lines": [
+      "error",
+      { "max": 400, "skipBlankLines": true, "skipComments": true }
+    ],
+    "eslint/max-lines-per-function": [
+      "error",
+      { "max": 150, "skipBlankLines": true, "skipComments": true }
+    ],
+    "eslint/max-nested-callbacks": ["error", { "max": 4 }],
+    "eslint/max-params": ["error", { "max": 4 }],
+    "eslint/max-statements": ["error", { "max": 30 }],
     // role="status" on a div is valid ARIA, and <output> is form-associated.
     "jsx-a11y/prefer-tag-over-role": "off",
     // Conflicts with typescript/consistent-return: an effect that only

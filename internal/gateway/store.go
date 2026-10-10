@@ -18,7 +18,7 @@ const storeStateVersion = 1
 // persisted only in the private state file; tokens must never reach logs,
 // HTTP responses, or error strings.
 type storedAccount struct {
-	WindowTriggerAt time.Time `json:"window_trigger_at,omitempty"`
+	WindowTriggerAt time.Time `json:"window_trigger_at,omitzero"`
 	ID              string    `json:"id"`
 	Provider        string    `json:"provider"`
 	Label           string    `json:"label"`
@@ -33,7 +33,7 @@ type storedAccount struct {
 	AccessToken  string    `json:"access_token"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	IDToken      string    `json:"id_token,omitempty"`
-	ExpiresAt    time.Time `json:"expires_at,omitempty"`
+	ExpiresAt    time.Time `json:"expires_at,omitzero"`
 	CreatedAt    time.Time `json:"created_at"`
 	Disabled     bool      `json:"disabled"`
 	AuthMode     string    `json:"auth_mode"`

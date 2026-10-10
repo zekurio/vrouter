@@ -14,6 +14,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -199,54 +200,67 @@ func validateOpenAIIDTokenClaims(payload []byte, clientID string, nonce *string)
 	if claims.Sub == "" {
 		return verifiedIdentity{}, errors.New("id token subject is missing")
 	}
-	audience, err := parseIDTokenAudience(claims.Aud)
-	if err != nil || len(audience) == 0 {
-		return verifiedIdentity{}, errors.New("id token audience is malformed")
+	if err := validateIDTokenAudience(claims, clientID); err != nil {
+		return verifiedIdentity{}, err
 	}
-	matched := false
-	for _, value := range audience {
-		if value == clientID {
-			matched = true
-		}
-	}
-	if !matched {
-		return verifiedIdentity{}, errors.New("id token audience does not match the client")
-	}
-	if len(audience) > 1 && claims.Azp == "" {
-		return verifiedIdentity{}, errors.New("id token is missing the authorized party")
-	}
-	if claims.Azp != "" && claims.Azp != clientID {
-		return verifiedIdentity{}, errors.New("id token authorized party does not match the client")
-	}
-	expiry, ok := int64Claim(claims.Exp)
-	if !ok {
-		return verifiedIdentity{}, errors.New("id token expiration is missing")
-	}
-	issuedAt, ok := int64Claim(claims.Iat)
-	if !ok {
-		return verifiedIdentity{}, errors.New("id token issued-at time is missing")
-	}
-	now := time.Now()
-	if time.Unix(issuedAt, 0).After(now.Add(idTokenSkew)) || issuedAt > expiry {
-		return verifiedIdentity{}, errors.New("id token issued-at time is invalid")
-	}
-	if now.After(time.Unix(expiry, 0).Add(idTokenSkew)) {
-		return verifiedIdentity{}, errors.New("id token is expired")
-	}
-	if len(claims.Nbf) > 0 {
-		notBefore, ok := int64Claim(claims.Nbf)
-		if !ok {
-			return verifiedIdentity{}, errors.New("id token not-before time is malformed")
-		}
-		if time.Unix(notBefore, 0).After(now.Add(idTokenSkew)) {
-			return verifiedIdentity{}, errors.New("id token is not valid yet")
-		}
+	if err := validateIDTokenLifetime(claims); err != nil {
+		return verifiedIdentity{}, err
 	}
 	if nonce != nil && (claims.Nonce == "" || subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(*nonce)) != 1) {
 		return verifiedIdentity{}, errors.New("id token nonce does not match")
 	}
 	auth := parseIDTokenAuthClaims(claims.Auth)
 	return verifiedIdentity{Subject: claims.Sub, Email: claims.Email, Name: claims.Name, WorkspaceID: auth.ChatGPTAccountID, PlanType: auth.ChatGPTPlanType}, nil
+}
+
+// validateIDTokenAudience requires the client in aud, and as azp when the
+// token names one or has several audiences.
+func validateIDTokenAudience(claims idTokenClaims, clientID string) error {
+	audience, err := parseIDTokenAudience(claims.Aud)
+	if err != nil || len(audience) == 0 {
+		return errors.New("id token audience is malformed")
+	}
+	if !slices.Contains(audience, clientID) {
+		return errors.New("id token audience does not match the client")
+	}
+	if len(audience) > 1 && claims.Azp == "" {
+		return errors.New("id token is missing the authorized party")
+	}
+	if claims.Azp != "" && claims.Azp != clientID {
+		return errors.New("id token authorized party does not match the client")
+	}
+	return nil
+}
+
+// validateIDTokenLifetime checks exp, iat, and an optional nbf against the
+// current time, allowing idTokenSkew.
+func validateIDTokenLifetime(claims idTokenClaims) error {
+	expiry, ok := int64Claim(claims.Exp)
+	if !ok {
+		return errors.New("id token expiration is missing")
+	}
+	issuedAt, ok := int64Claim(claims.Iat)
+	if !ok {
+		return errors.New("id token issued-at time is missing")
+	}
+	now := time.Now()
+	if time.Unix(issuedAt, 0).After(now.Add(idTokenSkew)) || issuedAt > expiry {
+		return errors.New("id token issued-at time is invalid")
+	}
+	if now.After(time.Unix(expiry, 0).Add(idTokenSkew)) {
+		return errors.New("id token is expired")
+	}
+	if len(claims.Nbf) == 0 {
+		return nil
+	}
+	notBefore, ok := int64Claim(claims.Nbf)
+	if !ok {
+		return errors.New("id token not-before time is malformed")
+	}
+	if time.Unix(notBefore, 0).After(now.Add(idTokenSkew)) {
+		return errors.New("id token is not valid yet")
+	}
+	return nil
 }
 
 // parseIDTokenAuthClaims reads the workspace identity block of an already

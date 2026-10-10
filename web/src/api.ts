@@ -66,6 +66,32 @@ export function errorText(body: unknown): string {
   return tags.length > 0 ? `${text} (${tags.join(", ")})` : text;
 }
 
+// Everything a request sends except its signal.
+function requestInit(
+  gateway: string | undefined,
+  method: string,
+  body: unknown,
+) {
+  return {
+    method,
+    headers: {
+      ...(gateway === undefined || gateway === ""
+        ? {}
+        : { [gatewayHeader]: gateway }),
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+    },
+    body: body === undefined ? null : JSON.stringify(body),
+  };
+}
+
+// Turns a fetch that never got a response into an error with a readable message.
+function sendError(err: unknown): unknown {
+  if (err instanceof Error && err.name === "TimeoutError")
+    return failure("vrouter did not answer in time.", 0);
+  if (err instanceof TypeError) return failure("Could not reach vrouter.", 0);
+  return err;
+}
+
 // One client per selected gateway. close() ends it when the selection changes:
 // reads in flight are aborted and later reads are refused, so an old gateway's
 // data cannot land in the new one's pages. Writes already sent are left to
@@ -76,6 +102,12 @@ export function createClient(options: Options) {
   const reads = new AbortController();
   let closed = false;
 
+  // Reads also end when the client closes.
+  const signalFor = (read: boolean) => {
+    const timeout = AbortSignal.timeout(options.timeout ?? 15000);
+    return read ? AbortSignal.any([timeout, reads.signal]) : timeout;
+  };
+
   const request: APIRequest = async <T>(
     path: string,
     method = "GET",
@@ -83,27 +115,16 @@ export function createClient(options: Options) {
   ): Promise<T> => {
     const read = method === "GET";
     if (closed && method !== "DELETE") throw stale();
-    const timeout = AbortSignal.timeout(options.timeout ?? 15000);
+    const signal = signalFor(read);
     let response: Response;
     try {
       response = await send(path, {
-        method,
-        headers: {
-          ...(options.gateway === undefined || options.gateway === ""
-            ? {}
-            : { [gatewayHeader]: options.gateway }),
-          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-        },
-        body: body === undefined ? null : JSON.stringify(body),
-        signal: read ? AbortSignal.any([timeout, reads.signal]) : timeout,
+        ...requestInit(options.gateway, method, body),
+        signal,
       });
     } catch (err) {
       if (closed && read) throw stale();
-      if (err instanceof Error && err.name === "TimeoutError")
-        throw failure("vrouter did not answer in time.", 0);
-      if (err instanceof TypeError)
-        throw failure("Could not reach vrouter.", 0);
-      throw err;
+      throw sendError(err);
     }
     const result: unknown = await response.json().catch(() => null);
     if (closed && read) throw stale();

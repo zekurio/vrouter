@@ -257,3 +257,19 @@ export function share(part: number, whole: number) {
   const percent = (part / whole) * 100;
   return percent < 0.1 ? "<0.1%" : `${percent.toFixed(1)}%`;
 }
+
+export const dayLabel = (time: number) =>
+  new Date(time).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+export const monthLabel = (time: number) =>
+  new Date(time).toLocaleDateString(undefined, {
+    month: "short",
+    year: "numeric",
+  });
+export const hourLabel = (time: number) =>
+  new Date(time).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });

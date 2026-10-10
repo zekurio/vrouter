@@ -146,68 +146,80 @@ func (r *protocolReply) finishReason(protocol wireProtocol) string {
 func (r *protocolReply) encode(protocol wireProtocol) map[string]any {
 	switch protocol {
 	case responsesProtocol:
-		items := make([]any, 0, len(r.blocks))
-		for _, b := range r.blocks {
-			items = append(items, r.responseItem(b, r.terminal))
-		}
-		response := map[string]any{"id": r.id, "object": "response", "created_at": r.createdAt(), "model": r.model, "status": r.status, "output": items, "usage": r.wireUsage(protocol), "error": r.errorBody, "incomplete_details": nil}
-		if r.status == "incomplete" {
-			response["incomplete_details"] = map[string]any{"reason": "max_output_tokens"}
-		}
-		return response
+		return r.encodeResponses()
 	case messagesProtocol:
-		content := []any{}
-		for _, b := range r.blocks {
-			switch b.kind {
-			case "tool":
-				content = append(content, map[string]any{"type": "tool_use", "id": b.callID, "name": b.name, "input": objectFromJSON(b.text)})
-			case "reasoning":
-				content = append(content, map[string]any{"type": "thinking", "thinking": b.text, "signature": b.opaque})
-			default:
-				content = append(content, map[string]any{"type": "text", "text": b.text})
-			}
-		}
-		return map[string]any{"id": r.id, "type": "message", "role": "assistant", "model": r.model, "content": content, "stop_reason": r.finishReason(protocol), "stop_sequence": nil, "usage": r.wireUsage(protocol)}
+		return r.encodeMessages()
 	case chatProtocol:
 		fallthrough
 	default:
-		message := map[string]any{"role": "assistant", "content": nil}
-		text, thought, refusal := "", "", ""
-		calls := []any{}
-		states := []any{}
-		for _, b := range r.blocks {
-			switch b.kind {
-			case "tool":
-				calls = append(calls, map[string]any{"id": b.callID, "type": "function", "function": map[string]any{"name": b.name, "arguments": b.text}})
-			case "reasoning":
-				thought += b.text
-				if b.opaque != "" {
-					states = append(states, b.opaque)
-				}
-			case "refusal":
-				refusal += b.text
-			default:
-				text += b.text
-			}
-		}
-		if text != "" {
-			message["content"] = text
-		}
-		if thought != "" {
-			message["reasoning_content"] = thought
-		}
-		if len(states) > 0 {
-			states[0] = chatReasoningWithOrder(str(states[0]), r.blocks)
-			message["vrouter_reasoning"] = states
-		}
-		if refusal != "" {
-			message["refusal"] = refusal
-		}
-		if len(calls) > 0 {
-			message["tool_calls"] = calls
-		}
-		return map[string]any{"id": r.id, "object": "chat.completion", "created": r.createdAt(), "model": r.model, "choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": r.finishReason(protocol)}}, "usage": r.wireUsage(protocol)}
+		return r.encodeChat()
 	}
+}
+
+func (r *protocolReply) encodeResponses() map[string]any {
+	items := make([]any, 0, len(r.blocks))
+	for _, b := range r.blocks {
+		items = append(items, r.responseItem(b, r.terminal))
+	}
+	response := map[string]any{"id": r.id, "object": "response", "created_at": r.createdAt(), "model": r.model, "status": r.status, "output": items, "usage": r.wireUsage(responsesProtocol), "error": r.errorBody, "incomplete_details": nil}
+	if r.status == "incomplete" {
+		response["incomplete_details"] = map[string]any{"reason": "max_output_tokens"}
+	}
+	return response
+}
+
+func (r *protocolReply) encodeMessages() map[string]any {
+	content := []any{}
+	for _, b := range r.blocks {
+		switch b.kind {
+		case "tool":
+			content = append(content, map[string]any{"type": "tool_use", "id": b.callID, "name": b.name, "input": objectFromJSON(b.text)})
+		case "reasoning":
+			content = append(content, map[string]any{"type": "thinking", "thinking": b.text, "signature": b.opaque})
+		default:
+			content = append(content, map[string]any{"type": "text", "text": b.text})
+		}
+	}
+	return map[string]any{"id": r.id, "type": "message", "role": "assistant", "model": r.model, "content": content, "stop_reason": r.finishReason(messagesProtocol), "stop_sequence": nil, "usage": r.wireUsage(messagesProtocol)}
+}
+
+func (r *protocolReply) encodeChat() map[string]any {
+	message := map[string]any{"role": "assistant", "content": nil}
+	text, thought, refusal := "", "", ""
+	calls := []any{}
+	states := []any{}
+	for _, b := range r.blocks {
+		switch b.kind {
+		case "tool":
+			calls = append(calls, map[string]any{"id": b.callID, "type": "function", "function": map[string]any{"name": b.name, "arguments": b.text}})
+		case "reasoning":
+			thought += b.text
+			if b.opaque != "" {
+				states = append(states, b.opaque)
+			}
+		case "refusal":
+			refusal += b.text
+		default:
+			text += b.text
+		}
+	}
+	if text != "" {
+		message["content"] = text
+	}
+	if thought != "" {
+		message["reasoning_content"] = thought
+	}
+	if len(states) > 0 {
+		states[0] = chatReasoningWithOrder(str(states[0]), r.blocks)
+		message["vrouter_reasoning"] = states
+	}
+	if refusal != "" {
+		message["refusal"] = refusal
+	}
+	if len(calls) > 0 {
+		message["tool_calls"] = calls
+	}
+	return map[string]any{"id": r.id, "object": "chat.completion", "created": r.createdAt(), "model": r.model, "choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": r.finishReason(chatProtocol)}}, "usage": r.wireUsage(chatProtocol)}
 }
 
 type protocolEmitter struct {
@@ -401,33 +413,7 @@ func (e *protocolEmitter) stop(b *replyBlock) error {
 	b.done = true
 	switch e.protocol {
 	case responsesProtocol:
-		name, value, field := "response.output_text.done", "text", "content_index"
-		if b.kind == "tool" {
-			name, value, field = "response.function_call_arguments.done", "arguments", ""
-		}
-		if b.kind == "reasoning" {
-			name, field = "response.reasoning_summary_text.done", "summary_index"
-		}
-		if b.kind == "refusal" {
-			name, value = "response.refusal.done", "refusal"
-		}
-		body := map[string]any{"type": name, "item_id": b.id, "output_index": b.index, value: b.text}
-		if field != "" {
-			body[field] = 0
-		}
-		if err := e.event(name, body); err != nil {
-			return err
-		}
-		if b.kind == "reasoning" {
-			if err := e.event("response.reasoning_summary_part.done", map[string]any{"type": "response.reasoning_summary_part.done", "item_id": b.id, "output_index": b.index, "summary_index": 0, "part": map[string]any{"type": "summary_text", "text": b.text}}); err != nil {
-				return err
-			}
-		} else if b.kind != "tool" {
-			if err := e.event("response.content_part.done", map[string]any{"type": "response.content_part.done", "item_id": b.id, "output_index": b.index, "content_index": 0, "part": list(e.reply.responseItem(b, true)["content"])[0]}); err != nil {
-				return err
-			}
-		}
-		return e.event("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": b.index, "item": e.reply.responseItem(b, true)})
+		return e.stopResponses(b)
 	case messagesProtocol:
 		if b.kind == "reasoning" {
 			if err := e.event("content_block_delta", map[string]any{"type": "content_block_delta", "index": b.index, "delta": map[string]any{"type": "signature_delta", "signature": b.opaque}}); err != nil {
@@ -441,6 +427,36 @@ func (e *protocolEmitter) stop(b *replyBlock) error {
 		}
 	}
 	return nil
+}
+
+func (e *protocolEmitter) stopResponses(b *replyBlock) error {
+	name, value, field := "response.output_text.done", "text", "content_index"
+	if b.kind == "tool" {
+		name, value, field = "response.function_call_arguments.done", "arguments", ""
+	}
+	if b.kind == "reasoning" {
+		name, field = "response.reasoning_summary_text.done", "summary_index"
+	}
+	if b.kind == "refusal" {
+		name, value = "response.refusal.done", "refusal"
+	}
+	body := map[string]any{"type": name, "item_id": b.id, "output_index": b.index, value: b.text}
+	if field != "" {
+		body[field] = 0
+	}
+	if err := e.event(name, body); err != nil {
+		return err
+	}
+	if b.kind == "reasoning" {
+		if err := e.event("response.reasoning_summary_part.done", map[string]any{"type": "response.reasoning_summary_part.done", "item_id": b.id, "output_index": b.index, "summary_index": 0, "part": map[string]any{"type": "summary_text", "text": b.text}}); err != nil {
+			return err
+		}
+	} else if b.kind != "tool" {
+		if err := e.event("response.content_part.done", map[string]any{"type": "response.content_part.done", "item_id": b.id, "output_index": b.index, "content_index": 0, "part": list(e.reply.responseItem(b, true)["content"])[0]}); err != nil {
+			return err
+		}
+	}
+	return e.event("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": b.index, "item": e.reply.responseItem(b, true)})
 }
 
 func (e *protocolEmitter) finish() error {
@@ -473,34 +489,40 @@ func (e *protocolEmitter) finish() error {
 	case chatProtocol:
 		fallthrough
 	default:
-		if e.reply.errorBody != nil {
-			return e.event("", map[string]any{"error": e.reply.errorBody})
+		return e.finishChat()
+	}
+}
+
+// finishChat sends the ordered reasoning state, the finish reason, usage,
+// and the [DONE] marker.
+func (e *protocolEmitter) finishChat() error {
+	if e.reply.errorBody != nil {
+		return e.event("", map[string]any{"error": e.reply.errorBody})
+	}
+	for _, b := range e.reply.blocks {
+		if b.kind != "reasoning" || b.opaque == "" {
+			continue
 		}
-		for _, b := range e.reply.blocks {
-			if b.kind == "reasoning" && b.opaque != "" {
-				if err := e.chat(map[string]any{"vrouter_reasoning": []any{chatReasoningWithOrder(b.opaque, e.reply.blocks)}}, nil, false); err != nil {
-					return err
-				}
-				break
-			}
-		}
-		if err := e.chat(map[string]any{}, e.reply.finishReason(chatProtocol), false); err != nil {
+		if err := e.chat(map[string]any{"vrouter_reasoning": []any{chatReasoningWithOrder(b.opaque, e.reply.blocks)}}, nil, false); err != nil {
 			return err
 		}
-		if e.includeUsage {
-			if err := e.chat(map[string]any{}, nil, true); err != nil {
-				return err
-			}
-		}
-		_, err := fmt.Fprint(e.w, "data: [DONE]\n\n")
-		if err != nil {
-			return protocolWriteError{err}
-		}
-		if err := http.NewResponseController(e.w).Flush(); err != nil {
-			return protocolWriteError{err}
-		}
-		return nil
+		break
 	}
+	if err := e.chat(map[string]any{}, e.reply.finishReason(chatProtocol), false); err != nil {
+		return err
+	}
+	if e.includeUsage {
+		if err := e.chat(map[string]any{}, nil, true); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprint(e.w, "data: [DONE]\n\n"); err != nil {
+		return protocolWriteError{err}
+	}
+	if err := http.NewResponseController(e.w).Flush(); err != nil {
+		return protocolWriteError{err}
+	}
+	return nil
 }
 
 // A sink keeps the assembled reply and sends each delta as it arrives.

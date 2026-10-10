@@ -68,12 +68,6 @@ export function ConnectionTest({
     setOutcome(result);
   }
 
-  const shown = running || outcome !== null;
-  const facts = outcome && [
-    outcome.status ? `HTTP ${outcome.status}` : "",
-    `${(outcome.ms / 1000).toFixed(1)}s`,
-    outcome.requestId ? `request ${outcome.requestId}` : "",
-  ];
   return (
     <section className="connection-test" aria-labelledby="connection-test">
       <h3 id="connection-test">Test this model</h3>
@@ -111,22 +105,42 @@ export function ConnectionTest({
         )}
       </div>
       {isBlocked && <p>{blocked}</p>}
-      {shown && (
-        <div className="connection-test-result" role="status">
-          <div className="connection-test-status">
-            <strong className={outcome?.state ?? "pending"}>
-              {outcome ? labels[outcome.state] : "Waiting for the response"}
-            </strong>
-            <code>POST {path}</code>
-            {facts && <span>{facts.filter(Boolean).join(" · ")}</span>}
-          </div>
-          {outcome !== null && outcome.detail !== "" && <p>{outcome.detail}</p>}
-          {outcome && outcome.ignored.length > 0 && (
-            <p>Provider does not use: {outcome.ignored.join(", ")}.</p>
-          )}
-          {reply && <pre tabIndex={0}>{reply}</pre>}
-        </div>
+      {(running || outcome !== null) && (
+        <TestResult outcome={outcome} path={path} reply={reply} />
       )}
     </section>
+  );
+}
+
+// The status, details, and reply of the test that is running or last ran.
+function TestResult({
+  outcome,
+  path,
+  reply,
+}: {
+  outcome: TestOutcome | null;
+  path: string;
+  reply: string;
+}) {
+  const facts = outcome && [
+    outcome.status ? `HTTP ${outcome.status}` : "",
+    `${(outcome.ms / 1000).toFixed(1)}s`,
+    outcome.requestId ? `request ${outcome.requestId}` : "",
+  ];
+  return (
+    <div className="connection-test-result" role="status">
+      <div className="connection-test-status">
+        <strong className={outcome?.state ?? "pending"}>
+          {outcome ? labels[outcome.state] : "Waiting for the response"}
+        </strong>
+        <code>POST {path}</code>
+        {facts && <span>{facts.filter(Boolean).join(" · ")}</span>}
+      </div>
+      {outcome !== null && outcome.detail !== "" && <p>{outcome.detail}</p>}
+      {outcome && outcome.ignored.length > 0 && (
+        <p>Provider does not use: {outcome.ignored.join(", ")}.</p>
+      )}
+      {reply && <pre tabIndex={0}>{reply}</pre>}
+    </div>
   );
 }

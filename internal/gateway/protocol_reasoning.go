@@ -31,20 +31,9 @@ func encodeReasoningState(provider string, item map[string]any, blockID string) 
 }
 
 func decodeReasoningState(value string) (protocolBlock, error) {
-	if !strings.HasPrefix(value, reasoningStatePrefix) {
-		return protocolBlock{}, unsupported("opaque reasoning state from another protocol")
-	}
-	data := strings.TrimPrefix(value, reasoningStatePrefix)
-	if len(data) > base64.RawURLEncoding.EncodedLen(maxReasoningStateBytes) {
-		return protocolBlock{}, unsupported("oversized reasoning state")
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(data)
+	p, err := decodeReasoningPayload(value)
 	if err != nil {
-		return protocolBlock{}, unsupported("invalid vrouter reasoning state")
-	}
-	p, err := decodeProtocolJSON(raw)
-	if err != nil {
-		return protocolBlock{}, unsupported("invalid vrouter reasoning state")
+		return protocolBlock{}, err
 	}
 	provider, item := str(p["provider"]), object(p["item"])
 	if err := fields(p, "provider item block_id order"); err != nil {
@@ -57,35 +46,60 @@ func decodeReasoningState(value string) (protocolBlock, error) {
 	if p["order"] != nil && b.order == nil {
 		return b, unsupported("reasoning block order")
 	}
+	err = decodeReasoningItem(&b, provider, item)
+	return b, err
+}
+
+func decodeReasoningPayload(value string) (map[string]any, error) {
+	if !strings.HasPrefix(value, reasoningStatePrefix) {
+		return nil, unsupported("opaque reasoning state from another protocol")
+	}
+	data := strings.TrimPrefix(value, reasoningStatePrefix)
+	if len(data) > base64.RawURLEncoding.EncodedLen(maxReasoningStateBytes) {
+		return nil, unsupported("oversized reasoning state")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(data)
+	if err != nil {
+		return nil, unsupported("invalid vrouter reasoning state")
+	}
+	p, err := decodeProtocolJSON(raw)
+	if err != nil {
+		return nil, unsupported("invalid vrouter reasoning state")
+	}
+	return p, nil
+}
+
+// decodeReasoningItem validates the wrapped provider item and sets the block
+// text. A summary has no provider state.
+func decodeReasoningItem(b *protocolBlock, provider string, item map[string]any) error {
 	switch provider {
 	case "claude":
 		if str(item["type"]) != "thinking" {
-			return b, unsupported("invalid Claude reasoning state")
+			return unsupported("invalid Claude reasoning state")
 		}
 		if err := fields(item, "type thinking signature"); err != nil {
-			return b, err
+			return err
 		}
 		b.text = str(item["thinking"])
 	case "codex":
 		if str(item["type"]) != "reasoning" {
-			return b, unsupported("invalid Responses reasoning state")
+			return unsupported("invalid Responses reasoning state")
 		}
 		if err := validateResponseReasoningContent(item); err != nil {
-			return b, err
+			return err
 		}
+		var err error
 		b.text, err = reasoningSummary(item["summary"])
-		if err != nil {
-			return b, err
-		}
+		return err
 	case "summary":
 		if err := fields(item, "text"); err != nil {
-			return b, err
+			return err
 		}
 		b.text, b.nativeProvider, b.native = str(item["text"]), "", nil
 	default:
-		return b, unsupported("reasoning state provider " + provider)
+		return unsupported("reasoning state provider " + provider)
 	}
-	return b, nil
+	return nil
 }
 
 func reasoningSummary(value any) (string, error) {
@@ -215,24 +229,24 @@ func chatReasoningWithOrder(state string, blocks []*replyBlock) string {
 // wrapper records their original positions so provider state keeps its order.
 func orderChatBlocks(message map[string]any, blocks []protocolBlock) ([]protocolBlock, error) {
 	var order []any
-	reasoning, tools := map[string]protocolBlock{}, map[string]protocolBlock{}
+	o := chatBlockOrder{reasoning: map[string]protocolBlock{}, tools: map[string]protocolBlock{}}
 	for _, b := range blocks {
 		if b.kind == "reasoning" {
 			if b.order != nil {
 				order = b.order
 			}
 			if b.projectedID != "" {
-				reasoning[b.projectedID] = b
+				o.reasoning[b.projectedID] = b
 			}
 		}
 		if b.kind == "tool" {
-			tools[b.id] = b
+			o.tools[b.id] = b
 		}
 	}
 	if order == nil {
 		return blocks, nil
 	}
-	text, refusal := str(message["content"]), str(message["refusal"])
+	o.text, o.refusal = str(message["content"]), str(message["refusal"])
 	if message["content"] != nil {
 		if _, ok := message["content"].(string); !ok {
 			return nil, unsupported("ordered Chat content that is not text")
@@ -240,50 +254,63 @@ func orderChatBlocks(message map[string]any, blocks []protocolBlock) ([]protocol
 	}
 	out := []protocolBlock{}
 	for _, value := range order {
-		entry := object(value)
-		if err := fields(entry, "kind id length"); err != nil {
+		b, err := o.next(object(value))
+		if err != nil {
 			return nil, err
 		}
-		switch str(entry["kind"]) {
-		case "reasoning":
-			id := str(entry["id"])
-			b, ok := reasoning[id]
-			if !ok {
-				return nil, unsupported("missing ordered reasoning block")
-			}
-			out = append(out, b)
-			delete(reasoning, id)
-		case "tool":
-			id := str(entry["id"])
-			b, ok := tools[id]
-			if !ok {
-				return nil, unsupported("missing ordered tool call")
-			}
-			out = append(out, b)
-			delete(tools, id)
-		case "text", "refusal":
-			number, ok := entry["length"].(json.Number)
-			if !ok {
-				return nil, unsupported("reasoning text position")
-			}
-			n, err := number.Int64()
-			source := &text
-			if str(entry["kind"]) == "refusal" {
-				source = &refusal
-			}
-			if err != nil || n < 0 || n > int64(len(*source)) {
-				return nil, unsupported("reasoning text position")
-			}
-			out = append(out, protocolBlock{kind: "text", text: (*source)[:int(n)]})
-			*source = (*source)[int(n):]
-		default:
-			return nil, unsupported("ordered Chat block " + str(entry["kind"]))
-		}
+		out = append(out, b)
 	}
-	if len(reasoning) > 0 || len(tools) > 0 || text != "" || refusal != "" {
+	if len(o.reasoning) > 0 || len(o.tools) > 0 || o.text != "" || o.refusal != "" {
 		return nil, unsupported("incomplete reasoning block order")
 	}
 	return out, nil
+}
+
+// chatBlockOrder holds the Chat blocks and text not yet placed in order.
+type chatBlockOrder struct {
+	reasoning, tools map[string]protocolBlock
+	text, refusal    string
+}
+
+func (o *chatBlockOrder) next(entry map[string]any) (protocolBlock, error) {
+	if err := fields(entry, "kind id length"); err != nil {
+		return protocolBlock{}, err
+	}
+	switch str(entry["kind"]) {
+	case "reasoning":
+		return takeChatBlock(o.reasoning, str(entry["id"]), "missing ordered reasoning block")
+	case "tool":
+		return takeChatBlock(o.tools, str(entry["id"]), "missing ordered tool call")
+	case "text":
+		return cutChatText(&o.text, entry["length"])
+	case "refusal":
+		return cutChatText(&o.refusal, entry["length"])
+	default:
+		return protocolBlock{}, unsupported("ordered Chat block " + str(entry["kind"]))
+	}
+}
+
+func takeChatBlock(blocks map[string]protocolBlock, id, missing string) (protocolBlock, error) {
+	b, ok := blocks[id]
+	if !ok {
+		return protocolBlock{}, unsupported(missing)
+	}
+	delete(blocks, id)
+	return b, nil
+}
+
+func cutChatText(source *string, length any) (protocolBlock, error) {
+	number, ok := length.(json.Number)
+	if !ok {
+		return protocolBlock{}, unsupported("reasoning text position")
+	}
+	n, err := number.Int64()
+	if err != nil || n < 0 || n > int64(len(*source)) {
+		return protocolBlock{}, unsupported("reasoning text position")
+	}
+	b := protocolBlock{kind: "text", text: (*source)[:int(n)]}
+	*source = (*source)[int(n):]
+	return b, nil
 }
 
 func reasoningTarget(b protocolBlock, target wireProtocol) error {
@@ -302,46 +329,43 @@ func reasoningTarget(b protocolBlock, target wireProtocol) error {
 func unwrapNativeReasoning(payload map[string]any, protocol wireProtocol) error {
 	if protocol == responsesProtocol {
 		for _, value := range list(payload["input"]) {
-			item := object(value)
-			if str(item["type"]) != "reasoning" || !strings.HasPrefix(str(item["encrypted_content"]), reasoningStatePrefix) {
-				continue
-			}
-			b, err := decodeReasoningState(str(item["encrypted_content"]))
-			if err != nil {
+			if err := unwrapReasoningState(object(value), "reasoning", "encrypted_content", protocol); err != nil {
 				return err
-			}
-			if err := reasoningTarget(b, protocol); err != nil {
-				return err
-			}
-			clear(item)
-			if b.native != nil {
-				maps.Copy(item, b.native)
-			} else {
-				item["type"], item["role"], item["content"] = "message", "assistant", b.text
 			}
 		}
 	} else if protocol == messagesProtocol {
 		for _, value := range list(payload["messages"]) {
 			for _, content := range list(object(value)["content"]) {
-				item := object(content)
-				if str(item["type"]) != "thinking" || !strings.HasPrefix(str(item["signature"]), reasoningStatePrefix) {
-					continue
-				}
-				b, err := decodeReasoningState(str(item["signature"]))
-				if err != nil {
+				if err := unwrapReasoningState(object(content), "thinking", "signature", protocol); err != nil {
 					return err
-				}
-				if err := reasoningTarget(b, protocol); err != nil {
-					return err
-				}
-				clear(item)
-				if b.native != nil {
-					maps.Copy(item, b.native)
-				} else {
-					item["type"], item["text"] = "text", b.text
 				}
 			}
 		}
+	}
+	return nil
+}
+
+// unwrapReasoningState replaces an item of the given type whose field holds
+// a vrouter wrapper with the provider item, or with plain text for a summary.
+func unwrapReasoningState(item map[string]any, kind, field string, protocol wireProtocol) error {
+	if str(item["type"]) != kind || !strings.HasPrefix(str(item[field]), reasoningStatePrefix) {
+		return nil
+	}
+	b, err := decodeReasoningState(str(item[field]))
+	if err != nil {
+		return err
+	}
+	if err := reasoningTarget(b, protocol); err != nil {
+		return err
+	}
+	clear(item)
+	switch {
+	case b.native != nil:
+		maps.Copy(item, b.native)
+	case protocol == responsesProtocol:
+		item["type"], item["role"], item["content"] = "message", "assistant", b.text
+	default:
+		item["type"], item["text"] = "text", b.text
 	}
 	return nil
 }
