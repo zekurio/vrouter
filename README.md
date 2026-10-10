@@ -145,6 +145,16 @@ Claude caches a prompt only when the request asks for it. vrouter asks for autom
 
 Responses and Chat clients may send `prompt_cache_key`. vrouter forwards it to Codex and drops it for Claude.
 
+### Fast mode
+
+Responses and Chat requests with `service_tier: "fast"` or `"priority"` become `speed: "fast"` when routed to Claude. Messages requests with `speed: "fast"` become `service_tier: "priority"` when routed to OpenAI or Codex. OpenAI accepts `fast` and `priority` as equivalent names. Explicit standard speed converts between Messages `speed: "standard"` and OpenAI `service_tier: "default"`. Chat-to-Responses conversion preserves the service tier.
+
+vrouter adds Claude's `fast-mode-2026-02-01` beta header on fast requests. The selected model and account must support fast mode. Other OpenAI tiers without a Claude equivalent return HTTP 400 with an explanation. Provider rejections keep their sanitized message, error type, code, request ID and `Retry-After`, with fast-mode context added to the message.
+
+Codex fast mode draws down subscription allowance faster. Claude fast mode uses paid usage credits and separate rate limits, so vrouter sends those requests without checking normal subscription windows or spending subscription usage resets. The account quota bars still show normal subscription allowance. Account retries stay within the same authentication mode and retain the requested speed.
+
+Claude Code checks fast-mode availability directly with Anthropic, outside the configured base URL. When using a vrouter key through `ANTHROPIC_AUTH_TOKEN`, set `CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK=1` so the request can reach vrouter. This only skips the client check; the selected upstream account still needs access and credits. See [Claude Code fast mode behind gateways](https://code.claude.com/docs/en/fast-mode#use-fast-mode-behind-proxies-and-llm-gateways) and [Codex fast mode](https://developers.openai.com/codex/speed/).
+
 ### Thinking budgets
 
 When a Messages request sets a fixed thinking budget for a Responses model, vrouter turns the budget into a reasoning effort.
