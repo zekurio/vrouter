@@ -33,16 +33,6 @@ export const speedLabel: Record<Speed, string> = {
   fast: "Fast",
   ultrafast: "Ultrafast",
 };
-export type Telemetry = {
-  requests: RequestRecord[];
-  totals: {
-    requests: number;
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-  };
-  retentionLimit: number;
-};
 export type OutcomeFilter = "all" | "error" | "incomplete";
 
 export function formatDuration(ms: number) {

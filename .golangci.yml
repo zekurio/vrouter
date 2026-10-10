@@ -24,7 +24,7 @@ linters:
     - mnd
     # Wire-format field names repeat by nature.
     - goconst
-    # The module has no third-party dependencies to restrict.
+    # Dependencies are reviewed in go.mod rather than a separate allowlist.
     - depguard
     # Reports helpers that sweep shared state with their own context.
     - contextcheck

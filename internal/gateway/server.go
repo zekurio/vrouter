@@ -177,7 +177,7 @@ func newGatewayStore(cfg Config, assets fs.FS, store *accountStore) *server {
 		{"POST /api/keys", s.createKey},
 		{"PATCH /api/keys/{id}", s.patchKey},
 		{"DELETE /api/keys/{id}", s.deleteKey},
-		{"GET /api/telemetry", s.telemetryHandler},
+		{"GET /api/usage", s.usageHandler},
 		{"GET /api/gateways", s.gateways},
 	}
 	for _, route := range management {

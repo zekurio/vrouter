@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -25,16 +26,14 @@ const (
 	defaultGatewayID = "default"
 	localAdminID     = "local-admin"
 
-	registryVersion    = 1
-	telemetryRetention = 1000
-	gatewayNameMax     = 64
-	keyNameMax         = 64
+	registryVersion = 1
+	gatewayNameMax  = 64
+	keyNameMax      = 64
 )
 
 var (
-	errGatewayNotFound  = errors.New("gateway: gateway not found")
-	errKeyNotFound      = errors.New("gateway: API key not found")
-	errRegistryNoChange = errors.New("gateway: registry change rejected")
+	errGatewayNotFound = errors.New("gateway: gateway not found")
+	errKeyNotFound     = errors.New("gateway: API key not found")
 
 	recordIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 	keyHashPattern  = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -48,12 +47,13 @@ type gatewayRecord struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-// diskRegistry holds keys and request accounting in the shared data file.
+// diskRegistry holds gateway configuration and keys. Telemetry accepts legacy
+// JSON on upgrade and is discarded when normalization starts fresh accounting.
 type diskRegistry struct {
-	Version   int                          `json:"version"`
-	Gateways  []gatewayRecord              `json:"gateways"`
-	Keys      []keyRecord                  `json:"keys"`
-	Telemetry map[string][]telemetryRecord `json:"telemetry,omitempty"`
+	Version   int             `json:"version"`
+	Gateways  []gatewayRecord `json:"gateways"`
+	Keys      []keyRecord     `json:"keys"`
+	Telemetry json.RawMessage `json:"telemetry,omitempty"`
 }
 
 // registryStore is a metadata view of the same store as provider accounts.
@@ -73,9 +73,8 @@ func (r *registryStore) update(mutate func(*diskRegistry) error) error {
 	return r.data.update(func(d *diskData) error { return mutate(&d.Registry) })
 }
 
-// registryNormalize makes collections concrete, seeds the default gateway, and
-// trims telemetry to the retention bound. Telemetry is stored oldest first;
-// the tail is the retained recent portion.
+// registryNormalize seeds configuration and drops legacy JSON usage. SQLite
+// owns accounting from its creation time; existing configuration is preserved.
 func registryNormalize(state *diskRegistry) {
 	if state.Gateways == nil {
 		state.Gateways = []gatewayRecord{}
@@ -84,9 +83,7 @@ func registryNormalize(state *diskRegistry) {
 		state.Keys = []keyRecord{}
 	}
 
-	if state.Telemetry == nil {
-		state.Telemetry = map[string][]telemetryRecord{}
-	}
+	state.Telemetry = nil
 	seeded := false
 	for _, gateway := range state.Gateways {
 		if gateway.ID == defaultGatewayID {
@@ -98,14 +95,12 @@ func registryNormalize(state *diskRegistry) {
 		now := time.Now().UTC()
 		state.Gateways = append([]gatewayRecord{{ID: defaultGatewayID, Name: "Default gateway", OwnerID: localAdminID, CreatedAt: now}}, state.Gateways...)
 	}
-	for id, records := range state.Telemetry {
-		if len(records) > telemetryRetention {
-			state.Telemetry[id] = append([]telemetryRecord(nil), records[len(records)-telemetryRetention:]...)
-		}
-	}
+
 	for i := range state.Keys {
 		state.Keys[i].Name = strings.TrimSpace(state.Keys[i].Name)
 		state.Keys[i].legacyKeyFields = legacyKeyFields{}
+		state.Keys[i].UsedRequests = 0
+		state.Keys[i].UsedTokens = 0
 	}
 }
 
@@ -122,19 +117,7 @@ func registryValidate(state diskRegistry) error {
 	if err := registryValidateKeys(state.Keys, seenGateways); err != nil {
 		return err
 	}
-	for gatewayID, records := range state.Telemetry {
-		if _, exists := seenGateways[gatewayID]; !exists {
-			return errors.New("gateway: telemetry references an unknown gateway")
-		}
-		if len(records) > telemetryRetention {
-			return errors.New("gateway: telemetry exceeds the retention limit")
-		}
-		for i := range records {
-			if err := validateTelemetryRecord(records[i]); err != nil {
-				return err
-			}
-		}
-	}
+
 	return nil
 }
 
@@ -217,10 +200,7 @@ func registryClone(state diskRegistry) diskRegistry {
 			out.Keys[i].ExpiresAt = &expires
 		}
 	}
-	out.Telemetry = make(map[string][]telemetryRecord, len(state.Telemetry))
-	for id, records := range state.Telemetry {
-		out.Telemetry[id] = append([]telemetryRecord(nil), records...)
-	}
+	out.Telemetry = nil
 	return out
 }
 

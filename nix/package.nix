@@ -60,10 +60,11 @@ buildGo126Module {
       ../cmd
       ../internal
       ../go.mod
+      ../go.sum
       ../web/embed.go
     ];
   };
-  vendorHash = null;
+  vendorHash = "sha256-7IC/p5GlD2EZkDXQzkaZ7E19S/ABKEBsg68vt8pykis=";
   subPackages = [ "cmd/vrouter" ];
   env.CGO_ENABLED = 0;
   preBuild = ''

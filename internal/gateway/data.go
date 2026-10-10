@@ -17,8 +17,8 @@ const (
 	dataMaxBytes = 128 << 20
 )
 
-// One file owns accounts, client keys, policy, and accounting. The scoped
-// views cannot commit one half of a change without the other half.
+// Configuration changes commit together in JSON. Request accounting lives
+// in SQLite so inference never rewrites credentials or model policy.
 type diskData struct {
 	Version  int                  `json:"version"`
 	States   map[string]diskState `json:"accounts"`
@@ -31,6 +31,7 @@ type dataStore struct {
 	state  diskData
 	lock   *os.File
 	closed bool
+	usage  *usageStore
 }
 
 func openDataStore(dir string) (*dataStore, error) {
@@ -56,6 +57,11 @@ func openDataStore(dir string) (*dataStore, error) {
 		_ = s.close()
 		return nil, err
 	}
+	s.usage, err = openUsageStore(dir)
+	if err != nil {
+		_ = s.close()
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -66,7 +72,11 @@ func (s *dataStore) close() error {
 		return nil
 	}
 	s.closed = true
-	err := errors.Join(syscall.Flock(int(s.lock.Fd()), syscall.LOCK_UN), s.lock.Close())
+	var usageErr error
+	if s.usage != nil {
+		usageErr = s.usage.db.Close()
+	}
+	err := errors.Join(usageErr, syscall.Flock(int(s.lock.Fd()), syscall.LOCK_UN), s.lock.Close())
 	s.lock = nil
 	return err
 }

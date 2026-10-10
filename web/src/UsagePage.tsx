@@ -11,12 +11,7 @@ import { errorMessage, isStale, type APIRequest } from "./api";
 import { CostChart, series } from "./CostChart";
 import { ProviderBrand, providerLabel } from "./ProviderBrand";
 import { RequestLog } from "./RequestLog";
-import {
-  speedLabel,
-  speeds,
-  type RequestRecord,
-  type Telemetry,
-} from "./telemetry";
+import { speedLabel, speeds, type RequestRecord } from "./telemetry";
 import {
   compact,
   costTypeLabel,
@@ -25,9 +20,11 @@ import {
   money,
   share,
   summarize,
+  timeZone,
   type Group,
   type Tally,
   type Usage,
+  type UsageReport,
 } from "./usage";
 
 type Props = {
@@ -35,10 +32,6 @@ type Props = {
   reloadKey: string;
 };
 type View = "model" | "key" | "day" | "requests";
-// An empty log can arrive as null.
-type TelemetryReply = Omit<Telemetry, "requests"> & {
-  requests: RequestRecord[] | null;
-};
 
 const number = (n: number) => n.toLocaleString();
 const plural = (n: number, noun: string) =>
@@ -50,9 +43,9 @@ const views: { value: View; label: string }[] = [
   { value: "requests", label: "Requests" },
 ];
 
-// Loads the request log again whenever reloadKey changes.
-function useTelemetry(request: APIRequest, reloadKey: string) {
-  const [data, setData] = useState<Telemetry | null>(null);
+// Loads the usage report again whenever reloadKey changes.
+function useUsage(request: APIRequest, reloadKey: string) {
+  const [data, setData] = useState<UsageReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const sequence = useRef(0);
@@ -61,9 +54,10 @@ function useTelemetry(request: APIRequest, reloadKey: string) {
     const current = ++sequence.current;
     setLoading(true);
     try {
-      const result = await request<TelemetryReply>("/api/telemetry");
+      const zone = encodeURIComponent(timeZone());
+      const result = await request<UsageReport>(`/api/usage?tz=${zone}`);
       if (current !== sequence.current) return;
-      setData({ ...result, requests: result.requests ?? [] });
+      setData(result);
       setError("");
     } catch (err) {
       if (current !== sequence.current || isStale(err)) return;
@@ -80,13 +74,12 @@ function useTelemetry(request: APIRequest, reloadKey: string) {
 }
 
 export function UsagePage({ request, reloadKey }: Props) {
-  const { data, loading, error, load } = useTelemetry(request, reloadKey);
+  const { data, loading, error, load } = useUsage(request, reloadKey);
   const [view, setView] = useState<View>("model");
 
-  const all = data?.requests;
   const usage = useMemo(
-    () => (all !== undefined && all.length > 0 ? summarize(all) : null),
-    [all],
+    () => (data && data.total.requests > 0 ? summarize(data) : null),
+    [data],
   );
   const total = usage?.total;
 
@@ -105,11 +98,7 @@ export function UsagePage({ request, reloadKey }: Props) {
       {data && !usage && <p className="empty">No usage yet</p>}
       {data && usage && total && (
         <>
-          <UsageSummary
-            usage={usage}
-            total={total}
-            retentionLimit={data.retentionLimit}
-          />
+          <UsageSummary usage={usage} total={total} />
 
           <UsageTotals total={total} />
 
@@ -156,7 +145,16 @@ function Breakdown({
         </div>
       </div>
       {view === "requests" ? (
-        <RequestLog requests={requests} />
+        <>
+          <RequestLog requests={requests} />
+          {/* The totals cover every request. The log keeps only the newest. */}
+          {usage.total.requests > requests.length && (
+            <p className="usage-caption">
+              The latest {number(requests.length)} of{" "}
+              {plural(usage.total.requests, "request")}
+            </p>
+          )}
+        </>
       ) : (
         <GroupTable
           view={view}
@@ -174,25 +172,13 @@ function Breakdown({
   );
 }
 
-function UsageSummary({
-  usage,
-  total,
-  retentionLimit,
-}: {
-  usage: Usage;
-  total: Tally;
-  // The most requests the log keeps.
-  retentionLimit: number;
-}) {
+function UsageSummary({ usage, total }: { usage: Usage; total: Tally }) {
   return (
     <section className="usage-summary">
       <div>
         <p className="usage-total">{money(total.cost)}</p>
         <p className="usage-caption">
-          {total.requests >= retentionLimit
-            ? `Last ${plural(total.requests, "request")}`
-            : plural(total.requests, "request")}{" "}
-          at API list price
+          {plural(total.requests, "request")} at API list price
           {total.unpriced > 0 && <span>{number(total.unpriced)} unpriced</span>}
         </p>
         <ul className="usage-providers">

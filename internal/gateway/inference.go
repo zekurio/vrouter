@@ -69,7 +69,7 @@ func (s *server) authorizeInference(w http.ResponseWriter, r *http.Request) (inf
 }
 
 // serveInferenceAuthorized selects the model and checks its provider quota.
-// Each supported POST settles one telemetry row, including failed requests.
+// Each supported POST settles usage aggregates, including failed requests.
 func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request, principal inferenceKey) {
 	if r.Method != http.MethodPost || inferenceProtocol(r.URL.Path) == "" {
 		s.inference(w, r)
@@ -77,6 +77,17 @@ func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request
 	}
 	recorder := &attemptWriter{ResponseWriter: w}
 	attempt := &inferenceAttempt{principal: principal, startedAt: time.Now().UTC()}
+	id, err := secureID()
+	if err != nil {
+		writeJSON(w, 503, map[string]string{"error": "Usage accounting is unavailable"})
+		return
+	}
+	attempt.id = id
+	pending := telemetryRecord{ID: id, GatewayID: s.gatewayID, KeyID: principal.KeyID, KeyName: principal.KeyName, StartedAt: attempt.startedAt}
+	if err := s.store.data.usage.begin(r.Context(), pending); err != nil {
+		writeJSON(w, 503, map[string]string{"error": "Usage accounting is unavailable. Try again shortly."})
+		return
+	}
 	prepared, refused := s.prepareInference(recorder, r, attempt)
 	if refused != nil {
 		writeJSON(recorder, refused.status, refused.body())
@@ -88,6 +99,11 @@ func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request
 	}
 	principal.Provider = prepared.provider
 	attempt.principal = principal
+	if err := s.store.data.usage.identify(r.Context(), id, boundedField(attempt.model), prepared.provider); err != nil {
+		writeJSON(recorder, 503, map[string]string{"error": "Usage accounting is unavailable. Try again shortly."})
+		s.finishAttempt(attempt, recorder)
+		return
+	}
 	if s.manager != nil {
 		allowed, status, message := s.manager.reserve(principal)
 		if !allowed {
@@ -101,8 +117,8 @@ func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request
 	s.finishAttempt(attempt, recorder)
 }
 
-// finishAttempt persists one telemetry row and, for managed keys, the settled
-// quota state. Unknown usage is never reported as known zero.
+// finishAttempt persists aggregate usage and finishes the pending request.
+// Unknown usage is never reported as known zero.
 func (s *server) finishAttempt(attempt *inferenceAttempt, recorder *attemptWriter) {
 	attempt.usage.complete()
 	status := recorder.status
@@ -138,9 +154,8 @@ func (s *server) finishAttempt(attempt *inferenceAttempt, recorder *attemptWrite
 	usageKnown := totals.Known && trusted
 	usagePartial := totals.Known && !trusted
 	usageAccepted := forwarded && usageKnown
-	id, _ := secureID()
 	record := telemetryRecord{
-		ID:               id,
+		ID:               attempt.id,
 		StartedAt:        attempt.startedAt,
 		GatewayID:        s.gatewayID,
 		KeyID:            attempt.principal.KeyID,
@@ -162,7 +177,7 @@ func (s *server) finishAttempt(attempt *inferenceAttempt, recorder *attemptWrite
 		Stream:           attempt.stream,
 		Outcome:          outcome,
 	}
-	s.manager.settle(attempt.principal, record, totals, usageAccepted)
+	s.manager.settle(record, usageAccepted)
 }
 
 // inference answers every /v1 request that is not a supported POST.

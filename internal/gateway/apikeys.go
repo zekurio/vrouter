@@ -29,8 +29,8 @@ type keyRecord struct {
 	RevokedAt *time.Time `json:"revokedAt,omitempty"`
 	// ExpiresAt is when the key stops authorizing requests. Nil never expires.
 	ExpiresAt    *time.Time `json:"expiresAt,omitempty"`
-	UsedRequests int64      `json:"usedRequests"`
-	UsedTokens   int64      `json:"usedTokens"`
+	UsedRequests int64      `json:"usedRequests,omitempty"`
+	UsedTokens   int64      `json:"usedTokens,omitempty"`
 }
 
 // legacyKeyFields holds per-key percentage accounting written by older
@@ -59,8 +59,8 @@ type keyView struct {
 	UsedTokens   int64      `json:"usedTokens"`
 }
 
-func (k keyRecord) view() keyView {
-	return keyView{ID: k.ID, Name: k.Name, Prefix: k.Prefix, CreatedAt: k.CreatedAt, RevokedAt: k.RevokedAt, ExpiresAt: k.ExpiresAt, UsedRequests: k.UsedRequests, UsedTokens: k.UsedTokens}
+func (k keyRecord) view(usage keyUsage) keyView {
+	return keyView{ID: k.ID, Name: k.Name, Prefix: k.Prefix, CreatedAt: k.CreatedAt, RevokedAt: k.RevokedAt, ExpiresAt: k.ExpiresAt, UsedRequests: usage.requests, UsedTokens: usage.tokens}
 }
 
 const keySecretPrefix = "vr_"
@@ -93,11 +93,16 @@ func keyPrefix(secret string) string {
 	return secret
 }
 
-func (s *server) listKeys(w http.ResponseWriter, _ *http.Request) {
+func (s *server) listKeys(w http.ResponseWriter, r *http.Request) {
+	counts, err := s.store.data.usage.keys(r.Context(), s.gatewayID)
+	if err != nil {
+		writeJSON(w, 503, map[string]string{"error": "Key usage is unavailable"})
+		return
+	}
 	keys := []keyView{}
 	for _, key := range s.manager.registry.snapshot().Keys {
 		if key.GatewayID == s.gatewayID {
-			keys = append(keys, key.view())
+			keys = append(keys, key.view(counts[key.ID]))
 		}
 	}
 	sort.SliceStable(keys, func(i, j int) bool {
@@ -152,7 +157,7 @@ func (s *server) createKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": "Could not save the key"})
 		return
 	}
-	writeJSON(w, 201, map[string]any{"key": key.view(), "secret": secret})
+	writeJSON(w, 201, map[string]any{"key": key.view(keyUsage{}), "secret": secret})
 }
 
 func (s *server) patchKey(w http.ResponseWriter, r *http.Request) {
@@ -186,7 +191,12 @@ func (s *server) patchKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": "Could not save the key"})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"key": updated.view()})
+	counts, err := s.store.data.usage.keys(r.Context(), s.gatewayID)
+	if err != nil {
+		writeJSON(w, 503, map[string]string{"error": "Key updated, but usage is unavailable. Refresh to retry."})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"key": updated.view(counts[updated.ID])})
 }
 
 // keyPatch is a validated key update. A revocation ignores other fields.

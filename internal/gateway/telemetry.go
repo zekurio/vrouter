@@ -2,12 +2,12 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"math"
 	"net/http"
-	"slices"
 	"time"
 	"unicode/utf8"
 )
@@ -94,40 +94,6 @@ func validateTelemetryLabels(record telemetryRecord) error {
 	return nil
 }
 
-type telemetryTotals struct {
-	Requests     int   `json:"requests"`
-	InputTokens  int64 `json:"inputTokens"`
-	OutputTokens int64 `json:"outputTokens"`
-	TotalTokens  int64 `json:"totalTokens"`
-}
-
-type telemetryResponse struct {
-	Requests       []telemetryRecord `json:"requests"`
-	Totals         telemetryTotals   `json:"totals"`
-	RetentionLimit int               `json:"retentionLimit"`
-}
-
-// telemetry returns the retained records for one gateway, newest first.
-func (m *manager) telemetry(gatewayID string) telemetryResponse {
-	response := telemetryResponse{Requests: []telemetryRecord{}, RetentionLimit: telemetryRetention}
-	records := m.registry.snapshot().Telemetry[gatewayID]
-	response.Totals.Requests = len(records)
-	for _, record := range slices.Backward(records) {
-		response.Requests = append(response.Requests, record)
-		if !record.UsageKnown {
-			continue
-		}
-		response.Totals.InputTokens = clampTokenCount(saturatingAdd(response.Totals.InputTokens, record.InputTokens))
-		response.Totals.OutputTokens = clampTokenCount(saturatingAdd(response.Totals.OutputTokens, record.OutputTokens))
-		response.Totals.TotalTokens = clampTokenCount(saturatingAdd(response.Totals.TotalTokens, record.TotalTokens))
-	}
-	return response
-}
-
-func (s *server) telemetryHandler(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, 200, s.manager.telemetry(s.gatewayID))
-}
-
 // ---------------------------------------------------------------------------
 // Quota admission and settlement
 
@@ -146,6 +112,7 @@ type inferenceKey struct {
 // supported inference POST, including usage parsed from the provider response.
 type inferenceAttempt struct {
 	principal inferenceKey
+	id        string
 	startedAt time.Time
 	model     string
 	native    string
@@ -184,49 +151,30 @@ func (a *inferenceAttempt) billedSpeed(forwarded bool) string {
 	return a.speed
 }
 
-// reserve admits one inference attempt. It checks that the key is still
-// active and unexpired, and counts the request.
+// reserve rechecks a managed key immediately before routing. Usage is written
+// to SQLite, never to the credential/configuration file.
 func (m *manager) reserve(principal inferenceKey) (bool, int, string) {
 	if principal.KeyID == "" {
 		return true, 0, ""
 	}
-	allowed, status, message := true, 0, ""
-	err := m.registry.update(func(registry *diskRegistry) error {
-		key := findKey(registry, principal.KeyID)
-		if key == nil || key.RevokedAt != nil {
-			allowed, status, message = false, http.StatusUnauthorized, "A valid vrouter client API key is required"
-			return errRegistryNoChange
-		}
-		if key.expired(time.Now()) {
-			allowed, status, message = false, http.StatusUnauthorized, keyExpiredMessage
-			return errRegistryNoChange
-		}
-		key.UsedRequests = clampTokenCount(saturatingAdd(key.UsedRequests, 1))
-		return nil
-	})
-	if errors.Is(err, errRegistryNoChange) {
-		return false, status, message
+	state := m.registry.snapshot()
+	key := findKey(&state, principal.KeyID)
+	if key == nil || key.RevokedAt != nil {
+		return false, http.StatusUnauthorized, "A valid vrouter client API key is required"
 	}
-	if err != nil {
-		return false, http.StatusServiceUnavailable, "Usage accounting is unavailable. Try again shortly."
+	if key.expired(time.Now()) {
+		return false, http.StatusUnauthorized, keyExpiredMessage
 	}
-	return allowed, status, message
+	return true, 0, ""
 }
 
-// settle adds measured tokens to the key and appends the telemetry row in one
-// atomic registry write.
-func (m *manager) settle(principal inferenceKey, record telemetryRecord, totals usageTotals, usageAccepted bool) {
-	err := m.registry.update(func(registry *diskRegistry) error {
-		if principal.KeyID != "" && usageAccepted {
-			if key := findKey(registry, principal.KeyID); key != nil {
-				key.UsedTokens = clampTokenCount(saturatingAdd(key.UsedTokens, totals.Total))
-			}
-		}
-		registry.Telemetry[record.GatewayID] = append(registry.Telemetry[record.GatewayID], record)
-		return nil
-	})
-	if err != nil {
-		slog.Warn("request telemetry not saved", "gateway", record.GatewayID, "error", err)
+func (m *manager) settle(record telemetryRecord, accepted bool) {
+	// The caller's context may be canceled after a disconnect; accounting must
+	// still commit the interrupted outcome.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := m.root.store.data.usage.settle(ctx, record, accepted); err != nil {
+		slog.Error("request usage not saved", "gateway", record.GatewayID, "error", err)
 	}
 }
 
