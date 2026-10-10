@@ -12,6 +12,9 @@ func nativeUsage(a storedAccount) bool {
 }
 
 func quotaFresh(q quotaCache, now time.Time) bool {
+	if q.Error != "" {
+		return now.Before(q.RetryAt)
+	}
 	if q.ObservedAt.IsZero() || now.Sub(q.ObservedAt) >= time.Minute {
 		return false
 	}
@@ -144,6 +147,12 @@ func (s *server) freshNativeQuota(ctx context.Context, a storedAccount) quotaCac
 		s.quotaMu.Lock()
 		pending := s.quotaPending[a.ID]
 		if pending == nil {
+			// A forced read must still respect a failed probe's cooldown,
+			// especially Retry-After from the provider's usage endpoint.
+			if q, ok := s.quotas[a.ID]; ok && q.Error != "" && quotaFresh(q, time.Now()) {
+				s.quotaMu.Unlock()
+				return q
+			}
 			delete(s.quotas, a.ID)
 		}
 		s.quotaMu.Unlock()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"sort"
 	"sync"
@@ -172,14 +173,23 @@ func (s *server) nativeQuota(ctx context.Context, a storedAccount) quotaCache {
 		target = "https://chatgpt.com/backend-api/wham/usage"
 	}
 	var raw json.RawMessage
-	err := s.providerJSON(ctx, a, target, &raw)
+	err := s.providerUsageJSON(ctx, a, target, &raw)
 	if err == nil {
 		q.Windows, q.Plan, err = parseQuota(a.Provider, raw, q.ObservedAt)
 		q.Allowed, q.Resets = parseResetStatus(a.Provider, raw)
 	}
-	if err != nil || (len(q.Windows) == 0 && q.Allowed == nil) {
-		q.Error = "Provider usage unavailable. Refresh or reconnect this account."
+	if err == nil && len(q.Windows) == 0 && q.Allowed == nil {
+		err = errors.New("provider response contained no supported usage windows")
+	}
+	if err != nil {
+		q.Error, q.RetryAt = quotaFailure(err, time.Now())
 		q.Windows = nil
+		// Errors contain only local descriptions and HTTP status codes, never
+		// response bodies or credentials. Ignore clients leaving the page.
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			slog.Warn("account quota unavailable", "gateway", s.gatewayID, "account", a.ID,
+				"provider", a.Provider, "error", err, "elapsed", time.Since(q.ObservedAt), "retry_at", q.RetryAt)
+		}
 	}
 	q.ReportedWindows = append([]QuotaWindow(nil), q.Windows...)
 	q = currentQuota(q, time.Now())
@@ -220,6 +230,6 @@ func (s *server) dashboardQuota(ctx context.Context, a storedAccount) quotaCache
 	if len(last.Windows) == 0 {
 		return q
 	}
-	last.Error = "Provider usage unavailable. Showing the last reported values."
+	last.Error = q.Error + " Showing the last reported values."
 	return last
 }

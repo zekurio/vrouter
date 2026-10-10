@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -42,7 +44,26 @@ type tokenResponse struct {
 	} `json:"account"`
 }
 
-type providerError struct{ Status int }
+type providerError struct {
+	Status  int
+	RetryAt time.Time
+}
+
+var (
+	errProviderUnavailable = errors.New("provider is unavailable")
+	errProviderTimeout     = errors.New("provider request timed out")
+)
+
+func providerHTTPError(resp *http.Response) *providerError {
+	e := &providerError{Status: resp.StatusCode}
+	value := resp.Header.Get("Retry-After")
+	if seconds, err := strconv.ParseInt(value, 10, 32); err == nil && seconds >= 0 {
+		e.RetryAt = time.Now().Add(time.Duration(seconds) * time.Second)
+	} else if date, err := http.ParseTime(value); err == nil {
+		e.RetryAt = date
+	}
+	return e
+}
 
 func (e *providerError) Error() string { return fmt.Sprintf("provider returned HTTP %d", e.Status) }
 
@@ -84,7 +105,7 @@ func (s *server) tokenRequest(ctx context.Context, endpoint string, fields url.V
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return tokens, &providerError{resp.StatusCode}
+		return tokens, providerHTTPError(resp)
 	}
 	if err = readBoundedJSON(resp.Body, &tokens); err != nil {
 		return tokens, err
@@ -95,10 +116,23 @@ func (s *server) tokenRequest(ctx context.Context, endpoint string, fields url.V
 	return tokens, nil
 }
 func (s *server) accessAccount(ctx context.Context, id string) (storedAccount, error) {
+	// A refresh for another account must not block requests whose credentials
+	// are already valid. Re-read under the lock before rotating any tokens.
+	if err := ctx.Err(); err != nil {
+		return storedAccount{}, err
+	}
+	for _, a := range s.store.snapshot().Accounts {
+		if a.ID == id && !a.Disabled && routableAuth(a) && accountTokenFresh(a) {
+			return a, nil
+		}
+	}
 	// The disk store prevents another process from racing rotating refresh tokens.
 	// This lock coalesces refreshes inside this process and serializes removal.
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return storedAccount{}, err
+	}
 	var a storedAccount
 	found := false
 	for _, candidate := range s.store.snapshot().Accounts {
@@ -114,7 +148,7 @@ func (s *server) accessAccount(ctx context.Context, id string) (storedAccount, e
 	if !routableAuth(a) {
 		return a, errors.New("unsupported account authentication; add the account using Codex sign-in")
 	}
-	if a.AccessToken != "" && (a.AuthMode == "api_key" || (!a.ExpiresAt.IsZero() && time.Until(a.ExpiresAt) > time.Minute)) {
+	if accountTokenFresh(a) {
 		return a, nil
 	}
 	if a.RefreshToken == "" {
@@ -161,6 +195,10 @@ func (s *server) accessAccount(ctx context.Context, id string) (storedAccount, e
 	}
 	return a, nil
 }
+
+func accountTokenFresh(a storedAccount) bool {
+	return a.AccessToken != "" && (a.AuthMode == "api_key" || (!a.ExpiresAt.IsZero() && time.Until(a.ExpiresAt) > time.Minute))
+}
 func routableAuth(a storedAccount) bool {
 	return a.AuthMode == "api_key" ||
 		(a.Provider == "codex" && a.AuthMode == "codex") ||
@@ -198,6 +236,10 @@ func (s *server) providerJSON(ctx context.Context, a storedAccount, target strin
 	if err != nil {
 		return err
 	}
+	return s.readProviderJSON(ctx, current, target, out)
+}
+
+func (s *server) readProviderJSON(ctx context.Context, current storedAccount, target string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return errors.New("invalid provider endpoint")
@@ -205,11 +247,18 @@ func (s *server) providerJSON(ctx context.Context, a storedAccount, target strin
 	providerHeaders(req, current)
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return errors.New("provider is unavailable")
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		var networkError net.Error
+		if errors.As(err, &networkError) && networkError.Timeout() {
+			return errProviderTimeout
+		}
+		return errProviderUnavailable
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return &providerError{resp.StatusCode}
+		return providerHTTPError(resp)
 	}
 	return readBoundedJSON(resp.Body, out)
 }
