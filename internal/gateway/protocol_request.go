@@ -75,6 +75,7 @@ type preparedInference struct {
 	provider, native       string
 	stream, upstreamStream bool
 	includeUsage           bool
+	fast                   bool
 	ignoredParameters      []string
 	payload                map[string]json.RawMessage
 	accounts               []storedAccount
@@ -182,6 +183,11 @@ func (s *server) prepareInference(w http.ResponseWriter, r *http.Request, attemp
 		return nil, invalidRequest(err)
 	}
 	payload["model"] = p.native
+	var speedErr error
+	p.fast, speedErr = inferenceFastMode(payload, p.upstream)
+	if speedErr != nil {
+		return nil, invalidRequest(speedErr)
+	}
 	if p.accounts[0].AuthMode == "codex" {
 		if value, exists := payload["store"]; exists && value != false {
 			return nil, &inferenceError{status: 400, message: "Codex does not support stored responses. Set store to false."}
@@ -316,6 +322,9 @@ func adaptInferenceRequest(payload map[string]any, source, target wireProtocol) 
 		}
 	}
 	out := map[string]any{"model": payload["model"], "stream": payload["stream"] == true}
+	if err := translateInferenceSpeed(payload, out, source, target); err != nil {
+		return nil, err
+	}
 	if r.temperature != nil {
 		out["temperature"] = r.temperature
 	}
@@ -484,7 +493,7 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 	case responsesProtocol:
 		allowed += " input instructions max_output_tokens reasoning parallel_tool_calls store include text truncation background metadata service_tier prompt_cache_key"
 	case messagesProtocol:
-		allowed += " messages system max_tokens stop_sequences thinking output_config cache_control metadata service_tier"
+		allowed += " messages system max_tokens stop_sequences thinking output_config cache_control metadata service_tier speed"
 	case chatProtocol:
 		allowed += " messages max_tokens max_completion_tokens reasoning_effort parallel_tool_calls stop stream_options n logprobs top_logprobs response_format frequency_penalty presence_penalty service_tier store modalities verbosity prompt_cache_key"
 	}
@@ -537,16 +546,8 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 			return r, err
 		}
 	}
-	for _, field := range []string{"truncation", "service_tier"} {
-		if v := p[field]; v != nil {
-			expected := "disabled"
-			if field == "service_tier" {
-				expected = "auto"
-			}
-			if v != expected {
-				return r, unsupported(field)
-			}
-		}
+	if v := p["truncation"]; v != nil && v != "disabled" {
+		return r, unsupported("truncation")
 	}
 	if v := p["background"]; v != nil && v != false {
 		return r, unsupported("background")

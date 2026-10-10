@@ -347,7 +347,7 @@ func (s *server) consumeUsageReset(ctx context.Context, a storedAccount, attempt
 		return resetRejected, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return resetUnconfirmed, &providerError{resp.StatusCode}
+		return resetUnconfirmed, providerHTTPError(resp)
 	}
 	var result struct {
 		Code   string `json:"code"`

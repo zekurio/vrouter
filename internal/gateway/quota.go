@@ -12,7 +12,9 @@ type QuotaWindow struct {
 	Label     string     `json:"label"`
 	Remaining float64    `json:"remaining"`
 	ResetAt   *time.Time `json:"resetAt,omitempty"`
-	used      *float64
+	// Window length, so the dashboard can compare usage with elapsed time.
+	Seconds int `json:"seconds,omitempty"`
+	used    *float64
 }
 
 type quotaCache struct {
@@ -21,18 +23,19 @@ type quotaCache struct {
 	Plan            string
 	ObservedAt      time.Time
 	Error           string
+	RetryAt         time.Time
 	Allowed         *bool
 	Resets          *resetStatus
 }
 
 func parseQuota(provider string, body []byte, now time.Time) ([]QuotaWindow, string, error) {
 	windows := []QuotaWindow{}
-	add := func(id, label string, used *float64, reset *time.Time) {
+	add := func(id, label string, used *float64, reset *time.Time, seconds int) {
 		if used == nil || math.IsNaN(*used) || math.IsInf(*used, 0) || *used < 0 {
 			return
 		}
 		remaining := math.Round(math.Max(0, 100-*used)*10) / 10
-		windows = append(windows, QuotaWindow{ID: id, Label: label, Remaining: remaining, ResetAt: reset, used: used})
+		windows = append(windows, QuotaWindow{ID: id, Label: label, Remaining: remaining, ResetAt: reset, Seconds: max(seconds, 0), used: used})
 	}
 	if provider == "codex" {
 		type window struct {
@@ -79,7 +82,7 @@ func parseQuota(provider string, body []byte, now time.Time) ([]QuotaWindow, str
 					t := now.Add(time.Duration(*w.After) * time.Second)
 					reset = &t
 				}
-				add(prefix+id, name+label, w.Used, reset)
+				add(prefix+id, name+label, w.Used, reset, w.Seconds)
 			}
 		}
 		appendLimit(data.Limit, "", "")
@@ -93,13 +96,18 @@ func parseQuota(provider string, body []byte, now time.Time) ([]QuotaWindow, str
 	if err := json.Unmarshal(body, &data); err != nil {
 		return nil, "", err
 	}
-	for _, meta := range []struct{ key, id, label string }{{"five_hour", "five-hour", "5-hour window"}, {"seven_day", "weekly", "Weekly window"}, {"seven_day_opus", "opus", "Opus weekly"}, {"seven_day_sonnet", "sonnet", "Sonnet weekly"}, {"seven_day_oauth_apps", "oauth-apps", "OAuth apps weekly"}, {"seven_day_cowork", "cowork", "Cowork weekly"}} {
+	// Claude does not report window lengths; each key implies one.
+	const fiveHours, week = 5 * 60 * 60, 7 * 24 * 60 * 60
+	for _, meta := range []struct {
+		key, id, label string
+		seconds        int
+	}{{"five_hour", "five-hour", "5-hour window", fiveHours}, {"seven_day", "weekly", "Weekly window", week}, {"seven_day_opus", "opus", "Opus weekly", week}, {"seven_day_sonnet", "sonnet", "Sonnet weekly", week}, {"seven_day_oauth_apps", "oauth-apps", "OAuth apps weekly", week}, {"seven_day_cowork", "cowork", "Cowork weekly", week}} {
 		var w struct {
 			Used  *float64   `json:"utilization"`
 			Reset *time.Time `json:"resets_at"`
 		}
 		if raw := data[meta.key]; len(raw) > 0 && json.Unmarshal(raw, &w) == nil {
-			add(meta.id, meta.label, w.Used, w.Reset)
+			add(meta.id, meta.label, w.Used, w.Reset, meta.seconds)
 		}
 	}
 	// New Claude responses also report explicitly named scoped limits.
@@ -116,7 +124,7 @@ func parseQuota(provider string, body []byte, now time.Time) ([]QuotaWindow, str
 	if json.Unmarshal(data["limits"], &limits) == nil {
 		for i, l := range limits {
 			if l.Kind == "weekly_scoped" && l.Scope.Model.Name != "" {
-				add(fmt.Sprintf("scoped-%d", i), l.Scope.Model.Name+" weekly", l.Used, l.Reset)
+				add(fmt.Sprintf("scoped-%d", i), l.Scope.Model.Name+" weekly", l.Used, l.Reset, week)
 			}
 		}
 	}

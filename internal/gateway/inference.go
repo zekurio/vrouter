@@ -197,8 +197,14 @@ func (s *server) inference(w http.ResponseWriter, r *http.Request) {
 func (s *server) forwardInference(w http.ResponseWriter, r *http.Request, attempt *inferenceAttempt, prepared *preparedInference) {
 	channel, native, payload, pool := prepared.provider, prepared.native, prepared.payload, prepared.accounts
 	upstreamStream := prepared.upstreamStream
-	candidates := s.usableAccounts(r.Context(), pool, native)
-	resetTried := false
+	// Claude fast mode uses paid credits and separate rate limits. Regular
+	// subscription windows cannot admit it, block it, or justify a usage reset.
+	claudeFast := channel == "claude" && prepared.fast
+	candidates := pool
+	if !claudeFast {
+		candidates = s.usableAccounts(r.Context(), pool, native)
+	}
+	resetTried := claudeFast
 	if len(candidates) == 0 {
 		resetTried = true
 		candidates = s.resetExhaustedPool(r.Context(), pool, native)
@@ -238,6 +244,9 @@ retryInference:
 			}
 			req.Header.Set("anthropic-beta", beta)
 		}
+		if claudeFast {
+			addAnthropicBeta(req, claudeFastBeta)
+		}
 		attempt.provider, attempt.accountID = a.Provider, a.ID
 		resp, err := s.streamClient.Do(req)
 		if err != nil {
@@ -250,6 +259,9 @@ retryInference:
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			providerError := readProviderError(resp, a)
+			if prepared.fast {
+				explainFastModeError(providerError, channel, resp.StatusCode)
+			}
 			resp.Body.Close()
 			if resp.StatusCode == 429 && !resetTried && nativeUsage(a) {
 				resetTried = true

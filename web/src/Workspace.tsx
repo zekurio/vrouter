@@ -4,7 +4,6 @@ import {
   AccountsPage,
   accountLabel,
   accountState,
-  resetTime,
   type Account,
 } from "./AccountsPage";
 import {
@@ -18,6 +17,7 @@ import {
 import { KeysPage } from "./KeysPage";
 import { ModelsPage, type Model } from "./ModelsPage";
 import { Private } from "./Privacy";
+import { QuotaWindows } from "./Quota";
 import {
   ProviderBrand as Brand,
   providerColor as color,
@@ -322,26 +322,7 @@ export function Workspace({
                     </div>
                     {a.windows?.length ? (
                       <div className="quota-windows">
-                        {a.windows.map((window) => (
-                          <div className="quota-window" key={window.id}>
-                            <div className="account-allowance">
-                              <span>{window.label}</span>
-                              <strong>{window.remaining}% left</strong>
-                            </div>
-                            <div className="progress">
-                              <span style={{ width: `${window.remaining}%` }} />
-                            </div>
-                            {window.resetAt && (
-                              <p
-                                title={new Date(
-                                  window.resetAt,
-                                ).toLocaleString()}
-                              >
-                                {resetTime(window.resetAt)}
-                              </p>
-                            )}
-                          </div>
-                        ))}
+                        <QuotaWindows windows={a.windows} />
                       </div>
                     ) : (
                       <div className="account-allowance">

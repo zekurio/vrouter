@@ -3,6 +3,7 @@ import { LogIn, Plus, Trash2 } from "lucide-react";
 import { ConnectDialog, connectable } from "./ConnectDialog";
 import { ProviderBrand, providerColor, providerLabel } from "./ProviderBrand";
 import { Private, usePrivateLabel } from "./Privacy";
+import { QuotaWindows, type QuotaWindow } from "./Quota";
 import { isDialogBackdropClick } from "./dialog";
 import { errorMessage, type APIRequest } from "./api";
 
@@ -20,12 +21,7 @@ export type Account = {
   createdAt?: string;
   reconnectable?: boolean;
   authMode?: string;
-  windows?: {
-    id: string;
-    label: string;
-    remaining: number;
-    resetAt?: string;
-  }[];
+  windows?: QuotaWindow[];
   quotaUpdatedAt?: string;
   quotaError?: string;
   availableResets?: number;
@@ -49,19 +45,6 @@ export function accountLabel(account: Account) {
 export function accountState(account: Account) {
   if (account.status === "connected") return "";
   return account.status === "disabled" ? "Disabled" : "Unavailable";
-}
-
-export function resetTime(value?: string) {
-  if (!value) return "Reset not reported";
-  const minutes = Math.ceil((new Date(value).getTime() - Date.now()) / 60000);
-  if (minutes <= 0) return "Reset due";
-  const days = Math.floor(minutes / 1440),
-    hours = Math.floor(minutes / 60) % 24;
-  return days
-    ? `Resets in ${days}d ${hours}h`
-    : hours
-      ? `Resets in ${hours}h ${minutes % 60}m`
-      : `Resets in ${minutes}m`;
 }
 
 export function AccountsPage({
@@ -220,22 +203,7 @@ export function AccountsPage({
                       <span className="plan account-plan">{a.plan}</span>
                       <div className="account-windows">
                         {a.windows?.length ? (
-                          a.windows.map((w) => (
-                            <div key={w.id} data-window={w.id}>
-                              <div className="account-allowance">
-                                <span>{w.label}</span>
-                                <strong>{w.remaining}% left</strong>
-                              </div>
-                              <div className="progress">
-                                <span style={{ width: `${w.remaining}%` }} />
-                              </div>
-                              {w.resetAt && (
-                                <p title={new Date(w.resetAt).toLocaleString()}>
-                                  {resetTime(w.resetAt)}
-                                </p>
-                              )}
-                            </div>
-                          ))
+                          <QuotaWindows windows={a.windows} />
                         ) : (
                           <p className={a.quotaError ? "quota-error" : ""}>
                             <Private>

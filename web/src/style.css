@@ -660,16 +660,69 @@ h1 {
 .quota-windows {
   margin-top: 23px;
 }
-.quota-window + .quota-window {
-  margin-top: 18px;
+/* Quota windows: amount left and reset, a bar and the pace in each cell. Cells
+   share columns, so the windows of every account row line up. */
+.quota-list {
+  container-type: inline-size;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 18px 28px;
 }
-.quota-window .account-allowance {
-  margin-top: 0;
-}
-.quota-window > p {
+/* One line, so the bars of a grid row line up. A long label gives way first. */
+.quota-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   font-size: 11px;
   color: var(--muted);
+  white-space: nowrap;
+}
+.quota-head span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.quota-head strong {
+  font-weight: 450;
+  color: var(--subtle);
+  font-variant-numeric: tabular-nums;
+}
+.quota-head time {
+  margin-left: auto;
+  padding-left: 6px;
+}
+.quota-window .progress {
+  position: relative;
+  height: 6px;
+}
+/* Even spending, marked when usage is off it. The background ring cuts it out
+   of the bar. */
+.quota-window .progress i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  box-shadow: 0 0 0 1.5px var(--bg);
+}
+.quota-window.is-deficit .progress i {
+  background: var(--danger);
+}
+.quota-window.is-reserve .progress i {
+  background: var(--green);
+}
+.quota-window .quota-meta {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
   margin-top: 7px;
+}
+/* A weekly window without a 5-hour window keeps the second column, so it
+   lines up with the weekly bars of accounts that report both. */
+@container (min-width: 468px) {
+  .account-windows .quota-window[data-window="weekly"]:first-child {
+    grid-column: 2;
+  }
 }
 .quota-error {
   color: var(--danger);
@@ -1086,32 +1139,17 @@ dialog::backdrop {
 }
 .account-windows {
   display: grid;
-  /* Two equal tracks: 5-hour window first, weekly window second. */
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px 28px;
-  /* Reserve one quota window (label, bar, reset line) so rows keep their
-     height whether or not the account reports an allowance. */
+  gap: 8px;
+  /* Same height as the identity block, so rows with one window or none keep
+     the height of the rest. */
   min-height: 46px;
   align-content: center;
-}
-.account-windows .account-allowance {
-  margin-top: 0;
 }
 .account-windows > p {
   margin: 0;
 }
-/* A lone weekly window keeps the weekly column, so it lines up with the
-   weekly bar on accounts that also report a 5-hour window. */
-.account-windows > [data-window="weekly"]:only-child {
-  grid-column: 2;
-}
-/* A message, not a bar, fills the whole usage area. */
-.account-windows > p:only-child {
-  grid-column: 1 / -1;
-}
 .account-windows > .quota-error {
   color: var(--danger);
-  grid-column: 1 / -1;
 }
 .account-row.is-off .account-identity h3,
 .account-row.is-off .account-plan,
@@ -1130,9 +1168,6 @@ dialog::backdrop {
   .account-row {
     grid-template-columns: 30px minmax(0, 14rem) 80px minmax(0, 1fr) 70px;
     column-gap: 14px;
-  }
-  .account-windows {
-    column-gap: 20px;
   }
 }
 /* Below this the fixed identity, plan and action columns squeeze the usage
@@ -1159,10 +1194,6 @@ dialog::backdrop {
   }
   .account-windows {
     grid-column: 2 / 4;
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  }
-  .account-windows > [data-window="weekly"]:only-child {
-    grid-column: auto;
   }
   .account-row-actions {
     grid-area: 1 / 3;
