@@ -153,6 +153,8 @@ vrouter adds Claude's `fast-mode-2026-02-01` beta header on fast requests. The s
 
 Codex fast mode draws down subscription allowance faster. Claude fast mode uses paid usage credits and separate rate limits, so vrouter sends those requests without checking normal subscription windows or spending subscription usage resets. The account quota bars still show normal subscription allowance. Account retries stay within the same authentication mode and retain the requested speed.
 
+The request log records the tier the provider reports serving, from Claude's `usage.speed` or OpenAI's response `service_tier`. When the response names no tier, the request's tier is recorded instead. The Usage page prices fast requests at twice the list rate and OpenAI `ultrafast` requests at six times. A fast request that Claude Opus 4.6 runs at standard speed, or that OpenAI downgrades to `default`, is priced at the standard rate.
+
 Claude Code checks fast-mode availability directly with Anthropic, outside the configured base URL. When using a vrouter key through `ANTHROPIC_AUTH_TOKEN`, set `CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK=1` so the request can reach vrouter. This only skips the client check; the selected upstream account still needs access and credits. See [Claude Code fast mode behind gateways](https://code.claude.com/docs/en/fast-mode#use-fast-mode-behind-proxies-and-llm-gateways) and [Codex fast mode](https://developers.openai.com/codex/speed/).
 
 ### Thinking budgets

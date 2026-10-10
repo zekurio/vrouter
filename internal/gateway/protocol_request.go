@@ -78,6 +78,7 @@ type preparedInference struct {
 	stream, upstreamStream bool
 	includeUsage           bool
 	fast                   bool
+	speed                  string
 	ignoredParameters      []string
 	payload                map[string]json.RawMessage
 	accounts               []storedAccount
@@ -111,6 +112,7 @@ func (s *server) prepareInference(w http.ResponseWriter, r *http.Request, attemp
 	if ierr := p.encodeUpstreamRequest(payload); ierr != nil {
 		return nil, ierr
 	}
+	attempt.speed = p.speed
 	return p, nil
 }
 
@@ -217,6 +219,7 @@ func (p *preparedInference) encodeUpstreamRequest(clientPayload map[string]any) 
 	if err != nil {
 		return invalidRequest(err)
 	}
+	p.speed = requestedSpeed(payload, p.upstream)
 	if p.accounts[0].AuthMode == "codex" {
 		if ierr := p.applyCodexRequestRules(payload, clientPayload); ierr != nil {
 			return ierr

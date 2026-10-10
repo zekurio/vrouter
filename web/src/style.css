@@ -2160,7 +2160,10 @@ dialog .notice {
   font-weight: 500;
   letter-spacing: -0.5px;
 }
-.usage-types {
+.usage-costs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 26px 56px;
   padding: 26px 0;
   border-bottom: 1px solid var(--border);
 }
@@ -2197,6 +2200,18 @@ dialog .notice {
 }
 .type-bar .output,
 .type-key.output {
+  background: var(--text);
+}
+.type-bar .standard,
+.type-key.standard {
+  background: color-mix(in srgb, var(--text) 30%, var(--bg));
+}
+.type-bar .fast,
+.type-key.fast {
+  background: color-mix(in srgb, var(--text) 65%, var(--bg));
+}
+.type-bar .ultrafast,
+.type-key.ultrafast {
   background: var(--text);
 }
 .usage-types ul {
@@ -2374,7 +2389,8 @@ dialog .notice {
   }
 }
 @media (max-width: 800px) {
-  .usage-summary {
+  .usage-summary,
+  .usage-costs {
     grid-template-columns: 1fr;
   }
   .gateway-list button {

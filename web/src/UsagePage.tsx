@@ -13,6 +13,8 @@ import {
   money,
   share,
   summarize,
+  tierLabel,
+  tiers,
   type Group,
   type Tally,
   type Usage,
@@ -101,7 +103,7 @@ export function UsagePage({ request, reloadKey }: Props) {
 
           <UsageTotals total={total} />
 
-          {total.cost > 0 && <CostByType total={total} />}
+          {total.cost > 0 && <CostSplits total={total} />}
 
           <Breakdown
             view={view}
@@ -236,34 +238,66 @@ function UsageTotals({ total }: { total: Tally }) {
   );
 }
 
-function CostByType({ total }: { total: Tally }) {
+function CostSplits({ total }: { total: Tally }) {
   return (
-    <section className="usage-types" aria-label="Cost by type">
-      <h2>Cost by type</h2>
+    <div className="usage-costs">
+      <CostSplit
+        title="Cost by type"
+        parts={costTypes
+          .filter((type) => total.byType[type] > 0)
+          .map((type) => ({
+            key: type,
+            label: costTypeLabel[type],
+            cost: total.byType[type],
+          }))}
+      />
+      {/* Fast stays listed at zero so the absence of premium spend shows. */}
+      <CostSplit
+        title="Cost by tier"
+        parts={tiers
+          .filter((tier) => tier !== "ultrafast" || total.byTier[tier] > 0)
+          .map((tier) => ({
+            key: tier,
+            label: tierLabel[tier],
+            cost: total.byTier[tier],
+          }))}
+      />
+    </div>
+  );
+}
+
+function CostSplit({
+  title,
+  parts,
+}: {
+  title: string;
+  // Each key doubles as the class that colours its segment.
+  parts: { key: string; label: string; cost: number }[];
+}) {
+  return (
+    <section className="usage-types" aria-label={title}>
+      <h2>{title}</h2>
       <div className="type-bar" aria-hidden="true">
-        {costTypes.map(
-          (type) =>
-            total.byType[type] > 0 && (
+        {parts.map(
+          (p) =>
+            p.cost > 0 && (
               <span
-                key={type}
-                className={type}
-                style={{ flexGrow: total.byType[type] }}
-                title={`${costTypeLabel[type]} ${money(total.byType[type])}`}
+                key={p.key}
+                className={p.key}
+                style={{ flexGrow: p.cost }}
+                title={`${p.label} ${money(p.cost)}`}
               />
             ),
         )}
       </div>
       <ul>
-        {costTypes.map(
-          (type) =>
-            total.byType[type] > 0 && (
-              <li key={type}>
-                <span className={`type-key ${type}`} />
-                {costTypeLabel[type]}
-                <strong>{money(total.byType[type])}</strong>
-              </li>
-            ),
-        )}
+        {parts.map((p) => (
+          <li key={p.key}>
+            <span className={`type-key ${p.key}`} />
+            {p.label}
+            <strong>{money(p.cost)}</strong>
+          </li>
+        ))}
       </ul>
     </section>
   );
