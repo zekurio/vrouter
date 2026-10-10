@@ -29,11 +29,11 @@ vrouter does not load `.env` files. Export variables or set them in your service
 
 ## Data
 
-One `vrouter.json` file in the data directory holds accounts, model settings, client keys, and request history. vrouter writes it with restricted file permissions but does not encrypt it, so keep backups private.
+`vrouter.json` in the data directory holds accounts, model settings, and client keys. `usage.sqlite` holds usage totals, in-flight accounting, and the latest requests. Both use restricted file permissions and are unencrypted, so keep backups private.
 
 Run one instance per data directory. Stop the server before you restore data or import provider credentials.
 
-This testing build does not migrate older files. Use a fresh data directory. Files with the removed `chatgpt_registration`, `client_secret`, or retired model-policy fields are not supported.
+The SQLite upgrade preserves current configuration and starts fresh usage history. Older configuration files with the removed `chatgpt_registration`, `client_secret`, or retired model-policy fields are still unsupported; use a fresh data directory for those builds.
 
 To import existing provider logins, stop vrouter and pass native Codex or Claude CLI credential files:
 
@@ -119,7 +119,19 @@ Client keys cannot open management endpoints, and admin tokens cannot authorize 
 
 A key can have an expiry. After it passes, vrouter refuses the key's calls with HTTP 401, though a response already running finishes. Move the expiry later or clear it to restore the key.
 
-Keys have no usage limits. vrouter counts each request when it admits it and adds the token usage when the response finishes. It keeps the latest 1,000 requests per gateway, and deleting or revoking a key does not erase them.
+Keys have no usage limits. vrouter counts each authenticated inference attempt when it starts and adds measured tokens when a successful response finishes. Deleting or revoking a key does not erase aggregate usage.
+
+## Usage
+
+Usage lives in `usage.sqlite` in the data directory. Credentials and configuration stay in `vrouter.json`. SQLite uses WAL mode and durable transactions; inference accounting does not rewrite the configuration file. The first run with SQLite starts fresh usage history and discards the old JSON request log and key counters while preserving accounts, keys, and settings.
+
+The Usage page shows what the gateway's requests would cost at public API list prices: the total, the cost over time, and the split by token type, speed tier, model, key, and day. The totals cover every request since the database was created. They survive restarts and never decrease.
+
+vrouter keeps running totals for each five-minute period by provider, model, key, and speed tier, and retains them permanently. Days and hours on the page follow the browser's time zone.
+
+The Requests view lists the latest 1,000 requests per gateway with their timing, model, key, account, outcome, HTTP status, and token counts. Older requests leave the list but stay in the totals. Prompts, completions, credentials, and raw provider error text are never stored. A request left running after a process restart is recorded as cut short, with unknown token usage. A request without a usage report adds no tokens or cost, and a request on a model without a list price counts as unpriced.
+
+Back up the entire data directory with the service stopped, including `usage.sqlite` and any `-wal`/`-shm` files. Copying only the live database file can miss committed WAL data.
 
 ## Client requests
 
@@ -153,7 +165,7 @@ vrouter adds Claude's `fast-mode-2026-02-01` beta header on fast requests. The s
 
 Codex fast mode draws down subscription allowance faster. Claude fast mode uses paid usage credits and separate rate limits, so vrouter sends those requests without checking normal subscription windows or spending subscription usage resets. The account quota bars still show normal subscription allowance. Account retries stay within the same authentication mode and retain the requested speed.
 
-The request log records the tier the provider reports serving, from Claude's `usage.speed` or OpenAI's response `service_tier`. When the response names no tier, the request's tier is recorded instead. The Usage page prices fast requests at twice the list rate and OpenAI `ultrafast` requests at six times. A fast request that Claude Opus 4.6 runs at standard speed, or that OpenAI downgrades to `default`, is priced at the standard rate.
+Accounting uses the tier the provider reports serving, from Claude's `usage.speed` or OpenAI's response `service_tier`. When the response names no tier, the request's tier is recorded instead. The gateway prices fast requests at twice the list rate and OpenAI `ultrafast` requests at six times. It calculates cost per request before aggregation, including long-context thresholds and cache reads/writes, and stores the estimate as integer nanodollars. Later price changes do not recalculate historical costs. A fast request that Claude Opus 4.6 runs at standard speed, or that OpenAI downgrades to `default`, is priced at the standard rate.
 
 Claude Code checks fast-mode availability directly with Anthropic, outside the configured base URL. When using a vrouter key through `ANTHROPIC_AUTH_TOKEN`, set `CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK=1` so the request can reach vrouter. This only skips the client check; the selected upstream account still needs access and credits. See [Claude Code fast mode behind gateways](https://code.claude.com/docs/en/fast-mode#use-fast-mode-behind-proxies-and-llm-gateways) and [Codex fast mode](https://developers.openai.com/codex/speed/).
 
@@ -225,7 +237,7 @@ After a failed check, a rejected trigger, or a trigger whose new reset time vrou
 
 `expiresAt` takes a future RFC 3339 timestamp, or `null` for a key that never expires. Omitting it on an update keeps the current expiry.
 
-`GET /api/telemetry` returns recent requests.
+`GET /api/usage?tz=<IANA time zone>` returns the all-time totals, the breakdowns by provider, model, and key, usage per day and per recent hour in that time zone, and the latest 1,000 requests. Without a known zone it uses UTC. It replaces `/api/telemetry`.
 
 Select a gateway with the `X-Vrouter-Gateway` header. Inference always takes its gateway from the client key.
 
