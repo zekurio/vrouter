@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Plus, RefreshCw } from "lucide-react";
 import {
   AccountsPage,
@@ -19,8 +19,8 @@ import { Private } from "./Privacy";
 import { QuotaWindows } from "./Quota";
 import {
   ProviderBrand as Brand,
-  providerColor as color,
   providerLabel,
+  providerStyle,
 } from "./ProviderBrand";
 import { UsagePage } from "./UsagePage";
 
@@ -88,45 +88,49 @@ export function Workspace({
   const [connect, setConnect] = useState<string | null>(null);
   const [creatingKey, setCreatingKey] = useState(false);
 
-  async function refresh(background = false) {
-    if (background && refreshPending.current) return;
-    refreshPending.current = true;
-    const sequence = ++refreshSequence.current;
-    clearTimeout(retry.current.timer);
-    setLoading(true);
-    // A background refresh keeps the last error on screen until it succeeds.
-    if (!background) setError("");
-    try {
-      const next = await client.request<State>("/api/state");
-      if (sequence !== refreshSequence.current) return;
-      retry.current.delay = 0;
-      setError("");
-      setState(next);
-    } catch (err) {
-      if (sequence !== refreshSequence.current || isStale(err)) return;
-      const status = statusOf(err);
-      if (status === 401) return;
-      if (status === 404) {
-        setState(null);
-        setError("This gateway no longer exists, or you can't open it.");
-        handlers.current.onGone();
-        return;
+  const refresh = useCallback(
+    // Named so the retry timer can call it again.
+    async function load(background = false): Promise<void> {
+      if (background && refreshPending.current) return;
+      refreshPending.current = true;
+      const sequence = ++refreshSequence.current;
+      clearTimeout(retry.current.timer);
+      setLoading(true);
+      // A background refresh keeps the last error on screen until it succeeds.
+      if (!background) setError("");
+      try {
+        const next = await client.request<State>("/api/state");
+        if (sequence !== refreshSequence.current) return;
+        retry.current.delay = 0;
+        setError("");
+        setState(next);
+      } catch (err) {
+        if (sequence !== refreshSequence.current || isStale(err)) return;
+        const status = statusOf(err);
+        if (status === 401) return;
+        if (status === 404) {
+          setState(null);
+          setError("This gateway no longer exists, or you can't open it.");
+          handlers.current.onGone();
+          return;
+        }
+        setError(errorMessage(err, "Could not load gateway data."));
+        // Try again soon instead of waiting for the next poll, backing off while
+        // the gateway stays unreachable.
+        const delay = Math.min(retry.current.delay * 2 || 3000, 60000);
+        retry.current = {
+          delay,
+          timer: window.setTimeout(() => void load(true), delay),
+        };
+      } finally {
+        if (sequence === refreshSequence.current) {
+          setLoading(false);
+          refreshPending.current = false;
+        }
       }
-      setError(errorMessage(err, "Could not load gateway data."));
-      // Try again soon instead of waiting for the next poll, backing off while
-      // the gateway stays unreachable.
-      const delay = Math.min(retry.current.delay * 2 || 3000, 60000);
-      retry.current = {
-        delay,
-        timer: window.setTimeout(() => void refresh(true), delay),
-      };
-    } finally {
-      if (sequence === refreshSequence.current) {
-        setLoading(false);
-        refreshPending.current = false;
-      }
-    }
-  }
+    },
+    [client],
+  );
   useEffect(() => {
     void refresh();
     const poll = () => {
@@ -140,18 +144,18 @@ export function Workspace({
       document.removeEventListener("visibilitychange", poll);
       client.close();
     };
-  }, [client]);
+  }, [client, refresh]);
 
   const addAccount = () => {
     navigate("Accounts");
     setConnect("");
   };
   const providers = [
-    ...new Set((state?.accounts || []).map((a) => a.provider)),
+    ...new Set((state?.accounts ?? []).map((a) => a.provider)),
   ];
   // The pool columns double as the filter. An empty filter shows every pool.
   const filter = providers.length > 1 && providers.includes(pool) ? pool : "";
-  const visibleAccounts = (state?.accounts || []).filter(
+  const visibleAccounts = (state?.accounts ?? []).filter(
     (a) => !filter || a.provider === filter,
   );
   // One address for every gateway. The API key picks the gateway.
@@ -220,14 +224,14 @@ export function Workspace({
                 const accounts = state.accounts.filter((a) => a.provider === p);
                 const known = accounts.filter((a) => a.remaining !== null);
                 const remaining = known.reduce(
-                  (sum, a) => sum + (a.remaining || 0),
+                  (sum, a) => sum + (a.remaining ?? 0),
                   0,
                 );
                 return (
                   <article
                     className={`provider-column ${filter && filter !== p ? "dimmed" : ""}`}
                     key={p}
-                    style={{ "--provider": color(p) } as CSSProperties}
+                    style={providerStyle(p)}
                   >
                     <div className="provider-title">
                       <Brand provider={p} />
@@ -293,49 +297,47 @@ export function Workspace({
             <div className="empty">No accounts yet</div>
           )}
           {providers.length > 0 && (
-            <>
-              <section className="account-grid">
-                {visibleAccounts.map((a) => (
-                  <article
-                    key={a.id}
-                    className="account-card"
-                    style={{ "--provider": color(a.provider) } as CSSProperties}
-                  >
-                    <div className="account-heading">
-                      <div>
-                        <h3>
-                          <Private peek>{accountLabel(a)}</Private>
-                        </h3>
-                        <span className="plan">
-                          {a.plan || providerLabel(a.provider)}
+            <section className="account-grid">
+              {visibleAccounts.map((a) => (
+                <article
+                  key={a.id}
+                  className="account-card"
+                  style={providerStyle(a.provider)}
+                >
+                  <div className="account-heading">
+                    <div>
+                      <h3>
+                        <Private peek>{accountLabel(a)}</Private>
+                      </h3>
+                      <span className="plan">
+                        {a.plan || providerLabel(a.provider)}
+                      </span>
+                      {accountState(a) && (
+                        <span className={`account-state ${a.status}`}>
+                          {accountState(a)}
                         </span>
-                        {accountState(a) && (
-                          <span className={`account-state ${a.status}`}>
-                            {accountState(a)}
-                          </span>
-                        )}
-                      </div>
-                      <Brand provider={a.provider} small />
+                      )}
                     </div>
-                    {a.windows?.length ? (
-                      <div className="quota-windows">
-                        <QuotaWindows windows={a.windows} />
-                      </div>
-                    ) : (
-                      <div className="account-allowance">
-                        <span>{a.window}</span>
-                        <strong>Unknown</strong>
-                      </div>
-                    )}
-                    {a.quotaError && (
-                      <p className="quota-error">
-                        <Private>{a.quotaError}</Private>
-                      </p>
-                    )}
-                  </article>
-                ))}
-              </section>
-            </>
+                    <Brand provider={a.provider} small />
+                  </div>
+                  {a.windows !== undefined && a.windows.length > 0 ? (
+                    <div className="quota-windows">
+                      <QuotaWindows windows={a.windows} />
+                    </div>
+                  ) : (
+                    <div className="account-allowance">
+                      <span>{a.window}</span>
+                      <strong>Unknown</strong>
+                    </div>
+                  )}
+                  {a.quotaError !== undefined && a.quotaError !== "" && (
+                    <p className="quota-error">
+                      <Private>{a.quotaError}</Private>
+                    </p>
+                  )}
+                </article>
+              ))}
+            </section>
           )}
         </>
       )}

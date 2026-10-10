@@ -5,8 +5,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"sort"
 	"strconv"
@@ -32,7 +32,9 @@ func (r inferenceBodyReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// deliverInference relays a successful provider response and closes its body.
 func (s *server) deliverInference(w http.ResponseWriter, r *http.Request, resp *http.Response, attempt *inferenceAttempt, p *preparedInference, account storedAccount) {
+	defer resp.Body.Close()
 	reader := inferenceBodyReader{source: resp.Body, attempt: attempt}
 	if retry := resp.Header.Get("Retry-After"); retry != "" {
 		w.Header().Set("Retry-After", retry)
@@ -67,11 +69,12 @@ func (s *server) deliverInference(w http.ResponseWriter, r *http.Request, resp *
 				return
 			}
 			if err != nil {
-				if r.Context().Err() != nil {
+				switch {
+				case r.Context().Err() != nil:
 					attempt.outcome = outcomeIncomplete
-				} else if err != io.EOF {
+				case !errors.Is(err, io.EOF):
 					attempt.outcome = outcomeError
-				} else if p.upstreamStream && !attempt.usage.terminal {
+				case p.upstreamStream && !attempt.usage.terminal:
 					attempt.outcome = outcomeIncomplete
 				}
 				return
@@ -92,7 +95,7 @@ func (s *server) deliverInference(w http.ResponseWriter, r *http.Request, resp *
 		var data []byte
 		data, err = io.ReadAll(io.LimitReader(reader, (32<<20)+1))
 		if err == nil && len(data) > 32<<20 {
-			err = fmt.Errorf("Provider response exceeds 32 MiB")
+			err = errors.New("Provider response exceeds 32 MiB")
 		}
 		if err == nil {
 			var body map[string]any
@@ -104,7 +107,7 @@ func (s *server) deliverInference(w http.ResponseWriter, r *http.Request, resp *
 	}
 	if err != nil || !reply.terminal {
 		if err == nil {
-			err = fmt.Errorf("Provider stream ended before its terminal event")
+			err = errors.New("Provider stream ended before its terminal event")
 			attempt.outcome = outcomeIncomplete
 		} else {
 			attempt.outcome = outcomeError
@@ -173,7 +176,7 @@ func readProtocolSSE(reader io.Reader, protocol wireProtocol, sink *replySink) e
 		body, err := decodeProtocolJSON(payload)
 		data.Reset()
 		if err != nil {
-			return fmt.Errorf("Provider sent invalid SSE JSON")
+			return errors.New("Provider sent invalid SSE JSON")
 		}
 		if str(body["type"]) == "" {
 			body["type"] = name
@@ -211,23 +214,22 @@ func readProtocolSSE(reader io.Reader, protocol wireProtocol, sink *replySink) e
 			name = value
 		case "data":
 			if data.Len()+len(value)+1 > 2<<20 {
-				return fmt.Errorf("Provider SSE event exceeds 2 MiB")
+				return errors.New("Provider SSE event exceeds 2 MiB")
 			}
 			data.WriteString(value)
 			data.WriteByte('\n')
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("Provider stream read failed")
+		return errors.New("Provider stream read failed")
 	}
 	return dispatch()
 }
 
 func mergeReplyUsage(reply *protocolReply, usage any) {
-	for k, v := range object(usage) {
-		reply.usage[k] = v
-	}
+	maps.Copy(reply.usage, object(usage))
 }
+
 func replyIndex(v any) string {
 	switch n := v.(type) {
 	case interface{ String() string }:
@@ -273,7 +275,10 @@ func consumeMessagesEvent(body map[string]any, sink *replySink) error {
 			kind = "tool"
 			text = ""
 			if len(object(b["input"])) > 0 {
-				raw, _ := json.Marshal(b["input"])
+				raw, err := json.Marshal(b["input"])
+				if err != nil {
+					return errors.New("Provider sent invalid tool input")
+				}
 				text = string(raw)
 			}
 		case "thinking":
@@ -301,10 +306,10 @@ func consumeMessagesEvent(body map[string]any, sink *replySink) error {
 			return sink.append(b, str(d["thinking"]))
 		case "signature_delta":
 			if b == nil {
-				return fmt.Errorf("Provider sent a signature without a thinking block")
+				return errors.New("Provider sent a signature without a thinking block")
 			}
 			if len(b.signature)+len(str(d["signature"])) > maxReasoningStateBytes {
-				return fmt.Errorf("Provider reasoning signature exceeds 1 MiB")
+				return errors.New("Provider reasoning signature exceeds 1 MiB")
 			}
 			b.signature += str(d["signature"])
 			return nil
@@ -361,7 +366,7 @@ func consumeResponsesEvent(body map[string]any, sink *replySink) error {
 		case "response.completed", "response.incomplete", "response.failed":
 			response := object(body["response"])
 			if response == nil {
-				return fmt.Errorf("Provider terminal event has no response")
+				return errors.New("Provider terminal event has no response")
 			}
 			r.raw, r.id, r.status = response, str(response["id"]), str(response["status"])
 			if len(list(response["output"])) == 0 && len(r.nativeItems) > 0 {
@@ -415,11 +420,13 @@ func consumeResponsesEvent(body map[string]any, sink *replySink) error {
 	case "response.content_part.added", "response.reasoning_summary_part.added":
 		part := object(body["part"])
 		kind, text := "text", str(part["text"])
-		if str(part["type"]) == "summary_text" {
+		switch str(part["type"]) {
+		case "summary_text":
 			kind = "reasoning"
-		} else if str(part["type"]) == "refusal" {
+		case "refusal":
 			kind, text = "refusal", str(part["refusal"])
-		} else if str(part["type"]) != "output_text" {
+		case "output_text":
+		default:
 			return unsupported("provider output part " + str(part["type"]))
 		}
 		if len(list(part["annotations"])) > 0 {
@@ -463,7 +470,7 @@ func consumeResponsesEvent(body map[string]any, sink *replySink) error {
 		}
 		b := r.find(responseKey(body, kind))
 		if b == nil {
-			return fmt.Errorf("Provider completed a missing content block")
+			return errors.New("Provider completed a missing content block")
 		}
 		return sink.full(b, str(body[field]))
 	case "response.content_part.done", "response.reasoning_summary_part.done":
@@ -477,7 +484,7 @@ func consumeResponsesEvent(body map[string]any, sink *replySink) error {
 		}
 		b := r.find(responseKey(body, kind))
 		if b == nil {
-			return fmt.Errorf("Provider completed a missing content part")
+			return errors.New("Provider completed a missing content part")
 		}
 		return sink.full(b, text)
 	case "response.output_item.done":
@@ -485,7 +492,7 @@ func consumeResponsesEvent(body map[string]any, sink *replySink) error {
 	case "response.completed", "response.incomplete", "response.failed":
 		response := object(body["response"])
 		if response == nil {
-			return fmt.Errorf("Provider terminal event has no response")
+			return errors.New("Provider terminal event has no response")
 		}
 		r.raw = response
 		mergeReplyUsage(r, response["usage"])
@@ -529,7 +536,7 @@ func updateNativeResponseItem(body map[string]any, reply *protocolReply) error {
 	index, _ := strconv.Atoi(replyIndex(body["output_index"]))
 	item := reply.nativeItems[index]
 	if item == nil {
-		return fmt.Errorf("Provider sent content without an output item")
+		return errors.New("Provider sent content without an output item")
 	}
 	kind := str(body["type"])
 	if kind == "response.function_call_arguments.delta" {
@@ -543,7 +550,7 @@ func updateNativeResponseItem(body map[string]any, reply *protocolReply) error {
 	parts := list(item[field])
 	n, _ := strconv.Atoi(replyIndex(body[partIndex]))
 	if n < 0 || n > 4096 {
-		return fmt.Errorf("Provider content index is out of range")
+		return errors.New("Provider content index is out of range")
 	}
 	for len(parts) <= n {
 		parts = append(parts, nil)
@@ -553,7 +560,7 @@ func updateNativeResponseItem(body map[string]any, reply *protocolReply) error {
 	} else {
 		part := object(parts[n])
 		if part == nil {
-			return fmt.Errorf("Provider sent a delta without a content part")
+			return errors.New("Provider sent a delta without a content part")
 		}
 		text := "text"
 		if kind == "response.refusal.delta" {
@@ -572,7 +579,7 @@ func consumeResponseItem(item map[string]any, index string, sink *replySink, don
 		if err != nil {
 			return err
 		}
-		if err = sink.full(b, text); err != nil {
+		if err := sink.full(b, text); err != nil {
 			return err
 		}
 		if done {
@@ -698,6 +705,6 @@ func consumeProtocolJSON(body map[string]any, protocol wireProtocol, sink *reply
 
 // Errors inside a provider stream get the same redaction as HTTP errors.
 func safeProtocolError(value any, account storedAccount) any {
-	body, _ := json.Marshal(map[string]any{"error": value})
+	body, _ := json.Marshal(map[string]any{"error": value}) //nolint:errchkjson // value was decoded from JSON; an empty body falls back to the status text
 	return sanitizedProviderError(bytes.NewReader(body), http.StatusBadGateway, account)
 }

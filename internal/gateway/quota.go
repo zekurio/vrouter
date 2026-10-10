@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+// QuotaWindow is one usage limit window on an account.
 type QuotaWindow struct {
 	ID        string     `json:"id"`
 	Label     string     `json:"label"`

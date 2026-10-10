@@ -1,12 +1,6 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type CSSProperties,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Copy, RefreshCw, Search, Undo2, X } from "lucide-react";
-import { ProviderBrand, providerColor, providerName } from "./ProviderBrand";
+import { ProviderBrand, providerName, providerStyle } from "./ProviderBrand";
 import { errorMessage, isStale, statusOf, type APIRequest } from "./api";
 import { CodeBlock } from "./CodeBlock";
 import { ConnectionTest } from "./ConnectionTest";
@@ -91,14 +85,16 @@ export function ModelsPage({
   const [protocol, setProtocol] = useState<Protocol>("responses");
   const dialog = useRef<HTMLDialogElement>(null);
   const sequence = useRef(0);
+  const onDirtyRef = useRef(onDirty);
+  onDirtyRef.current = onDirty;
 
   const load = useCallback(async () => {
     const current = ++sequence.current;
     setLoading(true);
     try {
-      const next = await request<ModelSettings>("/api/model-settings");
+      const next = await request<ModelSettings | null>("/api/model-settings");
       if (current !== sequence.current) return;
-      if (!next || !Array.isArray(next.models))
+      if (next === null || !Array.isArray(next.models))
         throw new Error("The server returned unreadable model settings.");
       setSettings(next);
       setLoadError("");
@@ -128,37 +124,40 @@ export function ModelsPage({
     );
   };
   const exposedID = (m: ManagedModel) => value(m).alias.trim() || m.id;
-  const changed = rows.filter(isChanged);
+  const changed = rows.filter((m) => isChanged(m));
   const usage = new Map<string, number>();
   for (const m of rows)
     if (value(m).enabled)
-      usage.set(exposedID(m), (usage.get(exposedID(m)) || 0) + 1);
+      usage.set(exposedID(m), (usage.get(exposedID(m)) ?? 0) + 1);
   const isDuplicate = (m: ManagedModel) =>
     value(m).enabled &&
     !!value(m).alias.trim() &&
-    (usage.get(exposedID(m)) || 0) > 1;
-  const blocked = changed.some(isDuplicate);
+    (usage.get(exposedID(m)) ?? 0) > 1;
+  const blocked = changed.some((m) => isDuplicate(m));
 
+  // Runs when the page becomes dirty or clean, not on every new onDirty.
+  const dirty = changed.length > 0;
   useEffect(() => {
-    if (!changed.length) return;
-    onDirty(true);
+    if (!dirty) return undefined;
+    const report = onDirtyRef.current;
+    report(true);
     const warn = (e: BeforeUnloadEvent) => e.preventDefault();
     window.addEventListener("beforeunload", warn);
     return () => {
       window.removeEventListener("beforeunload", warn);
-      onDirty(false);
+      report(false);
     };
-  }, [changed.length > 0]);
+  }, [dirty]);
   useEffect(() => {
-    if (selected) dialog.current?.showModal();
-    else dialog.current?.close();
+    if (selected === null || selected === "") dialog.current?.close();
+    else dialog.current?.showModal();
   }, [selected]);
   // A modal left open inside the hidden page would block the page shown.
   useEffect(() => {
     if (!active) setSelected(null);
   }, [active]);
   useEffect(() => {
-    if (!copied) return;
+    if (!copied) return undefined;
     const timer = setTimeout(() => setCopied(""), 1800);
     return () => clearTimeout(timer);
   }, [copied]);
@@ -170,7 +169,10 @@ export function ModelsPage({
   function revert(m?: ManagedModel) {
     setSaveError("");
     setConflict(false);
-    if (!m) return setDrafts({});
+    if (!m) {
+      setDrafts({});
+      return;
+    }
     setDrafts((all) => {
       const next = { ...all };
       delete next[keyOf(m)];
@@ -178,21 +180,25 @@ export function ModelsPage({
     });
   }
   async function save() {
-    if (!settings || !changed.length || blocked) return;
+    if (!settings || changed.length === 0 || blocked) return;
     setSaving(true);
     setSaveError("");
     setConflict(false);
     try {
-      const next = await request<ModelSettings>("/api/model-settings", "PUT", {
-        revision: settings.revision,
-        models: changed.map((m) => ({
-          id: m.id,
-          provider: m.provider,
-          enabled: value(m).enabled,
-          alias: value(m).alias.trim(),
-        })),
-      });
-      if (!next || !Array.isArray(next.models))
+      const next = await request<ModelSettings | null>(
+        "/api/model-settings",
+        "PUT",
+        {
+          revision: settings.revision,
+          models: changed.map((m) => ({
+            id: m.id,
+            provider: m.provider,
+            enabled: value(m).enabled,
+            alias: value(m).alias.trim(),
+          })),
+        },
+      );
+      if (next === null || !Array.isArray(next.models))
         throw new Error("The server returned unreadable model settings.");
       sequence.current++;
       setSettings(next);
@@ -210,7 +216,7 @@ export function ModelsPage({
     if (await copy(id)) setCopied(id);
   }
 
-  const providers = [...new Set(rows.map((m) => m.provider))].sort((a, b) =>
+  const providers = [...new Set(rows.map((m) => m.provider))].toSorted((a, b) =>
     providerName(a).localeCompare(providerName(b)),
   );
   const query = search.trim().toLowerCase();
@@ -226,11 +232,11 @@ export function ModelsPage({
           .toLowerCase()
           .includes(query),
     )
-    .sort(
+    .toSorted(
       (a, b) =>
-        (b.created || 0) - (a.created || 0) || a.name.localeCompare(b.name),
+        (b.created ?? 0) - (a.created ?? 0) || a.name.localeCompare(b.name),
     );
-  const detail = rows.find((m) => keyOf(m) === selected) || null;
+  const detail = rows.find((m) => keyOf(m) === selected) ?? null;
 
   // The test runs in the browser, which can only call its own origin. When the
   // public address is another origin, the same server answers on this one.
@@ -241,9 +247,9 @@ export function ModelsPage({
   const testBlock = (m: ManagedModel) =>
     isChanged(m)
       ? "Save your changes to this model first."
-      : !m.enabled
-        ? "Enable this model and save to test it."
-        : undefined;
+      : m.enabled
+        ? undefined
+        : "Enable this model and save to test it.";
 
   return (
     <>
@@ -297,16 +303,12 @@ export function ModelsPage({
       </div>
       {providers.map((p) => {
         const group = filtered.filter((m) => m.provider === p);
-        if (!group.length) return null;
+        if (group.length === 0) return null;
         const all = rows.filter((m) => m.provider === p);
-        const open = group.filter((m) => !m.readOnly);
+        const open = group.filter((m) => (m.readOnly ?? "") === "");
         const allOn = open.every((m) => value(m).enabled);
         return (
-          <section
-            className="model-group"
-            key={p}
-            style={{ "--provider": providerColor(p) } as CSSProperties}
-          >
+          <section className="model-group" key={p} style={providerStyle(p)}>
             <div className="model-group-heading">
               <ProviderBrand provider={p} />
               <h2>{providerName(p)}</h2>
@@ -320,8 +322,8 @@ export function ModelsPage({
                   disabled={saving}
                   onClick={() => {
                     setSaveError("");
-                    setDrafts((drafts) => {
-                      const next = { ...drafts };
+                    setDrafts((previous) => {
+                      const next = { ...previous };
                       for (const m of open)
                         next[keyOf(m)] = { ...value(m), enabled: !allOn };
                       return next;
@@ -342,7 +344,8 @@ export function ModelsPage({
             <ul className="model-rows">
               {group.map((m) => {
                 const current = value(m);
-                const locked = !editable || saving || !!m.readOnly;
+                const readOnly = m.readOnly ?? "";
+                const locked = !editable || saving || !!readOnly;
                 const duplicate = isDuplicate(m);
                 const exposed = exposedID(m);
                 return (
@@ -368,7 +371,7 @@ export function ModelsPage({
                       <button onClick={() => setSelected(keyOf(m))}>
                         {m.name}
                       </button>
-                      {m.readOnly && <p>{m.readOnly}</p>}
+                      {readOnly && <p>{readOnly}</p>}
                     </div>
                     <div className="model-alias">
                       <div className="model-slug">
@@ -430,15 +433,15 @@ export function ModelsPage({
           </section>
         );
       })}
-      {!filtered.length &&
-        (loading && !rows.length ? (
+      {filtered.length === 0 &&
+        (loading && rows.length === 0 ? (
           <div className="loading" role="status" aria-label="Loading">
             <RefreshCw size={22} className="spinning" />
           </div>
         ) : (
           <div className="empty">
-            <p>{rows.length ? "No matching models" : "No models yet"}</p>
-            {rows.length ? (
+            <p>{rows.length > 0 ? "No matching models" : "No models yet"}</p>
+            {rows.length > 0 ? (
               <button
                 className="secondary"
                 onClick={() => {
@@ -498,6 +501,7 @@ export function ModelsPage({
           </button>
         </div>
       )}
+      {/* oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- backdrop click; Escape is handled by onCancel */}
       <dialog
         ref={dialog}
         onCancel={() => setSelected(null)}
@@ -547,23 +551,24 @@ export function ModelsPage({
                   <dd>{detail.context.toLocaleString()} tokens</dd>
                 </div>
               )}
-              {!!detail.maxOutput && (
+              {detail.maxOutput !== undefined && detail.maxOutput !== 0 && (
                 <div>
                   <dt>Max output</dt>
                   <dd>{detail.maxOutput.toLocaleString()} tokens</dd>
                 </div>
               )}
-              {!!detail.inputs?.length && (
+              {detail.inputs !== undefined && detail.inputs.length > 0 && (
                 <div>
                   <dt>Input</dt>
                   <dd>{detail.inputs.join(", ")}</dd>
                 </div>
               )}
-              {detail.reasoningSupported && (
+              {detail.reasoningSupported === true && (
                 <div>
                   <dt>Reasoning</dt>
                   <dd>
-                    {detail.reasoning?.length
+                    {detail.reasoning !== undefined &&
+                    detail.reasoning.length > 0
                       ? detail.reasoning.join(", ")
                       : "Supported"}
                   </dd>

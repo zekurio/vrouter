@@ -2,8 +2,10 @@ package gateway
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -42,6 +44,7 @@ func (r *protocolReply) find(key string) *replyBlock {
 	}
 	return nil
 }
+
 func (r *protocolReply) responseItem(b *replyBlock, done bool) map[string]any {
 	status := "in_progress"
 	if done {
@@ -68,7 +71,8 @@ func (r *protocolReply) responseItem(b *replyBlock, done bool) map[string]any {
 	}
 }
 
-func (r *protocolReply) counts() (input, output, cached, write, reasoning int64) {
+// counts returns input, output, cache read, cache write, and reasoning tokens.
+func (r *protocolReply) counts() (int64, int64, int64, int64, int64) {
 	number := func(v any) int64 {
 		switch v := v.(type) {
 		case json.Number:
@@ -83,7 +87,8 @@ func (r *protocolReply) counts() (input, output, cached, write, reasoning int64)
 		}
 		return 0
 	}
-	input, output = number(r.usage["input_tokens"]), number(r.usage["output_tokens"])
+	input, output := number(r.usage["input_tokens"]), number(r.usage["output_tokens"])
+	var cached, write, reasoning int64
 	if detail := object(r.usage["input_tokens_details"]); detail != nil {
 		cached = number(detail["cached_tokens"])
 	}
@@ -95,8 +100,9 @@ func (r *protocolReply) counts() (input, output, cached, write, reasoning int64)
 		write = number(r.usage["cache_creation_input_tokens"])
 		input += cached + write
 	}
-	return
+	return input, output, cached, write, reasoning
 }
+
 func (r *protocolReply) wireUsage(protocol wireProtocol) map[string]any {
 	in, out, cache, write, reasoning := r.counts()
 	switch protocol {
@@ -104,10 +110,13 @@ func (r *protocolReply) wireUsage(protocol wireProtocol) map[string]any {
 		return map[string]any{"input_tokens": in, "output_tokens": out, "total_tokens": in + out, "input_tokens_details": map[string]any{"cached_tokens": cache}, "output_tokens_details": map[string]any{"reasoning_tokens": reasoning}}
 	case messagesProtocol:
 		return map[string]any{"input_tokens": in - cache - write, "output_tokens": out, "cache_read_input_tokens": cache, "cache_creation_input_tokens": write}
+	case chatProtocol:
+		fallthrough
 	default:
 		return map[string]any{"prompt_tokens": in, "completion_tokens": out, "total_tokens": in + out, "prompt_tokens_details": map[string]any{"cached_tokens": cache}, "completion_tokens_details": map[string]any{"reasoning_tokens": reasoning}}
 	}
 }
+
 func (r *protocolReply) finishReason(protocol wireProtocol) string {
 	if protocol == messagesProtocol {
 		if r.status == "incomplete" {
@@ -133,10 +142,11 @@ func (r *protocolReply) finishReason(protocol wireProtocol) string {
 	}
 	return "stop"
 }
+
 func (r *protocolReply) encode(protocol wireProtocol) map[string]any {
 	switch protocol {
 	case responsesProtocol:
-		items := []any{}
+		items := make([]any, 0, len(r.blocks))
 		for _, b := range r.blocks {
 			items = append(items, r.responseItem(b, r.terminal))
 		}
@@ -158,6 +168,8 @@ func (r *protocolReply) encode(protocol wireProtocol) map[string]any {
 			}
 		}
 		return map[string]any{"id": r.id, "type": "message", "role": "assistant", "model": r.model, "content": content, "stop_reason": r.finishReason(protocol), "stop_sequence": nil, "usage": r.wireUsage(protocol)}
+	case chatProtocol:
+		fallthrough
 	default:
 		message := map[string]any{"role": "assistant", "content": nil}
 		text, thought, refusal := "", "", ""
@@ -229,6 +241,7 @@ func (e *protocolEmitter) event(name string, body any) error {
 	}
 	return nil
 }
+
 func (e *protocolEmitter) chat(delta map[string]any, finish any, usage bool) error {
 	choices := []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finish}}
 	if usage {
@@ -240,6 +253,7 @@ func (e *protocolEmitter) chat(delta map[string]any, finish any, usage bool) err
 	}
 	return e.event("", body)
 }
+
 func (e *protocolEmitter) begin() error {
 	if e.reply.started {
 		return nil
@@ -262,10 +276,13 @@ func (e *protocolEmitter) begin() error {
 		message := e.reply.encode(messagesProtocol)
 		message["stop_reason"] = nil
 		return e.event("message_start", map[string]any{"type": "message_start", "message": message})
+	case chatProtocol:
+		fallthrough
 	default:
 		return e.chat(map[string]any{"role": "assistant", "content": ""}, nil, false)
 	}
 }
+
 func (e *protocolEmitter) start(b *replyBlock) error {
 	if err := e.begin(); err != nil {
 		return err
@@ -301,6 +318,8 @@ func (e *protocolEmitter) start(b *replyBlock) error {
 			block = map[string]any{"type": "thinking", "thinking": ""}
 		}
 		return e.event("content_block_start", map[string]any{"type": "content_block_start", "index": b.index, "content_block": block})
+	case chatProtocol:
+		fallthrough
 	default:
 		if b.kind == "tool" {
 			return e.chat(map[string]any{"tool_calls": []any{map[string]any{"index": e.toolIndex(b), "id": b.callID, "type": "function", "function": map[string]any{"name": b.name, "arguments": ""}}}}, nil, false)
@@ -308,6 +327,7 @@ func (e *protocolEmitter) start(b *replyBlock) error {
 		return nil
 	}
 }
+
 func (e *protocolEmitter) toolIndex(b *replyBlock) int {
 	n := 0
 	for _, item := range e.reply.blocks {
@@ -320,6 +340,7 @@ func (e *protocolEmitter) toolIndex(b *replyBlock) int {
 	}
 	return n
 }
+
 func (e *protocolEmitter) delta(b *replyBlock, delta string) error {
 	if delta == "" {
 		return nil
@@ -353,6 +374,8 @@ func (e *protocolEmitter) delta(b *replyBlock, delta string) error {
 			d = map[string]any{"type": "thinking_delta", "thinking": delta}
 		}
 		return e.event("content_block_delta", map[string]any{"type": "content_block_delta", "index": b.index, "delta": d})
+	case chatProtocol:
+		fallthrough
 	default:
 		d := map[string]any{"content": delta}
 		if b.kind == "tool" {
@@ -367,6 +390,7 @@ func (e *protocolEmitter) delta(b *replyBlock, delta string) error {
 		return e.chat(d, nil, false)
 	}
 }
+
 func (e *protocolEmitter) stop(b *replyBlock) error {
 	if b.done {
 		return nil
@@ -418,6 +442,7 @@ func (e *protocolEmitter) stop(b *replyBlock) error {
 	}
 	return nil
 }
+
 func (e *protocolEmitter) finish() error {
 	if err := e.begin(); err != nil {
 		return err
@@ -445,6 +470,8 @@ func (e *protocolEmitter) finish() error {
 			return err
 		}
 		return e.event("message_stop", map[string]any{"type": "message_stop"})
+	case chatProtocol:
+		fallthrough
 	default:
 		if e.reply.errorBody != nil {
 			return e.event("", map[string]any{"error": e.reply.errorBody})
@@ -494,6 +521,7 @@ func (s *replySink) begin() error {
 	}
 	return nil
 }
+
 func (s *replySink) start(key, kind, id, callID, name string) (*replyBlock, error) {
 	if b := s.reply.find(key); b != nil {
 		return b, nil
@@ -504,7 +532,7 @@ func (s *replySink) start(key, kind, id, callID, name string) (*replyBlock, erro
 	}
 	for _, b := range s.reply.blocks {
 		if b.id == id {
-			id += "_" + fmt.Sprint(len(s.reply.blocks))
+			id += "_" + strconv.Itoa(len(s.reply.blocks))
 			break
 		}
 	}
@@ -520,15 +548,16 @@ func (s *replySink) start(key, kind, id, callID, name string) (*replyBlock, erro
 	}
 	return b, nil
 }
+
 func (s *replySink) append(b *replyBlock, text string) error {
 	if b == nil {
-		return fmt.Errorf("Provider sent a delta without a content block")
+		return errors.New("Provider sent a delta without a content block")
 	}
 	if b.done {
-		return fmt.Errorf("Provider sent a delta after its content block ended")
+		return errors.New("Provider sent a delta after its content block ended")
 	}
 	if len(b.text)+len(text) > 16<<20 {
-		return fmt.Errorf("Provider output exceeds 16 MiB per content block")
+		return errors.New("Provider output exceeds 16 MiB per content block")
 	}
 	b.text += text
 	if s.emitter != nil {
@@ -536,15 +565,17 @@ func (s *replySink) append(b *replyBlock, text string) error {
 	}
 	return nil
 }
+
 func (s *replySink) full(b *replyBlock, text string) error {
 	if text == b.text {
 		return nil
 	}
 	if !strings.HasPrefix(text, b.text) {
-		return fmt.Errorf("Provider final content does not match its stream")
+		return errors.New("Provider final content does not match its stream")
 	}
 	return s.append(b, strings.TrimPrefix(text, b.text))
 }
+
 func (s *replySink) stop(b *replyBlock) error {
 	if b == nil {
 		return nil
@@ -558,6 +589,7 @@ func (s *replySink) stop(b *replyBlock) error {
 	b.done = true
 	return nil
 }
+
 func (s *replySink) finish() error {
 	s.reply.terminal = true
 	if s.reply.errorBody != nil {
@@ -568,7 +600,7 @@ func (s *replySink) finish() error {
 			return err
 		}
 		if b.kind == "tool" && objectFromJSON(b.text) == nil && s.reply.status == "completed" {
-			return fmt.Errorf("Provider returned invalid tool arguments")
+			return errors.New("Provider returned invalid tool arguments")
 		}
 	}
 	if s.emitter != nil {

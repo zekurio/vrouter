@@ -29,7 +29,7 @@ export function ConnectionTest({
   model: string;
   provider: string;
   // Why the test cannot run right now, if it cannot.
-  blocked?: string;
+  blocked?: string | undefined;
 }) {
   const [key, setKey] = useState("");
   const [running, setRunning] = useState(false);
@@ -38,11 +38,12 @@ export function ConnectionTest({
   // Path of the request on screen. The protocol can change after a run.
   const [path, setPath] = useState("");
   const abort = useRef<AbortController | null>(null);
+  const isBlocked = blocked !== undefined && blocked !== "";
   useEffect(() => () => abort.current?.abort(), []);
 
   async function run() {
     const secret = key.trim();
-    if (!secret || running || blocked) return;
+    if (!secret || running || isBlocked) return;
     const controller = new AbortController();
     abort.current = controller;
     setRunning(true);
@@ -67,7 +68,7 @@ export function ConnectionTest({
     setOutcome(result);
   }
 
-  const shown = running || outcome;
+  const shown = running || outcome !== null;
   const facts = outcome && [
     outcome.status ? `HTTP ${outcome.status}` : "",
     `${(outcome.ms / 1000).toFixed(1)}s`,
@@ -77,7 +78,7 @@ export function ConnectionTest({
     <section className="connection-test" aria-labelledby="connection-test">
       <h3 id="connection-test">Test this model</h3>
       <p>
-        Sends "Reply with OK." to {base}
+        Sends &quot;Reply with OK.&quot; to {base}
         {protocolPath(protocol)} with your API key. The request counts against
         that key like any other. The key is not saved.
       </p>
@@ -102,14 +103,14 @@ export function ConnectionTest({
         ) : (
           <button
             className="primary"
-            disabled={!key.trim() || !!blocked}
+            disabled={!key.trim() || isBlocked}
             onClick={() => void run()}
           >
             Run test
           </button>
         )}
       </div>
-      {blocked && <p>{blocked}</p>}
+      {isBlocked && <p>{blocked}</p>}
       {shown && (
         <div className="connection-test-result" role="status">
           <div className="connection-test-status">
@@ -119,7 +120,7 @@ export function ConnectionTest({
             <code>POST {path}</code>
             {facts && <span>{facts.filter(Boolean).join(" · ")}</span>}
           </div>
-          {outcome?.detail && <p>{outcome.detail}</p>}
+          {outcome !== null && outcome.detail !== "" && <p>{outcome.detail}</p>}
           {outcome && outcome.ignored.length > 0 && (
             <p>Provider does not use: {outcome.ignored.join(", ")}.</p>
           )}

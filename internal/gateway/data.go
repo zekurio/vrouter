@@ -12,8 +12,10 @@ import (
 	"syscall"
 )
 
-const dataFileName = "vrouter.json"
-const dataMaxBytes = 128 << 20
+const (
+	dataFileName = "vrouter.json"
+	dataMaxBytes = 128 << 20
+)
 
 // One file owns accounts, client keys, policy, and accounting. The scoped
 // views cannot commit one half of a change without the other half.
@@ -35,13 +37,13 @@ func openDataStore(dir string) (*dataStore, error) {
 	if strings.TrimSpace(dir) == "" {
 		return nil, errors.New("gateway: data directory is required")
 	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	if err := storeRefuseSymlink(dir); err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(dir, 0700); err != nil {
+	if err := os.Chmod(dir, 0o700); err != nil { //nolint:gosec // directories need the execute bit; 0700 is owner-only
 		return nil, err
 	}
 	s := &dataStore{path: filepath.Join(dir, dataFileName)}
@@ -144,7 +146,7 @@ func readPrivateState(path string, limit int64) ([]byte, error) {
 	if !info.Mode().IsRegular() || info.Size() > limit {
 		return nil, errors.New("gateway: invalid state file")
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // path is the state file inside the configured data directory
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +158,7 @@ func readPrivateState(path string, limit int64) ([]byte, error) {
 	if !info.Mode().IsRegular() || info.Size() > limit {
 		return nil, errors.New("gateway: invalid state file")
 	}
-	if err := f.Chmod(0600); err != nil {
+	if err := f.Chmod(0o600); err != nil {
 		return nil, err
 	}
 	raw, err := io.ReadAll(io.LimitReader(f, limit+1))

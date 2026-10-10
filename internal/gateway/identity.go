@@ -30,7 +30,7 @@ const (
 	idTokenSkew     = 5 * time.Second
 )
 
-var jwtSegments = base64.RawURLEncoding.Strict()
+var jwtSegments = base64.RawURLEncoding.Strict() //nolint:gochecknoglobals // immutable encoding
 
 // verifiedIdentity is the validated account identity carried by an OpenAI ID
 // token. The subject is the account identity; email and subject are not
@@ -129,7 +129,7 @@ func (s *server) fetchIDTokenKeys(ctx context.Context) ([]byte, error) {
 	if s.client == nil {
 		return nil, errors.New("id token verification has no HTTP client")
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, openAIJWKSURL, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, openAIJWKSURL, http.NoBody)
 	if err != nil {
 		return nil, errors.New("could not build the OpenAI signing key request")
 	}
@@ -359,7 +359,7 @@ func rsaPublicKey(key jwkKey) (*rsa.PublicKey, error) {
 		return nil, errors.New("key modulus is too small")
 	}
 	// The exponent must fit the platform's int and be a plausible odd value.
-	if !exponent.IsInt64() || exponent.Int64() < 3 || exponent.Int64() > 1<<31-1 || exponent.Bit(0) == 0 {
+	if !exponent.IsInt64() || exponent.Int64() < 3 || exponent.Int64() >= 1<<31 || exponent.Bit(0) == 0 {
 		return nil, errors.New("key exponent is not usable")
 	}
 	return &rsa.PublicKey{N: modulus, E: int(exponent.Int64())}, nil

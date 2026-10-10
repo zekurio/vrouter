@@ -164,10 +164,10 @@ func registryValidate(state diskRegistry) error {
 	}
 	for gatewayID, records := range state.Telemetry {
 		if _, exists := seenGateways[gatewayID]; !exists {
-			return fmt.Errorf("gateway: telemetry references an unknown gateway")
+			return errors.New("gateway: telemetry references an unknown gateway")
 		}
 		if len(records) > telemetryRetention {
-			return fmt.Errorf("gateway: telemetry exceeds the retention limit")
+			return errors.New("gateway: telemetry exceeds the retention limit")
 		}
 		for i := range records {
 			if err := validateTelemetryRecord(records[i]); err != nil {
@@ -319,7 +319,7 @@ func (m *manager) keyByHash(secret string) (keyRecord, bool) {
 
 // gateways lists every gateway, oldest first. It answers the same for any
 // selected gateway, so a stale selection can still load the list.
-func (s *server) gateways(w http.ResponseWriter, r *http.Request) {
+func (s *server) gateways(w http.ResponseWriter, _ *http.Request) {
 	gateways := s.manager.registry.snapshot().Gateways
 	sort.SliceStable(gateways, func(i, j int) bool {
 		if gateways[i].CreatedAt.Equal(gateways[j].CreatedAt) {

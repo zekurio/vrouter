@@ -1,20 +1,36 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["typescript", "unicorn", "oxc", "react", "import"],
+  "plugins": [
+    "typescript",
+    "unicorn",
+    "oxc",
+    "react",
+    "import",
+    "jsx-a11y",
+    "promise"
+  ],
+  "options": {
+    // Type-aware rules run through oxlint-tsgolint.
+    "typeAware": true,
+    "denyWarnings": true,
+    "reportUnusedDisableDirectives": "error"
+  },
   "categories": {
     "correctness": "error",
-    "suspicious": "warn",
-    "perf": "warn"
+    "suspicious": "error",
+    "perf": "error",
+    "pedantic": "error"
   },
   "env": {
     "browser": true,
-    "es2022": true
+    "es2023": true
   },
   "settings": {
     "react": { "version": "19" }
   },
   "rules": {
-    "react-hooks/exhaustive-deps": "warn",
+    "react-hooks/exhaustive-deps": "error",
+    // The new JSX transform needs no React import.
     "react/react-in-jsx-scope": "off",
     // React Compiler rules. The UI doesn't use the compiler.
     "react/purity": "off",
@@ -22,16 +38,34 @@
     "react/set-state-in-effect": "off",
     // Duplicates react-hooks/exhaustive-deps.
     "react/exhaustive-effect-dependencies": "off",
-    // Keys for fragments of split text have nothing better than the index.
-    "react/no-array-index-key": "off",
-    // Stream readers have to await chunks in order.
-    "no-await-in-loop": "off",
-    // State updaters reuse the state's name, as in setDrafts((drafts) => ...).
-    "no-shadow": "off",
-    // toSorted() is outside the ES2022 lib.
-    "unicorn/no-array-sort": "off",
+    // DOM and React types are mutable, so nearly every parameter would need a
+    // hand-written readonly wrapper.
+    "typescript/prefer-readonly-parameter-types": "off",
+    // Size and nesting limits wait for a refactor, as on the Go side.
+    "eslint/max-lines": "off",
+    "eslint/max-lines-per-function": "off",
+    "eslint/max-depth": "off",
+    // role="status" on a div is valid ARIA, and <output> is form-associated.
+    "jsx-a11y/prefer-tag-over-role": "off",
+    // Conflicts with typescript/consistent-return: an effect that only
+    // sometimes has a cleanup has to say `return undefined`.
+    "unicorn/no-useless-undefined": "off",
+    "typescript/no-confusing-void-expression": [
+      "error",
+      { "ignoreArrowShorthand": true }
+    ],
+    // The listbox pattern puts listbox on <ul> and option on <li>.
+    "jsx-a11y/no-noninteractive-element-to-interactive-role": [
+      "error",
+      {
+        "ul": ["listbox", "menu", "menubar", "radiogroup", "tablist", "tree"],
+        "li": ["menuitem", "option", "row", "tab", "treeitem"]
+      }
+    ],
+    // Scrollable code blocks take focus so the keyboard can scroll them.
+    "jsx-a11y/no-noninteractive-tabindex": ["error", { "tags": ["pre"] }],
     "import/no-unassigned-import": [
-      "warn",
+      "error",
       { "allow": ["**/*.css", "@fontsource-variable/*"] }
     ]
   },

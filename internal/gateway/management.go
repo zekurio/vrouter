@@ -38,7 +38,7 @@ func (s *server) hasSession(r *http.Request) bool {
 
 func (s *server) setSession(w http.ResponseWriter, r *http.Request, value string, maxAge int) {
 	origin, _ := url.Parse(r.Header.Get("Origin"))
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure follows the client's scheme so plain-HTTP loopback sessions still work
 		Name:     sessionCookie,
 		Value:    value,
 		Path:     "/api",
@@ -82,7 +82,7 @@ func staticHandler(assets fs.FS) http.HandlerFunc {
 	files := http.FileServer(http.FS(assets))
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			w.WriteHeader(405)
+			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
 		path := strings.TrimPrefix(r.URL.Path, "/")
@@ -100,7 +100,7 @@ func staticHandler(assets fs.FS) http.HandlerFunc {
 	}
 }
 
-func (s *server) authStatus(w http.ResponseWriter, r *http.Request) {
+func (s *server) authStatus(w http.ResponseWriter, _ *http.Request) {
 	mode := "local"
 	if s.cfg.ExternalAuth {
 		mode = "external"

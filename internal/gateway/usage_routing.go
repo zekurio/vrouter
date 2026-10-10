@@ -73,9 +73,9 @@ func windowExhausted(w QuotaWindow) bool {
 	return w.Remaining <= 0
 }
 
-// quotaWindowScope names the routing limit a window enforces. family is set
-// for Claude windows that only limit one model family.
-func quotaWindowScope(a storedAccount, w QuotaWindow) (key, family string) {
+// quotaWindowScope returns the key of the routing limit a window enforces, and
+// the model family for Claude windows that only limit one family.
+func quotaWindowScope(a storedAccount, w QuotaWindow) (string, string) {
 	switch w.ID {
 	case "five-hour":
 		return "five_hour", ""

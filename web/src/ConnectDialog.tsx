@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, ExternalLink, RefreshCw, X } from "lucide-react";
 import { errorMessage, isStale, statusOf, type APIRequest } from "./api";
-import { ProviderBrand, providerColor, providerLabel } from "./ProviderBrand";
+import { ProviderBrand, providerLabel, providerStyle } from "./ProviderBrand";
 
 // Providers vrouter can sign in to. Codex is the pool for OpenAI sign-in.
 export const connectable = ["codex", "claude"];
@@ -19,7 +19,7 @@ type Props = {
   // "" shows the provider choice; a provider ID starts sign-in right away.
   provider: string;
   // Set when renewing a saved account instead of registering a new one.
-  accountId?: string;
+  accountId?: string | undefined;
   request: APIRequest;
   choose: (provider: string) => void;
   onClose: () => void;
@@ -47,7 +47,7 @@ export function ConnectDialog({
   const [now, setNow] = useState(Date.now());
   const [attempt, setAttempt] = useState(0);
   // Reconnect applies to the first attempt and retries. Add another starts fresh.
-  const [target, setTarget] = useState(accountId || "");
+  const [target, setTarget] = useState(accountId ?? "");
   const onConnectedRef = useRef(onConnected);
   onConnectedRef.current = onConnected;
   const live = useRef<Connection | null>(null);
@@ -58,6 +58,8 @@ export function ConnectDialog({
   const manualCode = session?.flow === "code";
   const deviceCode = session?.flow === "device";
   const action = `Open ${name} sign-in`;
+  const userCode = ready?.userCode ?? "";
+  const redirectUri = ready?.redirectUri ?? "";
 
   // Clears the old session in the same render so its link cannot be clicked.
   function restart(next: string) {
@@ -72,46 +74,50 @@ export function ConnectDialog({
   }
 
   useEffect(() => dialog.current?.showModal(), []);
-  // Frees a sign-in the server still holds. DELETE goes out even after the
-  // gateway's client has closed.
-  const cancel = (id: string) =>
-    void request(`/api/oauth/sessions/${id}`, "DELETE").catch(() => {});
-  // Leaving the dialog or starting over releases the session.
-  const release = () => {
-    const pending = live.current;
-    live.current = null;
-    if (pending && new Date(pending.expiresAt).getTime() > Date.now())
-      cancel(pending.id);
-  };
 
   useEffect(() => {
-    if (!provider) return;
+    if (!provider) return undefined;
     let stopped = false;
-    request<Connection>(
-      `/api/oauth/${provider}`,
-      "POST",
-      target ? { accountId: target } : undefined,
-    )
-      .then((next) => {
-        if (stopped) return cancel(next.id);
+    // Frees a sign-in the server still holds. DELETE goes out even after the
+    // gateway's client has closed.
+    const cancel = (sessionId: string) =>
+      void request(`/api/oauth/sessions/${sessionId}`, "DELETE").catch(
+        () => {},
+      );
+    const start = async () => {
+      try {
+        const next = await request<Connection>(
+          `/api/oauth/${provider}`,
+          "POST",
+          target ? { accountId: target } : undefined,
+        );
+        if (stopped) {
+          cancel(next.id);
+          return;
+        }
         live.current = next;
         setNow(Date.now());
         setSession(next);
         setPhase("pending");
-      })
-      .catch((err) => {
+      } catch (err) {
         if (stopped) return;
         setPhase("error");
         setError(errorMessage(err, "Could not start sign-in."));
-      });
+      }
+    };
+    void start();
+    // Leaving the dialog or starting over releases the session.
     return () => {
       stopped = true;
-      release();
+      const pending = live.current;
+      live.current = null;
+      if (pending && new Date(pending.expiresAt).getTime() > Date.now())
+        cancel(pending.id);
     };
   }, [provider, attempt, target, request]);
 
   useEffect(() => {
-    if (!session || phase !== "pending") return;
+    if (!session || phase !== "pending") return undefined;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
@@ -135,7 +141,7 @@ export function ConnectDialog({
         }
         if (result.status === "error") {
           setPhase("error");
-          setError(result.error || "Provider sign-in failed.");
+          setError((result.error ?? "") || "Provider sign-in failed.");
           return;
         }
         setError("");
@@ -198,7 +204,7 @@ export function ConnectDialog({
     <dialog
       ref={dialog}
       className="connect-dialog"
-      style={{ "--provider": providerColor(id) } as CSSProperties}
+      style={providerStyle(id)}
       onCancel={(e) => {
         e.preventDefault();
         onClose();
@@ -227,7 +233,7 @@ export function ConnectDialog({
           </button>
         )}
       </div>
-      {!name ? (
+      {name === "" ? (
         <>
           <p className="dialog-lead">
             Tokens stay on the server and never pass through this browser.
@@ -236,7 +242,7 @@ export function ConnectDialog({
             {connectable.map((p) => (
               <button
                 key={p}
-                style={{ "--provider": providerColor(p) } as CSSProperties}
+                style={providerStyle(p)}
                 onClick={() => choose(p)}
               >
                 <ProviderBrand provider={p} />
@@ -253,8 +259,8 @@ export function ConnectDialog({
       ) : phase === "connected" ? (
         <>
           <p className="dialog-lead connect-done">
-            <Check size={16} /> Added to the {name} pool. vrouter hasn't sent a
-            test request, so confirm with a client call.
+            <Check size={16} /> Added to the {name} pool. vrouter hasn&apos;t
+            sent a test request, so confirm with a client call.
           </p>
           <div className="dialog-actions">
             <button className="secondary" onClick={() => restart("")}>
@@ -289,9 +295,9 @@ export function ConnectDialog({
                   ? "Open sign-in and enter this one-time code."
                   : "Opens in a new tab."}
               </p>
-              {deviceCode && ready?.userCode && (
+              {deviceCode && userCode && (
                 <div className="copy-field">
-                  <code>{ready.userCode}</code>
+                  <code>{userCode}</code>
                 </div>
               )}
               {ready ? (
@@ -371,7 +377,7 @@ export function ConnectDialog({
                   placeholder={
                     manualCode
                       ? "code#state"
-                      : `${ready?.redirectUri || "http://localhost/…"}?code=…&state=…`
+                      : `${redirectUri || "http://localhost/…"}?code=…&state=…`
                   }
                   aria-describedby={
                     callbackError

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"slices"
 	"time"
 	"unicode/utf8"
 )
@@ -94,8 +95,7 @@ func (m *manager) telemetry(gatewayID string) telemetryResponse {
 	response := telemetryResponse{Requests: []telemetryRecord{}, RetentionLimit: telemetryRetention}
 	records := m.registry.snapshot().Telemetry[gatewayID]
 	response.Totals.Requests = len(records)
-	for i := len(records) - 1; i >= 0; i-- {
-		record := records[i]
+	for _, record := range slices.Backward(records) {
 		response.Requests = append(response.Requests, record)
 		if !record.UsageKnown {
 			continue
@@ -107,7 +107,7 @@ func (m *manager) telemetry(gatewayID string) telemetryResponse {
 	return response
 }
 
-func (s *server) telemetryHandler(w http.ResponseWriter, r *http.Request) {
+func (s *server) telemetryHandler(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, s.manager.telemetry(s.gatewayID))
 }
 
@@ -635,6 +635,7 @@ func boundedField(value string) string {
 // unwraps for http.ResponseController so streaming flushes are preserved.
 type attemptWriter struct {
 	http.ResponseWriter
+
 	status int
 }
 

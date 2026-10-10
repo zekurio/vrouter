@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"maps"
 )
 
 const claudeOAuthIdentity = "You are Claude Code, Anthropic's official CLI for Claude."
@@ -41,9 +42,7 @@ func claudeOAuthPayload(payload map[string]json.RawMessage, account storedAccoun
 		return nil, errors.New("invalid Claude system blocks")
 	}
 	prepared := make(map[string]json.RawMessage, len(payload)+1)
-	for name, value := range payload {
-		prepared[name] = value
-	}
+	maps.Copy(prepared, payload)
 	prepared["system"] = system
 	return prepared, nil
 }

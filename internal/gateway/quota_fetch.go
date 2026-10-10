@@ -20,8 +20,7 @@ func (s *server) providerUsageJSON(ctx context.Context, a storedAccount, target 
 		}
 		retry := errors.Is(err, errProviderUnavailable) || errors.Is(err, errProviderTimeout)
 		delay := 250 * time.Millisecond
-		var httpError *providerError
-		if errors.As(err, &httpError) {
+		if httpError, ok := errors.AsType[*providerError](err); ok {
 			retry = httpError.Status == 502 || httpError.Status == 503 || httpError.Status == 504
 			delay = max(delay, time.Until(httpError.RetryAt))
 		}
@@ -41,8 +40,7 @@ func (s *server) providerUsageJSON(ctx context.Context, a storedAccount, target 
 
 func quotaFailure(err error, now time.Time) (string, time.Time) {
 	retryAt := now.Add(10 * time.Second)
-	var httpError *providerError
-	if errors.As(err, &httpError) {
+	if httpError, ok := errors.AsType[*providerError](err); ok {
 		if httpError.Status == 429 || httpError.Status == 401 || httpError.Status == 403 {
 			retryAt = now.Add(time.Minute)
 		}

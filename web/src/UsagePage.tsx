@@ -4,13 +4,12 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type PointerEvent,
 } from "react";
 import { RefreshCw } from "lucide-react";
 import { errorMessage, isStale, type APIRequest } from "./api";
 import { Private } from "./Privacy";
-import { ProviderBrand, providerColor, providerLabel } from "./ProviderBrand";
+import { ProviderBrand, providerLabel, providerStyle } from "./ProviderBrand";
 import { Select } from "./Select";
 import {
   filterRequests,
@@ -40,6 +39,10 @@ type Props = {
   reloadKey: string;
 };
 type View = "model" | "key" | "day" | "requests";
+// An empty log can arrive as null.
+type TelemetryReply = Omit<Telemetry, "requests"> & {
+  requests: RequestRecord[] | null;
+};
 
 const number = (n: number) => n.toLocaleString();
 const plural = (n: number, noun: string) =>
@@ -58,8 +61,7 @@ const outcomes: { value: OutcomeFilter; label: string }[] = [
 
 // Chart series follow the provider, so a provider keeps its color in every
 // view.
-const series = (provider: string) =>
-  ({ "--provider": providerColor(provider) }) as CSSProperties;
+const series = providerStyle;
 
 const dayLabel = (time: number) =>
   new Date(time).toLocaleDateString(undefined, {
@@ -98,9 +100,9 @@ export function UsagePage({ request, reloadKey }: Props) {
     const current = ++sequence.current;
     setLoading(true);
     try {
-      const result = await request<Telemetry>("/api/telemetry");
+      const result = await request<TelemetryReply>("/api/telemetry");
       if (current !== sequence.current) return;
-      setData({ ...result, requests: result.requests || [] });
+      setData({ ...result, requests: result.requests ?? [] });
       setError("");
     } catch (err) {
       if (current !== sequence.current || isStale(err)) return;
@@ -114,7 +116,10 @@ export function UsagePage({ request, reloadKey }: Props) {
   }, [reloadKey, load]);
 
   const all = data?.requests;
-  const usage = useMemo(() => (all?.length ? summarize(all) : null), [all]);
+  const usage = useMemo(
+    () => (all !== undefined && all.length > 0 ? summarize(all) : null),
+    [all],
+  );
   const total = usage?.total;
 
   return (
@@ -310,7 +315,7 @@ function CostChart({ usage }: { usage: Usage }) {
   const [chosen, setChosen] = useState<Interval | null>(null);
   useEffect(() => {
     const node = frame.current;
-    if (!node) return;
+    if (!node) return undefined;
     const observer = new ResizeObserver(() => setWidth(node.clientWidth));
     observer.observe(node);
     return () => observer.disconnect();
@@ -321,7 +326,7 @@ function CostChart({ usage }: { usage: Usage }) {
   const providers = usage.providers.filter((p) => p.cost > 0);
   const sum = (b: Bucket) =>
     providers.reduce((n, p) => n + (b.byProvider[p.name] ?? 0), 0);
-  const peak = Math.max(...buckets.map(sum), 0);
+  const peak = Math.max(...buckets.map((b) => sum(b)), 0);
   const step = tickStep(peak || 1);
   const top = Math.ceil((peak || 1) / step) * step;
   const ticks = Array.from(
@@ -342,7 +347,13 @@ function CostChart({ usage }: { usage: Usage }) {
     setHover(Math.min(Math.max(index, 0), buckets.length - 1));
   }
   const at: Bucket | null = hover === null ? null : (buckets[hover] ?? null);
-  const marks = [0, Math.floor((buckets.length - 1) / 2), buckets.length - 1];
+  // Axis labels at the first, middle and last bucket.
+  const marks = [
+    ...new Set([0, Math.floor((buckets.length - 1) / 2), buckets.length - 1]),
+  ].flatMap((i) => {
+    const b = buckets[i];
+    return b ? [{ i, start: b.start }] : [];
+  });
 
   return (
     <figure className="usage-chart">
@@ -397,7 +408,7 @@ function CostChart({ usage }: { usage: Usage }) {
                 </text>
               </g>
             ))}
-            {[...new Set(marks)].map((i) => (
+            {marks.map(({ i, start }) => (
               <text
                 key={i}
                 x={
@@ -418,15 +429,17 @@ function CostChart({ usage }: { usage: Usage }) {
                       : "middle"
                 }
               >
-                {axisLabel[interval](buckets[i].start)}
+                {axisLabel[interval](start)}
               </text>
             ))}
             {buckets.map((b, i) => {
-              const parts = providers.filter((p) => b.byProvider[p.name] > 0);
+              const parts = providers.filter(
+                (p) => (b.byProvider[p.name] ?? 0) > 0,
+              );
               let floor = base;
               return parts.map((p, n) => {
                 // Any cost shows, and stacked segments keep a gap between them.
-                const height = Math.max(base - y(b.byProvider[p.name]), 2);
+                const height = Math.max(base - y(b.byProvider[p.name] ?? 0), 2);
                 const gap = n > 0 && height > 3 ? 2 : 0;
                 floor -= height;
                 return (
@@ -548,7 +561,7 @@ function GroupTable({
 function RequestLog({ requests }: { requests: RequestRecord[] }) {
   const [outcome, setOutcome] = useState<OutcomeFilter>("all");
   const [key, setKey] = useState("");
-  const keyNames = [...new Set(requests.map(keyLabel))].sort();
+  const keyNames = [...new Set(requests.map((r) => keyLabel(r)))].toSorted();
   const selectedKey = keyNames.includes(key) ? key : "";
   const rows = filterRequests(requests, outcome, selectedKey);
   return (
@@ -658,12 +671,12 @@ function Row({ record: r }: { record: RequestRecord }) {
           className="numeric usage-unknown"
           colSpan={3}
           title={
-            r.usagePartial
+            r.usagePartial === true
               ? "The response ended without complete accounting. Partial counts are excluded from totals."
               : "The provider sent no usable usage report. This is not a count of zero."
           }
         >
-          {r.usagePartial
+          {r.usagePartial === true
             ? `Incomplete usage (${number(r.totalTokens)} tokens observed)`
             : "Usage not reported"}
         </td>

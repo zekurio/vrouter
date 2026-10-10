@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Boxes,
@@ -34,7 +34,7 @@ import { readStored, writeStored } from "./storage";
 import { pages, Workspace, type Page } from "./Workspace";
 
 const pageOf = (hash: string) =>
-  pages.find((p) => p.toLowerCase() === hash.slice(1)) || "Overview";
+  pages.find((p) => p.toLowerCase() === hash.slice(1)) ?? "Overview";
 const pageIcons = {
   Overview: LayoutGrid,
   Models: Boxes,
@@ -45,6 +45,11 @@ const pageIcons = {
 const themes = ["system", "dark", "light"] as const;
 type Theme = (typeof themes)[number];
 const themeIcons = { system: Monitor, dark: Moon, light: Sun };
+const nextThemes: Record<Theme, Theme> = {
+  system: "dark",
+  dark: "light",
+  light: "system",
+};
 const themeKey = "vrouter-theme";
 const storedTheme = (): Theme => {
   const value = readStored(themeKey);
@@ -97,16 +102,10 @@ function App() {
   const [help, setHelp] = useState(false);
   const light = theme === "system" ? systemLight : theme === "light";
 
-  function signedOut(info: AuthInfo | null) {
-    setAuth(info);
-    setGateways([]);
-    setSelected(null);
-    setPhase("login");
-  }
   // Checks management access, then loads the available account stores. With an
   // admin token the server keeps the sign-in in a cookie this page cannot read,
   // so a reload stays signed in.
-  async function load() {
+  const load = useCallback(async () => {
     const current = ++sequence.current;
     setPhase("loading");
     setError("");
@@ -114,11 +113,11 @@ function App() {
     try {
       info = await client.request<AuthInfo>("/api/auth");
       if (current !== sequence.current) return;
-      const list = await client.request<{ gateways: Gateway[] }>(
+      const list = await client.request<{ gateways: Gateway[] | null }>(
         "/api/gateways",
       );
       if (current !== sequence.current) return;
-      const next = list.gateways || [];
+      const next = list.gateways ?? [];
       setAuth(info);
       setGateways(next);
       setSelected(pickGateway(next, readStored(gatewayKey)));
@@ -127,22 +126,30 @@ function App() {
       setPhase("ready");
     } catch (err) {
       if (current !== sequence.current) return;
-      if (info && statusOf(err) === 401) return signedOut(info);
+      if (info && statusOf(err) === 401) {
+        setAuth(info);
+        setGateways([]);
+        setSelected(null);
+        setPhase("login");
+        return;
+      }
       setError(errorMessage(err, "Could not load vrouter."));
       setPhase("error");
     }
-  }
+  }, [client]);
   // Keeps the open gateway unless the server stopped listing it.
   async function reloadGateways() {
     const current = sequence.current;
     try {
-      const list = await client.request<{ gateways: Gateway[] }>(
+      const list = await client.request<{ gateways: Gateway[] | null }>(
         "/api/gateways",
       );
       if (current !== sequence.current) return;
-      const next = list.gateways || [];
+      const next = list.gateways ?? [];
       setGateways(next);
-      setSelected((id) => (id && next.some((g) => g.id === id) ? id : null));
+      setSelected((id) =>
+        id !== null && id !== "" && next.some((g) => g.id === id) ? id : null,
+      );
     } catch {
       // The open gateway already shows its own error.
     }
@@ -158,14 +165,14 @@ function App() {
       window.removeEventListener("hashchange", change);
       system.removeEventListener("change", scheme);
     };
-  }, []);
+  }, [load]);
   useEffect(() => {
-    if (!toast) return;
+    if (!toast) return undefined;
     const id = setTimeout(() => setToast(null), 2500);
     return () => clearTimeout(id);
   }, [toast]);
   useEffect(() => {
-    document.documentElement.dataset.theme = light ? "light" : "dark";
+    document.documentElement.dataset["theme"] = light ? "light" : "dark";
     writeStored(themeKey, theme);
   }, [light, theme]);
   useEffect(() => storeHideEmails(hideEmails), [hideEmails]);
@@ -240,7 +247,7 @@ function App() {
     }
   };
   const gateway = gateways.find((g) => g.id === selected);
-  const nextTheme = themes[(themes.indexOf(theme) + 1) % themes.length];
+  const nextTheme = nextThemes[theme];
   const ThemeIcon = themeIcons[theme];
 
   return (
@@ -314,7 +321,7 @@ function App() {
               className="icon-button"
               aria-label="Sign out"
               title="Sign out"
-              onClick={signOut}
+              onClick={() => void signOut()}
             >
               <LogOut size={16} />
             </button>
@@ -384,7 +391,7 @@ function App() {
         {phase === "ready" && !gateway && (
           <div className="empty">
             <p>
-              {gateways.length
+              {gateways.length > 0
                 ? "That gateway is no longer available. Choose another."
                 : "No gateway is available."}
             </p>
@@ -401,24 +408,33 @@ function App() {
             onGone={() => void reloadGateways()}
             copy={copy}
             notify={(text) => setToast({ text })}
-            onDirty={(dirty) => (unsaved.current = dirty)}
+            onDirty={(dirty) => {
+              unsaved.current = dirty;
+            }}
           />
         )}
       </main>
       {help && (
         <HelpDialog
-          publicUrl={auth?.publicUrl || ""}
+          publicUrl={auth?.publicUrl ?? ""}
           copy={copy}
           onClose={() => setHelp(false)}
         />
       )}
       {toast && (
-        <div className="toast" role={toast.failed ? "alert" : "status"}>
-          {toast.failed ? <TriangleAlert size={15} /> : <Check size={15} />}
+        <div
+          className="toast"
+          role={toast.failed === true ? "alert" : "status"}
+        >
+          {toast.failed === true ? (
+            <TriangleAlert size={15} />
+          ) : (
+            <Check size={15} />
+          )}
           {toast.text}
         </div>
       )}
     </PrivacyProvider>
   );
 }
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.querySelector("#root")!).render(<App />);

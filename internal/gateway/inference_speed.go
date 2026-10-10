@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -23,7 +24,7 @@ func inferenceFastMode(payload map[string]any, protocol wireProtocol) (bool, err
 	}
 	if protocol == messagesProtocol {
 		if speed != "fast" && speed != "standard" {
-			return false, fmt.Errorf("speed must be fast or standard")
+			return false, errors.New("speed must be fast or standard")
 		}
 		return speed == "fast", nil
 	}
@@ -71,16 +72,16 @@ func translateInferenceSpeed(in, out map[string]any, source, target wireProtocol
 }
 
 func addAnthropicBeta(req *http.Request, beta string) {
-	for _, existing := range strings.Split(req.Header.Get("anthropic-beta"), ",") {
+	for existing := range strings.SplitSeq(req.Header.Get("Anthropic-Beta"), ",") {
 		if strings.TrimSpace(existing) == beta {
 			return
 		}
 	}
-	value := req.Header.Get("anthropic-beta")
+	value := req.Header.Get("Anthropic-Beta")
 	if value != "" {
 		value += ","
 	}
-	req.Header.Set("anthropic-beta", value+beta)
+	req.Header.Set("Anthropic-Beta", value+beta)
 }
 
 // Keep the provider's sanitized message, type, code and request ID. These

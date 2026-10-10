@@ -109,10 +109,7 @@ func (s *server) finishAttempt(attempt *inferenceAttempt, recorder *attemptWrite
 	if status == 0 {
 		status = 200
 	}
-	attempt.durationMs = time.Since(attempt.startedAt).Milliseconds()
-	if attempt.durationMs < 0 {
-		attempt.durationMs = 0
-	}
+	attempt.durationMs = max(time.Since(attempt.startedAt).Milliseconds(), 0)
 	outcome := attempt.outcome
 	if outcome == "" {
 		if status >= 200 && status < 300 {
@@ -215,7 +212,7 @@ func (s *server) forwardInference(w http.ResponseWriter, r *http.Request, attemp
 		}
 	}
 retryInference:
-	start := int(s.sequence.Add(1)-1) % len(candidates)
+	start := int((s.sequence.Add(1) - 1) % uint64(len(candidates))) //nolint:gosec // the remainder is below len(candidates)
 	for attemptIndex := 0; attemptIndex < len(candidates); attemptIndex++ {
 		a, err := s.accessAccount(r.Context(), candidates[(start+attemptIndex)%len(candidates)].ID)
 		if err != nil || !routableAuth(a) {
@@ -237,12 +234,12 @@ retryInference:
 		}
 		// Header allowlist prevents downstream credentials, cookies and arbitrary
 		// routing headers from reaching provider services.
-		if channel == "claude" && r.Header.Get("anthropic-beta") != "" {
-			beta := r.Header.Get("anthropic-beta")
+		if channel == "claude" && r.Header.Get("Anthropic-Beta") != "" {
+			beta := r.Header.Get("Anthropic-Beta")
 			if a.AuthMode != "api_key" {
 				beta = "oauth-2025-04-20," + beta
 			}
-			req.Header.Set("anthropic-beta", beta)
+			req.Header.Set("Anthropic-Beta", beta)
 		}
 		if claudeFast {
 			addAnthropicBeta(req, claudeFastBeta)
@@ -253,8 +250,8 @@ retryInference:
 			writeJSON(w, 502, map[string]string{"error": "Provider connection failed"})
 			return
 		}
-		if (resp.StatusCode == 429 || resp.StatusCode == 503) && attemptIndex+1 < len(candidates) {
-			resp.Body.Close()
+		if (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) && attemptIndex+1 < len(candidates) {
+			_ = resp.Body.Close()
 			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -262,8 +259,8 @@ retryInference:
 			if prepared.fast {
 				explainFastModeError(providerError, channel, resp.StatusCode)
 			}
-			resp.Body.Close()
-			if resp.StatusCode == 429 && !resetTried && nativeUsage(a) {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusTooManyRequests && !resetTried && nativeUsage(a) {
 				resetTried = true
 				candidates = s.resetExhaustedPool(r.Context(), pool, native)
 				if len(candidates) > 0 {
@@ -280,7 +277,6 @@ retryInference:
 			writeJSON(w, status, providerError)
 			return
 		}
-		defer resp.Body.Close()
 		attempt.usage.begin(upstreamStream)
 		s.deliverInference(w, r, resp, attempt, prepared, a)
 		return

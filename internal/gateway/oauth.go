@@ -33,6 +33,7 @@ func randomToken() string {
 	}
 	return base64.RawURLEncoding.EncodeToString(b[:])
 }
+
 func (s *server) startOAuth(w http.ResponseWriter, r *http.Request) {
 	p := r.PathValue("provider")
 	if p != "codex" && p != "claude" {
@@ -185,6 +186,7 @@ func (s *server) saveOAuthSession(id string, session oauthSession) {
 	s.oauth[id] = session
 	time.AfterFunc(time.Until(session.Expires)+time.Second, func() { s.oauthMu.Lock(); defer s.oauthMu.Unlock(); s.sweepOAuth() })
 }
+
 func (s *server) session(w http.ResponseWriter, r *http.Request) (oauthSession, bool) {
 	session, ok := s.oauth[r.PathValue("id")]
 	if !ok || time.Now().After(session.Expires) {
@@ -194,6 +196,7 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) (oauthSession, 
 	}
 	return session, true
 }
+
 func (s *server) oauthStatus(w http.ResponseWriter, r *http.Request) {
 	s.oauthMu.Lock()
 	defer s.oauthMu.Unlock()
@@ -213,6 +216,7 @@ func (s *server) oauthStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]string{"status": status, "error": session.Error})
 }
+
 func (s *server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		RedirectURL string `json:"redirectUrl"`

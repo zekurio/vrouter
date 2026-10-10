@@ -343,7 +343,7 @@ func (s *server) consumeUsageReset(ctx context.Context, a storedAccount, attempt
 		return resetUnconfirmed, errors.New("reset result unconfirmed")
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return resetRejected, nil
 	}
 	if resp.StatusCode != http.StatusOK {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -39,7 +40,7 @@ func windowPlanSkipped(list, accountProvider, plan string) bool {
 		list = defaultWindowSkipPlans
 	}
 	shown := strings.ToLower(planName(provider(accountProvider), plan))
-	for _, entry := range strings.Split(list, ",") {
+	for entry := range strings.SplitSeq(list, ",") {
 		entry = strings.ToLower(strings.TrimSpace(entry))
 		if scope, rest, ok := strings.Cut(entry, ":"); ok {
 			if provider(scope) != provider(accountProvider) {
@@ -97,10 +98,8 @@ func windowStartModel(models []Model, provider string) (Model, error) {
 
 func lowestReasoning(model Model) string {
 	for _, wanted := range []string{"none", "minimal", "low", "medium", "high", "xhigh"} {
-		for _, supported := range model.Reasoning {
-			if wanted == supported {
-				return wanted
-			}
+		if slices.Contains(model.Reasoning, wanted) {
+			return wanted
 		}
 	}
 	return ""
@@ -161,12 +160,13 @@ func (s *server) startIdleWindows(ctx context.Context) {
 				return
 			}
 			watch := windowWatch{}
-			if errors.Is(err, errNoWindow) {
+			switch {
+			case errors.Is(err, errNoWindow):
 				// Not a failure; look again later in case the plan changes.
 				watch.next, err = time.Now().Add(time.Hour), nil
-			} else if err != nil {
+			case err != nil:
 				watch = windowWatch{next: time.Now().Add(windowRetryDelay), lastErr: err.Error()}
-			} else {
+			default:
 				watch.next = *resetAt
 			}
 			s.windowMu.Lock()
@@ -229,7 +229,11 @@ func (s *server) ensureWindow(ctx context.Context, account storedAccount) (*time
 	}
 	values := map[string]json.RawMessage{}
 	for k, v := range windowStartPayload(model, account.Provider) {
-		values[k], _ = json.Marshal(v)
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return nil, errors.New("could not prepare trigger")
+		}
+		values[k] = raw
 	}
 	req, err := providerInferenceRequest(ctx, target, values, account)
 	if err != nil {

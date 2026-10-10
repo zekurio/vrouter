@@ -21,19 +21,15 @@ dev-web:
 
 # Format Go and the UI.
 fmt:
-    gofmt -w cmd internal web/embed.go
+    golangci-lint fmt
     pnpm --dir web format
 
 # Lint Go and the UI.
 lint:
-    go vet ./...
+    golangci-lint run
     pnpm --dir web lint
 
 # Check formatting, lints, and types without changing files.
 check:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    unformatted=$(gofmt -l cmd internal web/embed.go)
-    if [ -n "$unformatted" ]; then echo "gofmt needed:"; echo "$unformatted"; exit 1; fi
-    go vet ./...
+    golangci-lint run
     pnpm --dir web check

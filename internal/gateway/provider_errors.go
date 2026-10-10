@@ -30,7 +30,7 @@ var (
 	providerGoFramePattern    = regexp.MustCompile(`\.go:\d+`)
 	// providerTokenPatterns mask token-shaped strings that are not tied to one
 	// stored account, such as a key quoted in a provider message.
-	providerTokenPatterns = []struct {
+	providerTokenPatterns = []struct { //nolint:gochecknoglobals // fixed lookup table of compiled patterns
 		pattern     *regexp.Regexp
 		replacement string
 	}{
@@ -101,9 +101,9 @@ func sanitizedProviderError(reader io.Reader, status int, a storedAccount) map[s
 	return body
 }
 
-// providerErrorFields extracts the error fields from a bounded, JSON-only
-// body. It returns empty strings when nothing usable parses.
-func providerErrorFields(reader io.Reader) (message, typeName, code string) {
+// providerErrorFields extracts the error message, type, and code from a
+// bounded, JSON-only body. It returns empty strings when nothing usable parses.
+func providerErrorFields(reader io.Reader) (string, string, string) {
 	raw, err := io.ReadAll(io.LimitReader(reader, providerErrorReadMax+1))
 	if err != nil || len(raw) == 0 || len(raw) > providerErrorReadMax {
 		return "", "", ""

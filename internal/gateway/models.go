@@ -108,6 +108,7 @@ func (s *server) accountModels(ctx context.Context, a storedAccount) ([]Model, e
 	s.catalogMu.Unlock()
 	return result, err
 }
+
 func (s *server) rawModels(ctx context.Context) ([]Model, error) {
 	var pool []storedAccount
 	for _, a := range s.store.snapshot().Accounts {
@@ -154,6 +155,7 @@ func (s *server) rawModels(ctx context.Context) ([]Model, error) {
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return result, errors.Join(failures...)
 }
+
 func (s *server) models(ctx context.Context) ([]Model, error) {
 	models, err := s.rawModels(ctx)
 	p := s.store.snapshot().Policy

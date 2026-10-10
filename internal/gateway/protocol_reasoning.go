@@ -3,7 +3,7 @@ package gateway
 import (
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"maps"
 	"strings"
 )
@@ -11,8 +11,10 @@ import (
 // Provider signatures only work with their original provider. This marker
 // carries that state through another client protocol. Clients must replay it
 // unchanged when they continue a tool call.
-const reasoningStatePrefix = "vrouter:reasoning:v1:"
-const maxReasoningStateBytes = 1 << 20
+const (
+	reasoningStatePrefix   = "vrouter:reasoning:v1:"
+	maxReasoningStateBytes = 1 << 20
+)
 
 type reasoningState struct {
 	Provider string         `json:"provider"`
@@ -23,7 +25,7 @@ type reasoningState struct {
 func encodeReasoningState(provider string, item map[string]any, blockID string) (string, error) {
 	data, err := json.Marshal(reasoningState{Provider: provider, Item: item, BlockID: blockID})
 	if err != nil || len(data) > maxReasoningStateBytes {
-		return "", fmt.Errorf("Provider reasoning state exceeds 1 MiB")
+		return "", errors.New("Provider reasoning state exceeds 1 MiB")
 	}
 	return reasoningStatePrefix + base64.RawURLEncoding.EncodeToString(data), nil
 }

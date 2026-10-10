@@ -2,7 +2,7 @@ import { createContext, useContext, useState } from "react";
 import { readStored, writeStored } from "./storage";
 
 const storageKey = "vrouter-hide-emails";
-const email = /[^\s@<>()]+@[^\s@<>()]+\.[^\s@<>()]+/g;
+const email = /[^\s@<>()]+@[^\s@<>()]+\.[^\s@<>()]+/gu;
 // Shown blurred in place of an address, so the real one never reaches the page.
 const standIn = "hidden@email.address";
 
@@ -65,18 +65,24 @@ export function Private({
   peek?: boolean;
 }) {
   const hidden = useContext(HideEmails);
-  const found = hidden ? children.match(email) : null;
-  if (!found) return <>{children}</>;
-  const rest = children.split(email);
+  const found = hidden ? [...children.matchAll(email)] : [];
+  if (found.length === 0) return children;
+  // Each address with the text before it, keyed by where the address starts.
+  let last = 0;
+  const parts = found.map((m) => {
+    const before = children.slice(last, m.index);
+    last = m.index + m[0].length;
+    return { at: m.index, before, address: m[0] };
+  });
   return (
     <span>
-      {found.map((address, i) => (
-        <span key={i}>
-          {rest[i]}
-          <Masked address={address} peek={peek} />
+      {parts.map((part) => (
+        <span key={part.at}>
+          {part.before}
+          <Masked address={part.address} peek={peek} />
         </span>
       ))}
-      {rest[found.length]}
+      {children.slice(last)}
     </span>
   );
 }

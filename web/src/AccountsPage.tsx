@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LogIn, Plus, Trash2 } from "lucide-react";
 import { ConnectDialog, connectable } from "./ConnectDialog";
-import { ProviderBrand, providerColor, providerLabel } from "./ProviderBrand";
+import { ProviderBrand, providerLabel, providerStyle } from "./ProviderBrand";
 import { Private, usePrivateLabel } from "./Privacy";
 import { QuotaWindows, type QuotaWindow } from "./Quota";
 import { isDialogBackdropClick } from "./dialog";
@@ -37,7 +37,8 @@ type Props = {
 };
 
 export function accountLabel(account: Account) {
-  return account.email || `${providerLabel(account.provider)} account`;
+  const email = account.email ?? "";
+  return email || `${providerLabel(account.provider)} account`;
 }
 
 // Badge for an account that is not routing. "connected" only says credentials
@@ -132,7 +133,7 @@ export function AccountsPage({
           <section
             className="account-pool"
             key={provider}
-            style={{ "--provider": providerColor(provider) } as CSSProperties}
+            style={providerStyle(provider)}
             aria-labelledby={`pool-${provider}`}
           >
             <div className="model-group-heading">
@@ -161,6 +162,9 @@ export function AccountsPage({
               <ul>
                 {pool.map((a, i) => {
                   const on = enabled(a);
+                  const windows = a.windows ?? [];
+                  const quotaError = a.quotaError ?? "";
+                  const statusMessage = a.statusMessage ?? "";
                   const name = label(
                     accountLabel(a),
                     `${provider} account ${i + 1}`,
@@ -189,36 +193,38 @@ export function AccountsPage({
                             available
                           </p>
                         )}
-                        {!on ? (
+                        {on ? (
+                          accountState(a) && (
+                            <p className="account-warning">
+                              <Private>
+                                {statusMessage ||
+                                  "Unavailable. vrouter is not routing to it right now."}
+                              </Private>
+                            </p>
+                          )
+                        ) : (
                           <p>Disabled. Requests skip this account.</p>
-                        ) : accountState(a) ? (
-                          <p className="account-warning">
-                            <Private>
-                              {a.statusMessage ||
-                                "Unavailable. vrouter is not routing to it right now."}
-                            </Private>
-                          </p>
-                        ) : null}
+                        )}
                       </div>
                       <span className="plan account-plan">{a.plan}</span>
                       <div className="account-windows">
-                        {a.windows?.length ? (
-                          <QuotaWindows windows={a.windows} />
+                        {windows.length > 0 ? (
+                          <QuotaWindows windows={windows} />
                         ) : (
-                          <p className={a.quotaError ? "quota-error" : ""}>
+                          <p className={quotaError ? "quota-error" : ""}>
                             <Private>
-                              {a.quotaError || "Allowance not reported"}
+                              {quotaError || "Allowance not reported"}
                             </Private>
                           </p>
                         )}
-                        {!!a.windows?.length && a.quotaError && (
+                        {windows.length > 0 && quotaError && (
                           <p className="quota-error">
-                            <Private>{a.quotaError}</Private>
+                            <Private>{quotaError}</Private>
                           </p>
                         )}
                       </div>
                       <div className="account-row-actions">
-                        {a.reconnectable && (
+                        {a.reconnectable === true && (
                           <button
                             className="icon-button"
                             aria-label={`Reconnect ${name}`}
@@ -248,6 +254,7 @@ export function AccountsPage({
           </section>
         );
       })}
+      {/* oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- backdrop click; Escape is handled by onCancel */}
       <dialog
         ref={dialog}
         className="confirm-dialog"

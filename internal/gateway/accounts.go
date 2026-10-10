@@ -26,12 +26,13 @@ func (s *server) accounts(ctx context.Context) []Account {
 		}
 		status := "connected"
 		note := ""
-		if !routableAuth(a) {
+		switch {
+		case !routableAuth(a):
 			status = "unavailable"
 			note = "This sign-in method is no longer supported. Add the account using Codex sign-in."
-		} else if a.Disabled {
+		case a.Disabled:
 			status = "disabled"
-		} else if a.AccessToken == "" || (!a.ExpiresAt.IsZero() && time.Now().After(a.ExpiresAt) && a.RefreshToken == "") {
+		case a.AccessToken == "" || (!a.ExpiresAt.IsZero() && time.Now().After(a.ExpiresAt) && a.RefreshToken == ""):
 			status = "unavailable"
 			note = "Sign in again to renew this connection."
 		}
@@ -88,7 +89,9 @@ func applyAccountQuota(account *Account, q quotaCache) {
 }
 
 func (s *server) updateAccount(w http.ResponseWriter, r *http.Request) { s.changeAccount(w, r, false) }
+
 func (s *server) removeAccount(w http.ResponseWriter, r *http.Request) { s.changeAccount(w, r, true) }
+
 func (s *server) changeAccount(w http.ResponseWriter, r *http.Request, remove bool) {
 	var body struct {
 		ID      string `json:"id"`
@@ -140,6 +143,7 @@ func (s *server) changeAccount(w http.ResponseWriter, r *http.Request, remove bo
 		writeJSON(w, 200, map[string]any{"id": body.ID, "enabled": *body.Enabled})
 	}
 }
+
 func (s *server) nativeQuota(ctx context.Context, a storedAccount) quotaCache {
 	s.quotaMu.Lock()
 	if q, ok := s.quotas[a.ID]; ok && quotaFresh(q, time.Now()) {

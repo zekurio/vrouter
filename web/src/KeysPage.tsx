@@ -60,9 +60,9 @@ export function KeysPage({
     const current = ++sequence.current;
     setLoading(true);
     try {
-      const result = await request<{ keys: APIKey[] }>("/api/keys");
+      const result = await request<{ keys: APIKey[] | null }>("/api/keys");
       if (current !== sequence.current) return;
-      setKeys(result.keys || []);
+      setKeys(result.keys ?? []);
       setError("");
     } catch (err) {
       if (current !== sequence.current || isStale(err)) return;
@@ -77,9 +77,9 @@ export function KeysPage({
 
   const put = (key: APIKey) =>
     setKeys((list) =>
-      list?.some((k) => k.id === key.id)
+      list !== null && list.some((k) => k.id === key.id)
         ? list.map((k) => (k.id === key.id ? key : k))
-        : [key, ...(list || [])],
+        : [key, ...(list ?? [])],
     );
 
   async function runConfirm() {
@@ -135,7 +135,7 @@ export function KeysPage({
           <RefreshCw size={22} className="spinning" />
         </div>
       )}
-      {!!keys?.length && (
+      {keys !== null && keys.length > 0 && (
         <div className="table-scroll">
           <table className="key-table">
             <thead>
@@ -162,7 +162,7 @@ export function KeysPage({
               const label = key.name || "Unnamed key";
               return (
                 <tbody
-                  className={state !== "active" ? "is-off" : ""}
+                  className={state === "active" ? "" : "is-off"}
                   key={key.id}
                 >
                   <tr>
@@ -186,7 +186,9 @@ export function KeysPage({
                     <td className="numeric">{number(key.usedTokens)}</td>
                     <td>{day(key.createdAt)}</td>
                     <td>
-                      {key.expiresAt ? moment(key.expiresAt) : "No expiry"}
+                      {key.expiresAt === undefined || key.expiresAt === ""
+                        ? "No expiry"
+                        : moment(key.expiresAt)}
                     </td>
                     <td>
                       <div className="account-row-actions">
@@ -225,12 +227,12 @@ export function KeysPage({
           </table>
         </div>
       )}
-      {!!keys?.length && (
+      {keys !== null && keys.length > 0 && (
         <p className="keys-footnote">
           Request and token counts are totals since the key was created.
         </p>
       )}
-      {(editing || creating) && (
+      {(editing !== null || creating) && (
         <KeyDialog
           target={editing}
           request={request}
@@ -364,6 +366,10 @@ function KeyDialog({
     }
   }
 
+  const copySecret = async () => {
+    setCopied(await copy(secret));
+  };
+
   if (secret)
     return (
       <Modal
@@ -381,10 +387,7 @@ function KeyDialog({
           <code>{secret}</code>
         </div>
         <div className="dialog-actions">
-          <button
-            className="secondary"
-            onClick={async () => setCopied(await copy(secret))}
-          >
+          <button className="secondary" onClick={() => void copySecret()}>
             {copied ? <Check size={14} /> : <Copy size={14} />}
             {copied ? "Copied" : "Copy key"}
           </button>
@@ -421,6 +424,7 @@ function KeyDialog({
             placeholder="Who or what uses this key"
             maxLength={64}
             required
+            // oxlint-disable-next-line jsx-a11y/no-autofocus -- initial focus inside a modal dialog
             autoFocus
             autoComplete="off"
           />

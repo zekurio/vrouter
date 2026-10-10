@@ -28,9 +28,11 @@ export function Select<T extends string>({
   );
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) return undefined;
     const close = (e: PointerEvent) => {
-      if (!root.current?.contains(e.target as Node)) setOpen(false);
+      const inside =
+        e.target instanceof Node && root.current?.contains(e.target) === true;
+      if (!inside) setOpen(false);
     };
     document.addEventListener("pointerdown", close);
     return () => document.removeEventListener("pointerdown", close);
@@ -47,7 +49,8 @@ export function Select<T extends string>({
   };
   const choose = (index: number) => {
     setOpen(false);
-    if (options[index].value !== value) onChange(options[index].value);
+    const option = options[index];
+    if (option !== undefined && option.value !== value) onChange(option.value);
   };
   const match = (key: string) => {
     const now = Date.now();
@@ -81,9 +84,10 @@ export function Select<T extends string>({
       Home: 0,
       End: last,
     };
-    if (e.key in move) {
+    const target = move[e.key];
+    if (target !== undefined) {
       e.preventDefault();
-      setActive(move[e.key]);
+      setActive(target);
     } else if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       choose(active);
@@ -143,6 +147,7 @@ export function Select<T extends string>({
           onMouseDown={(e) => e.preventDefault()}
         >
           {options.map((o, i) => (
+            // oxlint-disable-next-line jsx-a11y/click-events-have-key-events -- the combobox trigger handles keys via aria-activedescendant
             <li
               key={o.value}
               id={`${id}-${i}`}

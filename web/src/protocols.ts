@@ -92,7 +92,12 @@ const maxErrorBody = 8192;
 const maxEvent = 256 * 1024;
 const maxStream = 2 * 1024 * 1024;
 
-type Json = Record<string, any>;
+// One property of a parsed JSON value, or undefined when it has none.
+function field(value: unknown, key: string): unknown {
+  if (typeof value !== "object" || value === null) return undefined;
+  return Object.getOwnPropertyDescriptor(value, key)?.value;
+}
+
 type Progress = {
   text: string;
   // Set once the protocol's terminal event has arrived.
@@ -110,16 +115,19 @@ function readEvent(
   cap?: number,
 ) {
   const finish = () => {
-    progress.done = progress.early ? "incomplete" : "passed";
+    progress.done = progress.early === true ? "incomplete" : "passed";
   };
-  if (protocol === "chat" && data === "[DONE]") return finish();
-  let event: Json;
+  if (protocol === "chat" && data === "[DONE]") {
+    finish();
+    return;
+  }
+  let event: unknown;
   try {
     event = JSON.parse(data);
   } catch {
     return;
   }
-  if (!event || typeof event !== "object") return;
+  if (typeof event !== "object" || event === null) return;
   const add = (text: unknown) => {
     if (typeof text === "string" && progress.text.length < maxText)
       progress.text = (progress.text + text).slice(0, maxText);
@@ -134,34 +142,45 @@ function readEvent(
       reason === "max_output_tokens" ||
       reason === "max_tokens" ||
       reason === "length"
-        ? cap
-          ? `The model reached the ${cap} token cap of this test before it finished.`
-          : "The model reached the provider's output limit before it finished."
-        : `The model stopped early (${String(reason || "no reason given")}).`;
+        ? cap === undefined || cap === 0
+          ? "The model reached the provider's output limit before it finished."
+          : `The model reached the ${cap} token cap of this test before it finished.`
+        : `The model stopped early (${typeof reason === "string" && reason !== "" ? reason : "no reason given"}).`;
   };
+  const type = field(event, "type");
+  const untyped = type === undefined || type === null || type === "";
   // Every protocol can report a failure in the middle of a 200 stream.
-  if (event.type === "error" || (event.error && !event.type))
-    return fail(event);
+  if (type === "error" || (Boolean(field(event, "error")) && untyped)) {
+    fail(event);
+    return;
+  }
 
   if (protocol === "responses") {
-    if (event.type === "response.output_text.delta") add(event.delta);
-    else if (event.type === "response.completed") finish();
-    else if (event.type === "response.incomplete") {
-      stopEarly(event.response?.incomplete_details?.reason);
+    if (type === "response.output_text.delta") add(field(event, "delta"));
+    else if (type === "response.completed") finish();
+    else if (type === "response.incomplete") {
+      const response = field(event, "response");
+      stopEarly(field(field(response, "incomplete_details"), "reason"));
       finish();
-    } else if (event.type === "response.failed") fail(event.response ?? event);
+    } else if (type === "response.failed")
+      fail(field(event, "response") ?? event);
   } else if (protocol === "messages") {
-    if (event.type === "content_block_delta") add(event.delta?.text);
-    else if (event.type === "message_delta") {
-      const reason = event.delta?.stop_reason;
-      if (reason && reason !== "end_turn" && reason !== "stop_sequence")
+    const delta = field(event, "delta");
+    if (type === "content_block_delta") add(field(delta, "text"));
+    else if (type === "message_delta") {
+      const reason = field(delta, "stop_reason");
+      if (
+        Boolean(reason) &&
+        reason !== "end_turn" &&
+        reason !== "stop_sequence"
+      )
         stopEarly(reason);
-    } else if (event.type === "message_stop") finish();
+    } else if (type === "message_stop") finish();
   } else {
-    const choice = event.choices?.[0];
-    add(choice?.delta?.content);
-    const reason = choice?.finish_reason;
-    if (reason && reason !== "stop") stopEarly(reason);
+    const choice = field(field(event, "choices"), "0");
+    add(field(field(choice, "delta"), "content"));
+    const reason = field(choice, "finish_reason");
+    if (Boolean(reason) && reason !== "stop") stopEarly(reason);
   }
 }
 
@@ -174,6 +193,7 @@ async function readBounded(response: Response, limit: number) {
   let received = 0;
   try {
     while (received < limit) {
+      // oxlint-disable-next-line eslint/no-await-in-loop -- a stream is read one chunk at a time
       const { done, value } = await reader.read();
       if (done) break;
       const part = value.subarray(0, limit - received);
@@ -237,10 +257,8 @@ export async function runConnectionTest(options: {
       signal: AbortSignal.any([signal, timeout]),
     });
     status = response.status;
-    requestId =
-      response.headers.get("x-request-id") ||
-      response.headers.get("request-id") ||
-      "";
+    const header = (name: string) => response.headers.get(name) ?? "";
+    requestId = header("x-request-id") || header("request-id");
     ignored = (response.headers.get("x-vrouter-ignored-parameters") ?? "")
       .split(",")
       .map((name) => name.trim())
@@ -254,14 +272,14 @@ export async function runConnectionTest(options: {
       } catch {
         // Not JSON. Show the text itself.
       }
-      const id = (body as Json | null)?.request_id;
+      const id = field(body, "request_id");
       if (typeof id === "string") requestId ||= id;
       return outcome(
         "failed",
         errorText(body) || `The request failed with HTTP ${status}.`,
       );
     }
-    const type = response.headers.get("content-type") || "";
+    const type = header("content-type");
     if (!type.includes("text/event-stream") || !response.body) {
       void response.body?.cancel().catch(() => {});
       return outcome(
@@ -275,15 +293,19 @@ export async function runConnectionTest(options: {
     let buffer = "";
     let received = 0;
     try {
-      while (!progress.done) {
+      while (progress.done === undefined) {
+        // oxlint-disable-next-line eslint/no-await-in-loop -- a stream is read one chunk at a time
         const { done, value } = await reader.read();
         if (done) break;
         received += value.byteLength;
         if (received > maxStream)
           return outcome("failed", "The response was too large for this test.");
-        buffer += decoder.decode(value, { stream: true }).replace(/\r/g, "");
+        buffer += decoder.decode(value, { stream: true }).replaceAll("\r", "");
         let end: number;
-        while (!progress.done && (end = buffer.indexOf("\n\n")) >= 0) {
+        while (
+          progress.done === undefined &&
+          (end = buffer.indexOf("\n\n")) >= 0
+        ) {
           const data = buffer
             .slice(0, end)
             .split("\n")
@@ -302,7 +324,7 @@ export async function runConnectionTest(options: {
     } finally {
       void reader.cancel().catch(() => {});
     }
-    if (!progress.done)
+    if (progress.done === undefined)
       return outcome(
         "failed",
         "The stream closed before the provider finished the response.",

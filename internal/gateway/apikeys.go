@@ -19,6 +19,7 @@ import (
 // stored; the full key is shown once at creation and never persisted.
 type keyRecord struct {
 	legacyKeyFields
+
 	ID        string     `json:"id"`
 	GatewayID string     `json:"gatewayId"`
 	Name      string     `json:"name"`
@@ -75,12 +76,12 @@ func secureID() (string, error) {
 
 // secureKeySecret returns a fresh high-entropy API key secret. The returned
 // hash is what callers persist.
-func secureKeySecret() (secret, hash string, err error) {
+func secureKeySecret() (string, string, error) {
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", "", err
 	}
-	secret = keySecretPrefix + base64.RawURLEncoding.EncodeToString(raw[:])
+	secret := keySecretPrefix + base64.RawURLEncoding.EncodeToString(raw[:])
 	sum := sha256.Sum256([]byte(secret))
 	return secret, hex.EncodeToString(sum[:]), nil
 }
@@ -92,7 +93,7 @@ func keyPrefix(secret string) string {
 	return secret
 }
 
-func (s *server) listKeys(w http.ResponseWriter, r *http.Request) {
+func (s *server) listKeys(w http.ResponseWriter, _ *http.Request) {
 	keys := []keyView{}
 	for _, key := range s.manager.registry.snapshot().Keys {
 		if key.GatewayID == s.gatewayID {

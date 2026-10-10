@@ -8,6 +8,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -32,11 +33,11 @@ func inferenceProtocol(path string) wireProtocol {
 	return ""
 }
 
-// unsupportedFeature marks a valid request the selected provider protocol
+// unsupportedFeatureError marks a valid request the selected provider protocol
 // cannot express.
-type unsupportedFeature string
+type unsupportedFeatureError string
 
-func (e unsupportedFeature) Error() string {
+func (e unsupportedFeatureError) Error() string {
 	return "Cannot translate " + string(e) + " to the selected provider protocol"
 }
 
@@ -49,8 +50,7 @@ type inferenceError struct {
 
 func invalidRequest(err error) *inferenceError {
 	e := &inferenceError{status: 400, message: err.Error()}
-	var feature unsupportedFeature
-	if errors.As(err, &feature) {
+	if _, ok := errors.AsType[unsupportedFeatureError](err); ok {
 		e.code = "unsupported_protocol_feature"
 	}
 	return e
@@ -225,14 +225,13 @@ func (s *server) prepareInference(w http.ResponseWriter, r *http.Request, attemp
 // Validate client controls, and report only sampling fields omitted upstream.
 func normalizeCodexParameters(payload, clientPayload map[string]any, client wireProtocol) ([]string, error) {
 	ignored := []string{}
-	parameters := []string{"max_output_tokens"}
+	limits := []string{"max_output_tokens"}
 	if client == messagesProtocol {
-		parameters = []string{"max_tokens"}
+		limits = []string{"max_tokens"}
 	} else if client == chatProtocol {
-		parameters = []string{"max_tokens", "max_completion_tokens"}
+		limits = []string{"max_tokens", "max_completion_tokens"}
 	}
-	parameters = append(parameters, "temperature", "top_p")
-	for _, field := range parameters {
+	for _, field := range slices.Concat(limits, []string{"temperature", "top_p"}) {
 		value := clientPayload[field]
 		if value == nil {
 			continue
@@ -290,13 +289,13 @@ type protocolRequest struct {
 	cacheKey string
 }
 
-func unsupported(field string) error { return unsupportedFeature(field) }
+func unsupported(field string) error { return unsupportedFeatureError(field) }
 func object(v any) map[string]any    { m, _ := v.(map[string]any); return m }
 func list(v any) []any               { a, _ := v.([]any); return a }
 func str(v any) string               { s, _ := v.(string); return s }
 func fields(m map[string]any, allowed string) error {
 	set := map[string]bool{}
-	for _, k := range strings.Fields(allowed) {
+	for k := range strings.FieldsSeq(allowed) {
 		set[k] = true
 	}
 	for k, v := range m {
@@ -332,11 +331,11 @@ func adaptInferenceRequest(payload map[string]any, source, target wireProtocol) 
 		out["top_p"] = r.topP
 	}
 	if target == messagesProtocol {
-		max := r.maxTokens
-		if max == nil {
-			max = 4096
+		limit := r.maxTokens
+		if limit == nil {
+			limit = 4096
 		}
-		out["max_tokens"] = max
+		out["max_tokens"] = limit
 		if system := encodeBlocks(r.system, target, "system"); len(system) > 0 {
 			out["system"] = system
 		}
@@ -503,7 +502,7 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 	if v := p["prompt_cache_key"]; v != nil {
 		key, ok := v.(string)
 		if !ok {
-			return r, fmt.Errorf("prompt_cache_key must be a string")
+			return r, errors.New("prompt_cache_key must be a string")
 		}
 		r.cacheKey = key
 	}
@@ -600,7 +599,7 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 	if v, exists := p["parallel_tool_calls"]; exists {
 		b, ok := v.(bool)
 		if !ok {
-			return r, fmt.Errorf("parallel_tool_calls must be a boolean")
+			return r, errors.New("parallel_tool_calls must be a boolean")
 		}
 		r.parallel = &b
 	}
@@ -632,7 +631,7 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 		} else {
 			items, ok := p["input"].([]any)
 			if !ok {
-				return r, fmt.Errorf("input must be text or an array")
+				return r, errors.New("input must be text or an array")
 			}
 			for _, value := range items {
 				m := object(value)
@@ -674,7 +673,7 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 						return r, err
 					}
 					if str(m["call_id"]) == "" {
-						return r, fmt.Errorf("Tool results need a call ID")
+						return r, errors.New("Tool results need a call ID")
 					}
 					r.messages = append(r.messages, protocolMessage{role: "user", blocks: []protocolBlock{{kind: "result", id: str(m["call_id"]), result: b}}})
 					continue
@@ -722,7 +721,7 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 		r.maxTokens = p["max_tokens"]
 		if p["max_completion_tokens"] != nil {
 			if r.maxTokens != nil {
-				return r, fmt.Errorf("Use one max token field")
+				return r, errors.New("Use one max token field")
 			}
 			r.maxTokens = p["max_completion_tokens"]
 		}
@@ -745,7 +744,7 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 		}
 		items, ok := p["messages"].([]any)
 		if !ok {
-			return r, fmt.Errorf("messages must be an array")
+			return r, errors.New("messages must be an array")
 		}
 		for _, value := range items {
 			m := object(value)
@@ -804,7 +803,7 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 			}
 			if source == chatProtocol && role == "tool" {
 				if str(m["tool_call_id"]) == "" {
-					return r, fmt.Errorf("Tool results need a call ID")
+					return r, errors.New("Tool results need a call ID")
 				}
 				r.messages = append(r.messages, protocolMessage{role: "user", blocks: []protocolBlock{{kind: "result", id: str(m["tool_call_id"]), result: b}}})
 				continue
@@ -870,12 +869,12 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 				case "enabled":
 					budget, ok := protocolNumber(o["budget_tokens"])
 					if !ok || !budget.IsInt() || !budget.Num().IsInt64() || budget.Cmp(big.NewRat(1024, 1)) < 0 {
-						return r, fmt.Errorf("thinking.budget_tokens must be an integer of at least 1024")
+						return r, errors.New("thinking.budget_tokens must be an integer of at least 1024")
 					}
 					if r.maxTokens != nil {
 						maximum, ok := protocolNumber(r.maxTokens)
 						if !ok || budget.Cmp(maximum) >= 0 {
-							return r, fmt.Errorf("thinking.budget_tokens must be less than max_tokens")
+							return r, errors.New("thinking.budget_tokens must be less than max_tokens")
 						}
 					}
 					r.effort = thinkingBudgetEffort(budget.Num().Int64())
@@ -998,7 +997,7 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 				t = clone
 			}
 			if str(t["name"]) == "" || object(t["parameters"]) == nil {
-				return r, fmt.Errorf("Tools need a name and an object schema")
+				return r, errors.New("Tools need a name and an object schema")
 			}
 			r.tools = append(r.tools, t)
 		}
@@ -1011,7 +1010,8 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 			if c == nil {
 				return r, unsupported("tool_choice")
 			}
-			if source == messagesProtocol {
+			switch source {
+			case messagesProtocol:
 				if err := fields(c, "type name disable_parallel_tool_use"); err != nil {
 					return r, err
 				}
@@ -1031,7 +1031,7 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 					b = !b
 					r.parallel = &b
 				}
-			} else if source == chatProtocol {
+			case chatProtocol:
 				if err := fields(c, "type function"); err != nil {
 					return r, err
 				}
@@ -1040,7 +1040,9 @@ func parseProtocolRequest(p map[string]any, source wireProtocol) (protocolReques
 					return r, err
 				}
 				r.choice = map[string]any{"type": c["type"], "name": f["name"]}
-			} else {
+			case responsesProtocol:
+				fallthrough
+			default:
 				if err := fields(c, "type name"); err != nil {
 					return r, err
 				}
@@ -1191,13 +1193,14 @@ func plainTextFormat(value any) error {
 
 func validToolBlock(b protocolBlock) error {
 	if b.id == "" || b.name == "" || !json.Valid([]byte(b.arguments)) {
-		return fmt.Errorf("Tool calls need an ID, a name, and valid JSON arguments")
+		return errors.New("Tool calls need an ID, a name, and valid JSON arguments")
 	}
 	if objectFromJSON(b.arguments) == nil {
 		return unsupported("non-object tool arguments")
 	}
 	return nil
 }
+
 func objectFromJSON(text string) map[string]any {
 	var value map[string]any
 	d := json.NewDecoder(strings.NewReader(text))
@@ -1273,8 +1276,9 @@ func parseBlocks(value any, source wireProtocol) ([]protocolBlock, error) {
 			}
 			blocks = append(blocks, protocolBlock{kind: "text", text: text})
 		case "image", "image_url", "input_image":
-			image, detail := "", ""
-			if str(b["type"]) == "image" {
+			var image, detail string
+			switch str(b["type"]) {
+			case "image":
 				if err := fields(b, "type source"); err != nil {
 					return nil, err
 				}
@@ -1282,14 +1286,15 @@ func parseBlocks(value any, source wireProtocol) ([]protocolBlock, error) {
 				if err := fields(s, "type media_type data url"); err != nil {
 					return nil, err
 				}
-				if str(s["type"]) == "base64" {
+				switch str(s["type"]) {
+				case "base64":
 					image = "data:" + str(s["media_type"]) + ";base64," + str(s["data"])
-				} else if str(s["type"]) == "url" {
+				case "url":
 					image = str(s["url"])
-				} else {
+				default:
 					return nil, unsupported("image source")
 				}
-			} else if str(b["type"]) == "image_url" {
+			case "image_url":
 				if err := fields(b, "type image_url"); err != nil {
 					return nil, err
 				}
@@ -1298,7 +1303,7 @@ func parseBlocks(value any, source wireProtocol) ([]protocolBlock, error) {
 					return nil, err
 				}
 				image, detail = str(s["url"]), str(s["detail"])
-			} else {
+			default:
 				if err := fields(b, "type image_url detail"); err != nil {
 					return nil, err
 				}
@@ -1341,7 +1346,7 @@ func parseBlocks(value any, source wireProtocol) ([]protocolBlock, error) {
 				return nil, err
 			}
 			if str(b["tool_use_id"]) == "" {
-				return nil, fmt.Errorf("Tool results need a call ID")
+				return nil, errors.New("Tool results need a call ID")
 			}
 			blocks = append(blocks, protocolBlock{kind: "result", id: str(b["tool_use_id"]), result: content, isError: b["is_error"] == true})
 		default:
@@ -1365,8 +1370,8 @@ func encodeBlocks(blocks []protocolBlock, target wireProtocol, role string) []an
 				}
 			case "image":
 				source := map[string]any{"type": "url", "url": b.image}
-				if strings.HasPrefix(b.image, "data:") {
-					parts := strings.SplitN(strings.TrimPrefix(b.image, "data:"), ";base64,", 2)
+				if after, ok := strings.CutPrefix(b.image, "data:"); ok {
+					parts := strings.SplitN(after, ";base64,", 2)
 					if len(parts) == 2 {
 						source = map[string]any{"type": "base64", "media_type": parts[0], "data": parts[1]}
 					}
@@ -1409,7 +1414,7 @@ func decodeProtocolJSON(data []byte) (map[string]any, error) {
 		return nil, err
 	}
 	if result == nil || d.Decode(&struct{}{}) != io.EOF {
-		return nil, fmt.Errorf("Invalid provider JSON")
+		return nil, errors.New("Invalid provider JSON")
 	}
 	return result, nil
 }

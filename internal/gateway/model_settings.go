@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"regexp"
 	"sort"
@@ -25,6 +26,7 @@ type modelPolicy struct {
 }
 type managedModel struct {
 	Model
+
 	Enabled  bool   `json:"enabled"`
 	Alias    string `json:"alias"`
 	ReadOnly string `json:"readOnly,omitempty"`
@@ -45,6 +47,7 @@ func policyRevision(p modelPolicy) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
+
 func policyChannel(provider string) string {
 	switch provider {
 	case "codex", "claude":
@@ -58,6 +61,7 @@ func wildcardMatches(pattern, id string) bool {
 	match, _ := regexp.MatchString(pattern, strings.ToLower(id))
 	return match
 }
+
 func excludedModel(p modelPolicy, channel, id string) (bool, bool) {
 	excluded, wildcard := false, false
 	for _, pattern := range p.Excluded[channel] {
@@ -68,6 +72,7 @@ func excludedModel(p modelPolicy, channel, id string) (bool, bool) {
 	}
 	return excluded, wildcard
 }
+
 func (s *server) readModelSettings(ctx context.Context) (modelSettings, modelPolicy, error) {
 	// Stay inside the dashboard's own request timeout when a provider stalls.
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
@@ -111,6 +116,7 @@ func (s *server) readModelSettings(ctx context.Context) (modelSettings, modelPol
 	})
 	return result, p, err
 }
+
 func (s *server) getModelSettings(w http.ResponseWriter, r *http.Request) {
 	s.modelMu.Lock()
 	defer s.modelMu.Unlock()
@@ -152,12 +158,8 @@ func (s *server) putModelSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err = s.store.update(func(d *diskState) error {
-		for k, v := range patch.Excluded {
-			d.Policy.Excluded[k] = v
-		}
-		for k, v := range patch.Aliases {
-			d.Policy.Aliases[k] = v
-		}
+		maps.Copy(d.Policy.Excluded, patch.Excluded)
+		maps.Copy(d.Policy.Aliases, patch.Aliases)
 		return nil
 	})
 	if err != nil {
