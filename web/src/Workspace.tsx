@@ -11,7 +11,6 @@ import {
   errorMessage,
   isStale,
   statusOf,
-  type AuthMode,
   type Gateway,
 } from "./api";
 import { KeysPage } from "./KeysPage";
@@ -48,7 +47,6 @@ type Props = {
   gateway: Gateway;
   page: Page;
   navigate: (page: Page) => void;
-  authMode: AuthMode;
   publicUrl: string;
   onUnauthorized: () => void;
   // The server no longer has this gateway, or no longer lets this user open it.
@@ -65,7 +63,6 @@ export function Workspace({
   gateway,
   page,
   navigate,
-  authMode,
   publicUrl,
   onUnauthorized,
   onGone,

@@ -580,12 +580,7 @@ export function ModelsPage({
               />
             </div>
             <CodeBlock
-              code={curlExample(
-                endpoint,
-                protocol,
-                exposedID(detail),
-                detail.provider,
-              )}
+              code={curlExample(endpoint, protocol, exposedID(detail))}
               method="POST"
               path={`/v1${protocolPath(protocol)}`}
               copy={copy}

@@ -6,7 +6,7 @@ vrouter is a Go model gateway (`internal/gateway`) with a React UI (`web`) embed
 
 - Run tools through `devenv shell <command>`, or install Go 1.26+, Node 22.12+, pnpm and just yourself.
 - `just build` builds the UI and then `bin/vrouter`. `just dev` runs Go on `:8080` and Vite on `:5173`. Restart it after Go changes.
-- Check Go changes with `go vet ./...` and UI changes with `pnpm --dir web build`. Format with `gofmt` and Prettier.
+- Run `just check` before you finish. It runs gofmt, `go vet`, `tsc` (TypeScript 7, the Go-native compiler), oxlint, and oxfmt without writing files. `just fmt` formats Go and the UI. UI lint rules live in `web/.oxlintrc.json`.
 - The repository has no automated tests. Don't add any.
 
 ## Things to know

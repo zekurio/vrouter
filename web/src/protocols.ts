@@ -57,12 +57,7 @@ function authHeaders(protocol: Protocol, key: string): Record<string, string> {
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 // base is the public address ending in /v1.
-export function curlExample(
-  base: string,
-  protocol: Protocol,
-  model: string,
-  provider: string,
-) {
+export function curlExample(base: string, protocol: Protocol, model: string) {
   const headers = Object.entries(authHeaders(protocol, "$VROUTER_API_KEY"))
     .map(([name, value]) => `-H "${name}: ${value}"`)
     .join(" \\\n  ");
@@ -313,7 +308,7 @@ export async function runConnectionTest(options: {
         "The stream closed before the provider finished the response.",
       );
     return outcome(progress.done, progress.detail);
-  } catch (err) {
+  } catch {
     if (signal.aborted) return outcome("cancelled", "");
     if (timeout.aborted)
       return outcome(

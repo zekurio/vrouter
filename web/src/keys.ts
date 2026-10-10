@@ -27,11 +27,12 @@ export const stateLabel: Record<KeyState, string> = {
   expired: "Expired",
 };
 
+const pad = (n: number) => String(n).padStart(2, "0");
+
 // An expiry as the value of a datetime-local input, in the browser's zone.
 export function expiryText(expiresAt?: string) {
   if (!expiresAt) return "";
   const date = new Date(expiresAt);
-  const pad = (n: number) => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 

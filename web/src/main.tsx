@@ -396,7 +396,6 @@ function App() {
             gateway={gateway}
             page={page}
             navigate={navigate}
-            authMode={auth.mode}
             publicUrl={auth.publicUrl}
             onUnauthorized={sessionEnded}
             onGone={() => void reloadGateways()}

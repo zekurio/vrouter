@@ -100,7 +100,7 @@ export function HelpDialog({
         />
       </div>
       <CodeBlock
-        code={curlExample(base, protocol, "MODEL_ID", provider)}
+        code={curlExample(base, protocol, "MODEL_ID")}
         method="POST"
         path={`/v1${protocolPath(protocol)}`}
         copy={copy}
