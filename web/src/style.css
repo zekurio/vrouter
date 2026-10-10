@@ -2206,13 +2206,17 @@ dialog .notice {
 .type-key.standard {
   background: color-mix(in srgb, var(--text) 30%, var(--bg));
 }
-.type-bar .fast,
-.type-key.fast {
-  background: color-mix(in srgb, var(--text) 65%, var(--bg));
+.type-bar .premium,
+.type-key.premium {
+  background: var(--provider);
 }
 .type-bar .ultrafast,
 .type-key.ultrafast {
-  background: var(--text);
+  background: repeating-linear-gradient(
+    135deg,
+    var(--provider) 0 2px,
+    transparent 2px 4px
+  );
 }
 .usage-types ul {
   display: flex;

@@ -27,7 +27,8 @@ export type RequestRecord = {
   stream: boolean;
   outcome: "success" | "error" | "incomplete";
 };
-export type Speed = "fast" | "ultrafast";
+export const speeds = ["fast", "ultrafast"] as const;
+export type Speed = (typeof speeds)[number];
 export const speedLabel: Record<Speed, string> = {
   fast: "Fast",
   ultrafast: "Ultrafast",

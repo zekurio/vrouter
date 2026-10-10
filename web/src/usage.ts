@@ -1,11 +1,6 @@
 // What the logged requests would cost on each provider's public API.
 
-import {
-  keyLabel,
-  speedLabel,
-  type RequestRecord,
-  type Speed,
-} from "./telemetry";
+import { keyLabel, type RequestRecord, type Speed } from "./telemetry";
 
 // Dollars per million tokens. Cache writes default to the input rate.
 type Rate = { input: number; read: number; write?: number; output: number };
@@ -72,12 +67,7 @@ export const costTypeLabel: Record<CostType, string> = {
   write: "Cache write",
   output: "Output",
 };
-export const tiers = ["standard", "fast", "ultrafast"] as const;
-export type Tier = (typeof tiers)[number];
-export const tierLabel: Record<Tier, string> = {
-  standard: "Standard",
-  ...speedLabel,
-};
+export type Tier = "standard" | Speed;
 
 export type Tally = {
   requests: number;
@@ -87,7 +77,8 @@ export type Tally = {
   unpriced: number;
   cost: number;
   byType: Record<CostType, number>;
-  byTier: Record<Tier, number>;
+  // Cost by speed tier, then by provider.
+  byTier: Record<Tier, Record<string, number>>;
   // What the cached input would have cost at the full input rate.
   saved: number;
   tokens: number;
@@ -102,7 +93,7 @@ const tally = (): Tally => ({
   unpriced: 0,
   cost: 0,
   byType: { input: 0, read: 0, write: 0, output: 0 },
-  byTier: { standard: 0, fast: 0, ultrafast: 0 },
+  byTier: { standard: {}, fast: {}, ultrafast: {} },
   saved: 0,
   tokens: 0,
   uncached: 0,
@@ -141,7 +132,8 @@ function add(into: Tally, r: RequestRecord) {
     cost += part[type];
   }
   into.cost += cost;
-  into.byTier[r.speed ?? "standard"] += cost;
+  const tier = into.byTier[r.speed ?? "standard"];
+  tier[r.provider] = (tier[r.provider] ?? 0) + cost;
   into.saved += read * (rate.input - rate.read) * scale;
 }
 
