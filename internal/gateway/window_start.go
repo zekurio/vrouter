@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -39,7 +41,7 @@ func windowPlanSkipped(list, accountProvider, plan string) bool {
 		list = defaultWindowSkipPlans
 	}
 	shown := strings.ToLower(planName(provider(accountProvider), plan))
-	for _, entry := range strings.Split(list, ",") {
+	for entry := range strings.SplitSeq(list, ",") {
 		entry = strings.ToLower(strings.TrimSpace(entry))
 		if scope, rest, ok := strings.Cut(entry, ":"); ok {
 			if provider(scope) != provider(accountProvider) {
@@ -97,10 +99,8 @@ func windowStartModel(models []Model, provider string) (Model, error) {
 
 func lowestReasoning(model Model) string {
 	for _, wanted := range []string{"none", "minimal", "low", "medium", "high", "xhigh"} {
-		for _, supported := range model.Reasoning {
-			if wanted == supported {
-				return wanted
-			}
+		if slices.Contains(model.Reasoning, wanted) {
+			return wanted
 		}
 	}
 	return ""
@@ -161,12 +161,13 @@ func (s *server) startIdleWindows(ctx context.Context) {
 				return
 			}
 			watch := windowWatch{}
-			if errors.Is(err, errNoWindow) {
+			switch {
+			case errors.Is(err, errNoWindow):
 				// Not a failure; look again later in case the plan changes.
 				watch.next, err = time.Now().Add(time.Hour), nil
-			} else if err != nil {
+			case err != nil:
 				watch = windowWatch{next: time.Now().Add(windowRetryDelay), lastErr: err.Error()}
-			} else {
+			default:
 				watch.next = *resetAt
 			}
 			s.windowMu.Lock()
@@ -191,6 +192,43 @@ func (s *server) ensureWindow(ctx context.Context, account storedAccount) (*time
 		return nil, errors.New("account needs sign-in")
 	}
 	before := s.freshNativeQuota(ctx, account)
+	if reset, err := s.existingWindowReset(account, before); reset != nil || err != nil {
+		return reset, err
+	}
+	model, err := s.windowTriggerModel(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	if len(quotaBlockers(account, before, model.ID, time.Now())) > 0 {
+		return nil, errors.New("another provider allowance is exhausted; no trigger was sent")
+	}
+	req, err := windowTriggerRequest(ctx, account, model)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.claimWindowTrigger(account.ID); err != nil {
+		return nil, err
+	}
+	resp, err := s.streamClient.Do(req)
+	if err != nil {
+		return nil, errors.New("trigger result is unknown")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, errors.New("provider rejected the trigger")
+	}
+	complete := windowTriggerComplete(resp.Body, account.Provider)
+	after := s.freshNativeQuota(ctx, account)
+	if next := observedWindow(after, "five-hour"); complete && after.Error == "" && activeWindowReset(next) != nil {
+		slog.Info("5-hour window started", "gateway", s.gatewayID, "account", account.ID, "model", model.ID, "reset_at", *next.ResetAt)
+		return next.ResetAt, nil
+	}
+	return nil, errors.New("trigger sent, but a new 5-hour reset time is not confirmed")
+}
+
+// existingWindowReset returns the reset time of an active 5-hour window, or
+// errNoWindow when the account has none to start. Both nil allow a trigger.
+func (s *server) existingWindowReset(account storedAccount, before quotaCache) (*time.Time, error) {
 	// The saved plan covers a failed usage check.
 	if windowPlanSkipped(s.cfg.WindowSkipPlans, account.Provider, firstNonEmpty(before.Plan, account.Plan)) {
 		return nil, errNoWindow
@@ -202,34 +240,45 @@ func (s *server) ensureWindow(ctx context.Context, account storedAccount) (*time
 	if window == nil {
 		return nil, errNoWindow
 	}
-	if window.ResetAt != nil && time.Now().Before(*window.ResetAt) {
-		return window.ResetAt, nil
+	return activeWindowReset(window), nil
+}
+
+// activeWindowReset returns the window's reset time while it lies ahead.
+func activeWindowReset(w *QuotaWindow) *time.Time {
+	if w == nil || w.ResetAt == nil || !time.Now().Before(*w.ResetAt) {
+		return nil
 	}
+	return w.ResetAt
+}
+
+// windowTriggerModel picks the trigger model from the account's catalog.
+// Model exclusions apply to gateway-generated inference too.
+func (s *server) windowTriggerModel(ctx context.Context, account storedAccount) (Model, error) {
 	models, err := s.accountModels(ctx, account)
 	if err != nil {
-		return nil, errors.New("could not load the account's models")
+		return Model{}, errors.New("could not load the account's models")
 	}
-	// Honor model exclusions, including for gateway-generated inference.
 	enabled := []Model{}
 	for _, model := range models {
 		if blocked, _ := excludedModel(s.store.snapshot().Policy, account.Provider, model.ID); !blocked {
 			enabled = append(enabled, model)
 		}
 	}
-	model, err := windowStartModel(enabled, account.Provider)
-	if err != nil {
-		return nil, err
-	}
-	if len(quotaBlockers(account, before, model.ID, time.Now())) > 0 {
-		return nil, errors.New("another provider allowance is exhausted; no trigger was sent")
-	}
+	return windowStartModel(enabled, account.Provider)
+}
+
+func windowTriggerRequest(ctx context.Context, account storedAccount, model Model) (*http.Request, error) {
 	target := "https://api.anthropic.com/v1/messages"
 	if account.Provider == "codex" {
 		target = "https://chatgpt.com/backend-api/codex/responses"
 	}
 	values := map[string]json.RawMessage{}
 	for k, v := range windowStartPayload(model, account.Provider) {
-		values[k], _ = json.Marshal(v)
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return nil, errors.New("could not prepare trigger")
+		}
+		values[k] = raw
 	}
 	req, err := providerInferenceRequest(ctx, target, values, account)
 	if err != nil {
@@ -238,58 +287,53 @@ func (s *server) ensureWindow(ctx context.Context, account storedAccount) (*time
 	if account.Provider == "codex" {
 		req.Header.Set("Accept", "text/event-stream")
 	}
+	return req, nil
+}
+
+// claimWindowTrigger records a trigger on the saved account before it is
+// sent, refusing one within windowRetryDelay of the last.
+func (s *server) claimWindowTrigger(id string) error {
 	s.refreshMu.Lock()
-	err = s.store.update(func(d *diskState) error {
+	defer s.refreshMu.Unlock()
+	return s.store.update(func(d *diskState) error {
 		for i := range d.Accounts {
-			if d.Accounts[i].ID == account.ID {
-				if d.Accounts[i].Disabled {
-					return errors.New("account is disabled")
-				}
-				if time.Since(d.Accounts[i].WindowTriggerAt) < windowRetryDelay {
-					return errors.New("a trigger was recently sent")
-				}
-				d.Accounts[i].WindowTriggerAt = time.Now().UTC()
-				return nil
+			if d.Accounts[i].ID != id {
+				continue
 			}
+			if d.Accounts[i].Disabled {
+				return errors.New("account is disabled")
+			}
+			if time.Since(d.Accounts[i].WindowTriggerAt) < windowRetryDelay {
+				return errors.New("a trigger was recently sent")
+			}
+			d.Accounts[i].WindowTriggerAt = time.Now().UTC()
+			return nil
 		}
 		return errors.New("account was removed")
 	})
-	s.refreshMu.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	resp, err := s.streamClient.Do(req)
-	if err != nil {
-		return nil, errors.New("trigger result is unknown")
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, errors.New("provider rejected the trigger")
-	}
-	// Consume the response so the request completes and can start the window.
-	// Bound both duration (ctx above) and output; never log generated content.
-	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+}
+
+// windowTriggerComplete consumes the trigger response so the request
+// completes and can start the window, and reports whether it finished.
+// Output is bounded and never logged.
+func windowTriggerComplete(body io.Reader, provider string) bool {
+	raw, readErr := io.ReadAll(io.LimitReader(body, (1<<20)+1))
 	complete := readErr == nil && len(raw) <= 1<<20
-	if account.Provider == "codex" {
+	if provider == "codex" {
 		var parser usageParser
 		parser.begin(true)
 		parser.observe(raw)
 		parser.complete()
 		complete = complete && parser.terminal && !parser.terminalFailure
 	}
-	if account.Provider == "claude" {
+	if provider == "claude" {
 		var parser usageParser
 		parser.begin(false)
 		parser.observe(raw)
 		parser.complete()
 		complete = complete && parser.totals().Known
 	}
-	after := s.freshNativeQuota(ctx, account)
-	if next := observedWindow(after, "five-hour"); complete && after.Error == "" && next != nil && next.ResetAt != nil && time.Now().Before(*next.ResetAt) {
-		slog.Info("5-hour window started", "gateway", s.gatewayID, "account", account.ID, "model", model.ID, "reset_at", *next.ResetAt)
-		return next.ResetAt, nil
-	}
-	return nil, errors.New("trigger sent, but a new 5-hour reset time is not confirmed")
+	return complete
 }
 
 func observedWindow(q quotaCache, id string) *QuotaWindow {

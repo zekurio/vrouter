@@ -19,6 +19,7 @@ import (
 // stored; the full key is shown once at creation and never persisted.
 type keyRecord struct {
 	legacyKeyFields
+
 	ID        string     `json:"id"`
 	GatewayID string     `json:"gatewayId"`
 	Name      string     `json:"name"`
@@ -75,12 +76,12 @@ func secureID() (string, error) {
 
 // secureKeySecret returns a fresh high-entropy API key secret. The returned
 // hash is what callers persist.
-func secureKeySecret() (secret, hash string, err error) {
+func secureKeySecret() (string, string, error) {
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", "", err
 	}
-	secret = keySecretPrefix + base64.RawURLEncoding.EncodeToString(raw[:])
+	secret := keySecretPrefix + base64.RawURLEncoding.EncodeToString(raw[:])
 	sum := sha256.Sum256([]byte(secret))
 	return secret, hex.EncodeToString(sum[:]), nil
 }
@@ -92,7 +93,7 @@ func keyPrefix(secret string) string {
 	return secret
 }
 
-func (s *server) listKeys(w http.ResponseWriter, r *http.Request) {
+func (s *server) listKeys(w http.ResponseWriter, _ *http.Request) {
 	keys := []keyView{}
 	for _, key := range s.manager.registry.snapshot().Keys {
 		if key.GatewayID == s.gatewayID {
@@ -155,38 +156,11 @@ func (s *server) createKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) patchKey(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Revoked   *bool           `json:"revoked"`
-		Name      *string         `json:"name"`
-		ExpiresAt json.RawMessage `json:"expiresAt"`
-	}
-	if decodeKeyInput(w, r, &input) != nil {
-		writeJSON(w, 400, map[string]string{"error": "Invalid key update"})
+	patch, refusal := decodeKeyPatch(w, r)
+	if refusal != "" {
+		writeJSON(w, 400, map[string]string{"error": refusal})
 		return
 	}
-	if input.Revoked == nil && input.Name == nil && input.ExpiresAt == nil {
-		writeJSON(w, 400, map[string]string{"error": "Nothing to update"})
-		return
-	}
-	if input.Revoked != nil && !*input.Revoked {
-		writeJSON(w, 400, map[string]string{"error": "Revocation cannot be undone"})
-		return
-	}
-	name := ""
-	hasName := input.Name != nil
-	if hasName {
-		name = strings.TrimSpace(*input.Name)
-		if name == "" || len(name) > keyNameMax {
-			writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("Key names must be 1 to %d characters", keyNameMax)})
-			return
-		}
-	}
-	expiresAt, ok := keyExpiry(input.ExpiresAt)
-	if !ok {
-		writeJSON(w, 400, map[string]string{"error": keyExpiryFormatMessage})
-		return
-	}
-	revoked := input.Revoked != nil && *input.Revoked
 	now := time.Now().UTC()
 	var updated keyRecord
 	err := s.manager.registry.update(func(registry *diskRegistry) error {
@@ -194,23 +168,8 @@ func (s *server) patchKey(w http.ResponseWriter, r *http.Request) {
 		if key == nil || key.GatewayID != s.gatewayID {
 			return errKeyNotFound
 		}
-		if revoked {
-			if key.RevokedAt == nil {
-				key.RevokedAt = &now
-			}
-			updated = *key
-			return nil
-		}
-		if hasName {
-			key.Name = name
-		}
-		// The dashboard resends the stored expiry with every edit, so only a
-		// changed value has to lie in the future.
-		if input.ExpiresAt != nil && !sameExpiry(key.ExpiresAt, expiresAt) {
-			if expiresAt != nil && !expiresAt.After(now) {
-				return errKeyExpiryPast
-			}
-			key.ExpiresAt = expiresAt
+		if err := patch.apply(key, now); err != nil {
+			return err
 		}
 		updated = *key
 		return nil
@@ -228,6 +187,67 @@ func (s *server) patchKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"key": updated.view()})
+}
+
+// keyPatch is a validated key update. A revocation ignores other fields.
+type keyPatch struct {
+	revoked   bool
+	name      *string
+	expiry    bool
+	expiresAt *time.Time
+}
+
+// decodeKeyPatch reads a key update. It returns the message of a refusal.
+func decodeKeyPatch(w http.ResponseWriter, r *http.Request) (keyPatch, string) {
+	var input struct {
+		Revoked   *bool           `json:"revoked"`
+		Name      *string         `json:"name"`
+		ExpiresAt json.RawMessage `json:"expiresAt"`
+	}
+	if decodeKeyInput(w, r, &input) != nil {
+		return keyPatch{}, "Invalid key update"
+	}
+	if input.Revoked == nil && input.Name == nil && input.ExpiresAt == nil {
+		return keyPatch{}, "Nothing to update"
+	}
+	if input.Revoked != nil && !*input.Revoked {
+		return keyPatch{}, "Revocation cannot be undone"
+	}
+	patch := keyPatch{revoked: input.Revoked != nil && *input.Revoked, expiry: input.ExpiresAt != nil}
+	if input.Name != nil {
+		name := strings.TrimSpace(*input.Name)
+		if name == "" || len(name) > keyNameMax {
+			return keyPatch{}, fmt.Sprintf("Key names must be 1 to %d characters", keyNameMax)
+		}
+		patch.name = &name
+	}
+	expiresAt, ok := keyExpiry(input.ExpiresAt)
+	if !ok {
+		return keyPatch{}, keyExpiryFormatMessage
+	}
+	patch.expiresAt = expiresAt
+	return patch, ""
+}
+
+func (p keyPatch) apply(key *keyRecord, now time.Time) error {
+	if p.revoked {
+		if key.RevokedAt == nil {
+			key.RevokedAt = &now
+		}
+		return nil
+	}
+	if p.name != nil {
+		key.Name = *p.name
+	}
+	// The dashboard resends the stored expiry with every edit, so only a
+	// changed value has to lie in the future.
+	if p.expiry && !sameExpiry(key.ExpiresAt, p.expiresAt) {
+		if p.expiresAt != nil && !p.expiresAt.After(now) {
+			return errKeyExpiryPast
+		}
+		key.ExpiresAt = p.expiresAt
+	}
+	return nil
 }
 
 func (s *server) deleteKey(w http.ResponseWriter, r *http.Request) {

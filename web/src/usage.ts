@@ -39,13 +39,13 @@ const rates: Record<string, ModelRate> = {
   "gpt-6-luna": { input: 0.1, read: 0.01, output: 0.5 },
 };
 // Longest ID first, so a dated or suffixed ID matches its own family.
-const known = Object.keys(rates).sort((a, b) => b.length - a.length);
+const known = Object.entries(rates).toSorted(([a], [b]) => b.length - a.length);
 
 function rateFor(record: RequestRecord) {
   const id = (record.nativeModel || record.model).toLowerCase();
-  const match = known.find((k) => id === k || id.startsWith(k));
-  if (!match) return null;
-  const rate = rates[match];
+  const match = known.find(([k]) => id === k || id.startsWith(k));
+  if (match === undefined) return null;
+  const [, rate] = match;
   // Prompt length includes cache reads and writes, already in inputTokens.
   return rate.longContext && record.inputTokens > rate.longContext.above
     ? rate.longContext
@@ -154,6 +154,8 @@ function next(time: number, interval: Interval) {
   return date.getTime();
 }
 
+const startTime = (r: RequestRecord) => new Date(r.startedAt).getTime();
+
 export function summarize(records: RequestRecord[], now = Date.now()): Usage {
   const total = tally();
   const groups = {
@@ -173,8 +175,7 @@ export function summarize(records: RequestRecord[], now = Date.now()): Usage {
     return group;
   };
 
-  const times = records.map((r) => new Date(r.startedAt).getTime());
-  const first = Math.min(now, ...times);
+  const first = Math.min(now, ...records.map((r) => startTime(r)));
   const span = (interval: Interval) => {
     const buckets = new Map<number, Bucket>();
     // The hourly series covers the last two days at most.
@@ -190,9 +191,10 @@ export function summarize(records: RequestRecord[], now = Date.now()): Usage {
     month: span("month"),
   };
 
-  records.forEach((r, i) => {
+  records.forEach((r) => {
+    const started = startTime(r);
     const model = r.model || "Unknown model";
-    const day = floor(times[i], "day");
+    const day = floor(started, "day");
     const one = tally();
     add(one, r);
     add(total, r);
@@ -206,7 +208,7 @@ export function summarize(records: RequestRecord[], now = Date.now()): Usage {
     add(into(groups.keys, r.keyId || keyLabel(r), keyLabel(r), ""), r);
     add(into(groups.days, String(day), String(day), ""), r);
     for (const interval of intervals) {
-      const bucket = series[interval].get(floor(times[i], interval));
+      const bucket = series[interval].get(floor(started, interval));
       if (bucket && r.provider)
         bucket.byProvider[r.provider] =
           (bucket.byProvider[r.provider] ?? 0) + one.cost;
@@ -214,7 +216,7 @@ export function summarize(records: RequestRecord[], now = Date.now()): Usage {
   });
 
   const ranked = (map: Map<string, Group>) =>
-    [...map.values()].sort(
+    [...map.values()].toSorted(
       (a, b) =>
         b.cost - a.cost || b.tokens - a.tokens || b.requests - a.requests,
     );
@@ -223,7 +225,7 @@ export function summarize(records: RequestRecord[], now = Date.now()): Usage {
     providers: ranked(groups.providers),
     models: ranked(groups.models),
     keys: ranked(groups.keys),
-    days: [...groups.days.values()].sort(
+    days: [...groups.days.values()].toSorted(
       (a, b) => Number(b.name) - Number(a.name),
     ),
     series: {
@@ -255,3 +257,19 @@ export function share(part: number, whole: number) {
   const percent = (part / whole) * 100;
   return percent < 0.1 ? "<0.1%" : `${percent.toFixed(1)}%`;
 }
+
+export const dayLabel = (time: number) =>
+  new Date(time).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+export const monthLabel = (time: number) =>
+  new Date(time).toLocaleDateString(undefined, {
+    month: "short",
+    year: "numeric",
+  });
+export const hourLabel = (time: number) =>
+  new Date(time).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });

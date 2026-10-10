@@ -63,36 +63,7 @@ func (s *server) accountModels(ctx context.Context, a storedAccount) ([]Model, e
 		if rows == nil {
 			err = errors.New("provider model list missing")
 		}
-		seen := map[string]bool{}
-		for _, m := range rows {
-			id := m.ID
-			if m.Slug != "" {
-				id = m.Slug
-			}
-			if id == "" || seen[id] || ((a.AuthMode == "codex") && m.Visibility != "list") {
-				continue
-			}
-			seen[id] = true
-			if m.Name == "" {
-				m.Name = id
-			}
-			if m.Context == 0 {
-				m.Context = m.ContextLength
-			}
-			if a.Provider == "claude" {
-				if m.MaxInput > 0 {
-					m.Context = m.MaxInput
-				}
-				if m.MaxTokens > 0 {
-					m.MaxOutput = m.MaxTokens
-				}
-			}
-			reasoning := []string{}
-			for _, level := range m.ReasoningLevels {
-				reasoning = append(reasoning, level.Effort)
-			}
-			result = append(result, Model{Reasoning: reasoning, ReasoningSupported: len(reasoning) > 0, ID: id, Name: m.Name, Provider: provider(a.Provider), Context: m.Context, MaxOutput: m.MaxOutput, Inputs: m.Inputs})
-		}
+		result = catalogModels(a, rows)
 	}
 	if err != nil && ctx.Err() != nil {
 		// A caller that gave up says nothing about the provider; do not
@@ -108,6 +79,48 @@ func (s *server) accountModels(ctx context.Context, a storedAccount) ([]Model, e
 	s.catalogMu.Unlock()
 	return result, err
 }
+
+// catalogModels converts an account's provider catalog, skipping unnamed,
+// duplicate, and (for Codex) unlisted models.
+func catalogModels(a storedAccount, rows []providerModel) []Model {
+	result := []Model{}
+	seen := map[string]bool{}
+	for _, m := range rows {
+		id := m.ID
+		if m.Slug != "" {
+			id = m.Slug
+		}
+		if id == "" || seen[id] || ((a.AuthMode == "codex") && m.Visibility != "list") {
+			continue
+		}
+		seen[id] = true
+		result = append(result, m.gatewayModel(a, id))
+	}
+	return result
+}
+
+func (m providerModel) gatewayModel(a storedAccount, id string) Model {
+	if m.Name == "" {
+		m.Name = id
+	}
+	if m.Context == 0 {
+		m.Context = m.ContextLength
+	}
+	if a.Provider == "claude" {
+		if m.MaxInput > 0 {
+			m.Context = m.MaxInput
+		}
+		if m.MaxTokens > 0 {
+			m.MaxOutput = m.MaxTokens
+		}
+	}
+	reasoning := make([]string, 0, len(m.ReasoningLevels))
+	for _, level := range m.ReasoningLevels {
+		reasoning = append(reasoning, level.Effort)
+	}
+	return Model{Reasoning: reasoning, ReasoningSupported: len(reasoning) > 0, ID: id, Name: m.Name, Provider: provider(a.Provider), Context: m.Context, MaxOutput: m.MaxOutput, Inputs: m.Inputs}
+}
+
 func (s *server) rawModels(ctx context.Context) ([]Model, error) {
 	var pool []storedAccount
 	for _, a := range s.store.snapshot().Accounts {
@@ -154,6 +167,7 @@ func (s *server) rawModels(ctx context.Context) ([]Model, error) {
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return result, errors.Join(failures...)
 }
+
 func (s *server) models(ctx context.Context) ([]Model, error) {
 	models, err := s.rawModels(ctx)
 	p := s.store.snapshot().Policy

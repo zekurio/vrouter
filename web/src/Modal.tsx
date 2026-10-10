@@ -20,6 +20,7 @@ export function Modal({
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => dialog.current?.showModal(), []);
   return (
+    // oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- backdrop click; Escape is handled by onCancel
     <dialog
       ref={dialog}
       className={className}

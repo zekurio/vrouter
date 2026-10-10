@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	claudeTokenURL = "https://platform.claude.com/v1/oauth/token"
+	claudeTokenURL = "https://platform.claude.com/v1/oauth/token" //nolint:gosec // public OAuth endpoint, not a credential
 	claudeClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 	claudeScope    = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
 
@@ -24,7 +24,7 @@ const (
 	// codex-rs login: no dynamic client ID, no SIWC resource or host
 	// parameters, and the fixed loopback callback on port 1455.
 	codexNativeAuthorizeURL = "https://auth.openai.com/oauth/authorize"
-	codexNativeTokenURL     = "https://auth.openai.com/oauth/token"
+	codexNativeTokenURL     = "https://auth.openai.com/oauth/token" //nolint:gosec // public OAuth endpoint, not a credential
 	codexNativeClientID     = "app_EMoamEEZ73f0CkXaXp7hrann"
 	codexNativeScope        = "openid profile email offline_access"
 	codexNativeOriginator   = "vrouter"
@@ -80,6 +80,7 @@ func readBoundedJSON(body io.Reader, out any) error {
 	}
 	return nil
 }
+
 func (s *server) tokenRequest(ctx context.Context, endpoint string, fields url.Values, asJSON bool) (tokenResponse, error) {
 	var tokens tokenResponse
 	body := fields.Encode()
@@ -104,10 +105,10 @@ func (s *server) tokenRequest(ctx context.Context, endpoint string, fields url.V
 		return tokens, errors.New("token endpoint unavailable")
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return tokens, providerHTTPError(resp)
 	}
-	if err = readBoundedJSON(resp.Body, &tokens); err != nil {
+	if err := readBoundedJSON(resp.Body, &tokens); err != nil {
 		return tokens, err
 	}
 	if tokens.AccessToken == "" || tokens.ExpiresIn <= 0 || tokens.ExpiresIn > 31536000 || (tokens.TokenType != "" && !strings.EqualFold(tokens.TokenType, "Bearer")) {
@@ -115,6 +116,7 @@ func (s *server) tokenRequest(ctx context.Context, endpoint string, fields url.V
 	}
 	return tokens, nil
 }
+
 func (s *server) accessAccount(ctx context.Context, id string) (storedAccount, error) {
 	// A refresh for another account must not block requests whose credentials
 	// are already valid. Re-read under the lock before rotating any tokens.
@@ -154,6 +156,12 @@ func (s *server) accessAccount(ctx context.Context, id string) (storedAccount, e
 	if a.RefreshToken == "" {
 		return a, errors.New("account needs sign-in")
 	}
+	return s.refreshAccount(ctx, a)
+}
+
+// refreshAccount rotates an expired access token and saves it. The caller
+// holds refreshMu.
+func (s *server) refreshAccount(ctx context.Context, a storedAccount) (storedAccount, error) {
 	fields := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {a.RefreshToken}}
 	var endpoint string
 	switch a.AuthMode {
@@ -183,7 +191,7 @@ func (s *server) accessAccount(ctx context.Context, id string) (storedAccount, e
 	}
 	err = s.store.update(func(d *diskState) error {
 		for i := range d.Accounts {
-			if d.Accounts[i].ID == id {
+			if d.Accounts[i].ID == a.ID {
 				d.Accounts[i] = a
 				return nil
 			}
@@ -199,38 +207,45 @@ func (s *server) accessAccount(ctx context.Context, id string) (storedAccount, e
 func accountTokenFresh(a storedAccount) bool {
 	return a.AccessToken != "" && (a.AuthMode == "api_key" || (!a.ExpiresAt.IsZero() && time.Until(a.ExpiresAt) > time.Minute))
 }
+
 func routableAuth(a storedAccount) bool {
 	return a.AuthMode == "api_key" ||
 		(a.Provider == "codex" && a.AuthMode == "codex") ||
 		(a.Provider == "claude" && a.AuthMode == "oauth")
 }
+
 func providerHeaders(req *http.Request, a storedAccount) {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "vrouter/0.2")
 	if a.Provider == "claude" {
-		req.Header.Set("anthropic-version", "2023-06-01")
-		if a.AuthMode == "api_key" {
-			req.Header.Set("x-api-key", a.AccessToken)
-		} else {
-			req.Header.Set("Authorization", "Bearer "+a.AccessToken)
-			req.Header.Set("anthropic-beta", "oauth-2025-04-20")
-			if a.AuthMode == "oauth" && req.URL.Host == "api.anthropic.com" &&
-				(req.URL.Path == "/api/oauth/usage" || (strings.HasPrefix(req.URL.Path, "/api/organizations/") && strings.HasSuffix(req.URL.Path, "/reset_rate_limits"))) {
-				// Like T3 Code, identify the native CLI protocol on reset reads
-				// and claims. Claude otherwise responds eligible:false, surface.
-				req.Header.Set("User-Agent", claudeResetUserAgent)
-			}
-		}
-	} else {
-		req.Header.Set("Authorization", "Bearer "+a.AccessToken)
-		if a.AuthMode == "codex" {
-			req.Header.Set("originator", "codex_cli_rs")
-			if a.AccountID != "" {
-				req.Header.Set("ChatGPT-Account-ID", a.AccountID)
-			}
+		claudeProviderHeaders(req, a)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+a.AccessToken)
+	if a.AuthMode == "codex" {
+		req.Header.Set("Originator", "codex_cli_rs")
+		if a.AccountID != "" {
+			req.Header.Set("Chatgpt-Account-Id", a.AccountID)
 		}
 	}
 }
+
+func claudeProviderHeaders(req *http.Request, a storedAccount) {
+	req.Header.Set("Anthropic-Version", "2023-06-01")
+	if a.AuthMode == "api_key" {
+		req.Header.Set("X-Api-Key", a.AccessToken)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+a.AccessToken)
+	req.Header.Set("Anthropic-Beta", "oauth-2025-04-20")
+	if a.AuthMode == "oauth" && req.URL.Host == "api.anthropic.com" &&
+		(req.URL.Path == "/api/oauth/usage" || (strings.HasPrefix(req.URL.Path, "/api/organizations/") && strings.HasSuffix(req.URL.Path, "/reset_rate_limits"))) {
+		// Like T3 Code, identify the native CLI protocol on reset reads
+		// and claims. Claude otherwise responds eligible:false, surface.
+		req.Header.Set("User-Agent", claudeResetUserAgent)
+	}
+}
+
 func (s *server) providerJSON(ctx context.Context, a storedAccount, target string, out any) error {
 	current, err := s.accessAccount(ctx, a.ID)
 	if err != nil {
@@ -240,7 +255,7 @@ func (s *server) providerJSON(ctx context.Context, a storedAccount, target strin
 }
 
 func (s *server) readProviderJSON(ctx context.Context, current storedAccount, target string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, http.NoBody)
 	if err != nil {
 		return errors.New("invalid provider endpoint")
 	}
@@ -257,11 +272,12 @@ func (s *server) readProviderJSON(ctx context.Context, current storedAccount, ta
 		return errProviderUnavailable
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return providerHTTPError(resp)
 	}
 	return readBoundedJSON(resp.Body, out)
 }
+
 func requestJSON(ctx context.Context, target string, payload map[string]json.RawMessage) (*http.Request, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {

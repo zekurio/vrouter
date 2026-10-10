@@ -1,14 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Ban, Check, Copy, Pencil, RefreshCw, Trash2 } from "lucide-react";
+import { Ban, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { errorMessage, isStale, type APIRequest } from "./api";
 import { Modal } from "./Modal";
-import {
-  expiryText,
-  keyState,
-  parseExpiry,
-  stateLabel,
-  type APIKey,
-} from "./keys";
+import { KeyDialog } from "./KeyDialog";
+import { keyState, stateLabel, type APIKey } from "./keys";
 
 type Props = {
   request: APIRequest;
@@ -38,31 +33,20 @@ const moment = (value: string) =>
     minute: "2-digit",
   });
 
-export function KeysPage({
-  request,
-  reloadKey,
-  creating,
-  onCreateClose,
-  onChanged,
-  copy,
-  notify,
-}: Props) {
+// Loads the key list again whenever reloadKey changes.
+function useKeys(request: APIRequest, reloadKey: string) {
   const [keys, setKeys] = useState<APIKey[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [editing, setEditing] = useState<APIKey | null>(null);
-  const [confirm, setConfirm] = useState<Confirm | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [confirmError, setConfirmError] = useState("");
   const sequence = useRef(0);
 
   const load = useCallback(async () => {
     const current = ++sequence.current;
     setLoading(true);
     try {
-      const result = await request<{ keys: APIKey[] }>("/api/keys");
+      const result = await request<{ keys: APIKey[] | null }>("/api/keys");
       if (current !== sequence.current) return;
-      setKeys(result.keys || []);
+      setKeys(result.keys ?? []);
       setError("");
     } catch (err) {
       if (current !== sequence.current || isStale(err)) return;
@@ -75,11 +59,29 @@ export function KeysPage({
     void load();
   }, [reloadKey, load]);
 
+  return { keys, setKeys, loading, error, load };
+}
+
+export function KeysPage({
+  request,
+  reloadKey,
+  creating,
+  onCreateClose,
+  onChanged,
+  copy,
+  notify,
+}: Props) {
+  const { keys, setKeys, loading, error, load } = useKeys(request, reloadKey);
+  const [editing, setEditing] = useState<APIKey | null>(null);
+  const [confirm, setConfirm] = useState<Confirm | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [confirmError, setConfirmError] = useState("");
+
   const put = (key: APIKey) =>
     setKeys((list) =>
-      list?.some((k) => k.id === key.id)
+      list !== null && list.some((k) => k.id === key.id)
         ? list.map((k) => (k.id === key.id ? key : k))
-        : [key, ...(list || [])],
+        : [key, ...(list ?? [])],
     );
 
   async function runConfirm() {
@@ -135,102 +137,15 @@ export function KeysPage({
           <RefreshCw size={22} className="spinning" />
         </div>
       )}
-      {!!keys?.length && (
-        <div className="table-scroll">
-          <table className="key-table">
-            <thead>
-              <tr>
-                <th scope="col">Key</th>
-                <th scope="col">Prefix</th>
-                <th scope="col">Status</th>
-                <th scope="col" className="numeric">
-                  Requests
-                </th>
-                <th scope="col" className="numeric">
-                  Tokens
-                </th>
-                <th scope="col">Created</th>
-                <th scope="col">Expires</th>
-                <th scope="col">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            {keys.map((key) => {
-              const state = keyState(key);
-              const dead = state === "revoked";
-              const label = key.name || "Unnamed key";
-              return (
-                <tbody
-                  className={state !== "active" ? "is-off" : ""}
-                  key={key.id}
-                >
-                  <tr>
-                    <th scope="row">{label}</th>
-                    <td>
-                      <code>{key.prefix}…</code>
-                    </td>
-                    <td
-                      className={`key-status ${state}`}
-                      title={
-                        state === "revoked"
-                          ? `Revoked ${day(key.revokedAt!)}. Delete it to remove it from this list.`
-                          : state === "expired"
-                            ? "Edit it to set a later expiry or clear it."
-                            : undefined
-                      }
-                    >
-                      {stateLabel[state]}
-                    </td>
-                    <td className="numeric">{number(key.usedRequests)}</td>
-                    <td className="numeric">{number(key.usedTokens)}</td>
-                    <td>{day(key.createdAt)}</td>
-                    <td>
-                      {key.expiresAt ? moment(key.expiresAt) : "No expiry"}
-                    </td>
-                    <td>
-                      <div className="account-row-actions">
-                        <button
-                          className="icon-button"
-                          aria-label={`Edit ${label}`}
-                          title="Edit name and expiry"
-                          disabled={dead}
-                          onClick={() => setEditing(key)}
-                        >
-                          <Pencil size={14} />
-                        </button>
-                        <button
-                          className="icon-button is-danger"
-                          aria-label={`Revoke ${label}`}
-                          title="Revoke"
-                          disabled={dead}
-                          onClick={() => setConfirm({ action: "revoke", key })}
-                        >
-                          <Ban size={14} />
-                        </button>
-                        <button
-                          className="icon-button is-danger"
-                          aria-label={`Delete ${label}`}
-                          title="Delete"
-                          onClick={() => setConfirm({ action: "delete", key })}
-                        >
-                          <Trash2 size={15} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              );
-            })}
-          </table>
-        </div>
+      {keys !== null && keys.length > 0 && (
+        <KeyTable keys={keys} onEdit={setEditing} onConfirm={setConfirm} />
       )}
-      {!!keys?.length && (
+      {keys !== null && keys.length > 0 && (
         <p className="keys-footnote">
           Request and token counts are totals since the key was created.
         </p>
       )}
-      {(editing || creating) && (
+      {(editing !== null || creating) && (
         <KeyDialog
           target={editing}
           request={request}
@@ -247,228 +162,183 @@ export function KeysPage({
         />
       )}
       {confirm && (
-        <Modal
-          className="confirm-dialog"
-          labelledBy="key-confirm-title"
-          locked={busy}
+        <ConfirmKeyDialog
+          confirm={confirm}
+          busy={busy}
+          error={confirmError}
           onClose={closeConfirm}
-        >
-          <h2 id="key-confirm-title">
-            {confirm.action === "revoke" ? "Revoke" : "Delete"}{" "}
-            {confirm.key.name || "this key"}?
-          </h2>
-          <p>
-            {confirm.action === "revoke"
-              ? "vrouter refuses new calls made with this key. Running responses finish. You can't undo this."
-              : "vrouter refuses new calls made with this key. Running responses finish, and its past requests stay in the log. You can't undo this."}
-          </p>
-          {confirmError && (
-            <div className="notice error" role="alert">
-              {confirmError}
-            </div>
-          )}
-          <div className="dialog-actions">
-            <button
-              className="secondary"
-              disabled={busy}
-              onClick={closeConfirm}
-            >
-              Keep key
-            </button>
-            <button
-              className="primary danger"
-              disabled={busy}
-              onClick={() => void runConfirm()}
-            >
-              {confirm.action === "revoke"
-                ? busy
-                  ? "Revoking"
-                  : "Revoke key"
-                : busy
-                  ? "Deleting"
-                  : "Delete key"}
-            </button>
-          </div>
-        </Modal>
+          onConfirm={() => void runConfirm()}
+        />
       )}
     </div>
   );
 }
 
-// Creates a key or edits one. After a create it shows the secret, which exists
-// only in this component's state and is gone once the dialog closes.
-function KeyDialog({
-  target,
-  request,
-  copy,
-  onSaved,
-  onClose,
+function KeyTable({
+  keys,
+  onEdit,
+  onConfirm,
 }: {
-  target: APIKey | null;
-  request: APIRequest;
-  copy: (value: string) => Promise<boolean>;
-  onSaved: (key: APIKey, created: boolean) => void;
-  onClose: () => void;
+  keys: APIKey[];
+  onEdit: (key: APIKey) => void;
+  onConfirm: (confirm: Confirm) => void;
 }) {
-  const [name, setName] = useState(target?.name ?? "");
-  const storedExpiry = expiryText(target?.expiresAt);
-  const [expiry, setExpiry] = useState(storedExpiry);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const [secret, setSecret] = useState("");
-  const [copied, setCopied] = useState(false);
-  // An untouched field keeps the stored expiry, which may already have passed.
-  const expiresAt =
-    expiry === storedExpiry
-      ? { value: target?.expiresAt ?? null }
-      : parseExpiry(expiry);
-  const expiryError = "error" in expiresAt ? expiresAt.error : "";
+  return (
+    <div className="table-scroll">
+      <table className="key-table">
+        <thead>
+          <tr>
+            <th scope="col">Key</th>
+            <th scope="col">Prefix</th>
+            <th scope="col">Status</th>
+            <th scope="col" className="numeric">
+              Requests
+            </th>
+            <th scope="col" className="numeric">
+              Tokens
+            </th>
+            <th scope="col">Created</th>
+            <th scope="col">Expires</th>
+            <th scope="col">
+              <span className="sr-only">Actions</span>
+            </th>
+          </tr>
+        </thead>
+        {keys.map((key) => (
+          <KeyRow
+            key={key.id}
+            apiKey={key}
+            onEdit={onEdit}
+            onConfirm={onConfirm}
+          />
+        ))}
+      </table>
+    </div>
+  );
+}
 
-  async function save() {
-    if (saving || !name.trim()) return;
-    if ("error" in expiresAt) return;
-    setSaving(true);
-    setError("");
-    const body = {
-      name: name.trim(),
-      expiresAt: expiresAt.value,
-    };
-    try {
-      if (target) {
-        const result = await request<{ key: APIKey }>(
-          `/api/keys/${encodeURIComponent(target.id)}`,
-          "PATCH",
-          body,
-        );
-        onSaved(result.key, false);
-        onClose();
-      } else {
-        const result = await request<{ key: APIKey; secret: string }>(
-          "/api/keys",
-          "POST",
-          body,
-        );
-        onSaved(result.key, true);
-        setSecret(result.secret);
-      }
-    } catch (err) {
-      if (isStale(err)) return;
-      setError(
-        errorMessage(
-          err,
-          target ? "Could not save the key." : "Could not create the key.",
-        ),
-      );
-    } finally {
-      setSaving(false);
-    }
-  }
+function KeyRow({
+  apiKey: key,
+  onEdit,
+  onConfirm,
+}: {
+  apiKey: APIKey;
+  onEdit: (key: APIKey) => void;
+  onConfirm: (confirm: Confirm) => void;
+}) {
+  const state = keyState(key);
+  const dead = state === "revoked";
+  const label = key.name || "Unnamed key";
+  return (
+    <tbody className={state === "active" ? "" : "is-off"}>
+      <tr>
+        <th scope="row">{label}</th>
+        <td>
+          <code>{key.prefix}…</code>
+        </td>
+        <td
+          className={`key-status ${state}`}
+          title={
+            state === "revoked"
+              ? `Revoked ${day(key.revokedAt!)}. Delete it to remove it from this list.`
+              : state === "expired"
+                ? "Edit it to set a later expiry or clear it."
+                : undefined
+          }
+        >
+          {stateLabel[state]}
+        </td>
+        <td className="numeric">{number(key.usedRequests)}</td>
+        <td className="numeric">{number(key.usedTokens)}</td>
+        <td>{day(key.createdAt)}</td>
+        <td>
+          {key.expiresAt === undefined || key.expiresAt === ""
+            ? "No expiry"
+            : moment(key.expiresAt)}
+        </td>
+        <td>
+          <div className="account-row-actions">
+            <button
+              className="icon-button"
+              aria-label={`Edit ${label}`}
+              title="Edit name and expiry"
+              disabled={dead}
+              onClick={() => onEdit(key)}
+            >
+              <Pencil size={14} />
+            </button>
+            <button
+              className="icon-button is-danger"
+              aria-label={`Revoke ${label}`}
+              title="Revoke"
+              disabled={dead}
+              onClick={() => onConfirm({ action: "revoke", key })}
+            >
+              <Ban size={14} />
+            </button>
+            <button
+              className="icon-button is-danger"
+              aria-label={`Delete ${label}`}
+              title="Delete"
+              onClick={() => onConfirm({ action: "delete", key })}
+            >
+              <Trash2 size={15} />
+            </button>
+          </div>
+        </td>
+      </tr>
+    </tbody>
+  );
+}
 
-  if (secret)
-    return (
-      <Modal
-        className="key-dialog"
-        labelledBy="key-dialog-title"
-        locked
-        onClose={onClose}
-      >
-        <h2 id="key-dialog-title">Copy your new key</h2>
-        <p className="dialog-lead">
-          vrouter shows this key once. If you lose it, revoke it and create
-          another.
-        </p>
-        <div className="copy-field secret-field">
-          <code>{secret}</code>
-        </div>
-        <div className="dialog-actions">
-          <button
-            className="secondary"
-            onClick={async () => setCopied(await copy(secret))}
-          >
-            {copied ? <Check size={14} /> : <Copy size={14} />}
-            {copied ? "Copied" : "Copy key"}
-          </button>
-          <button className="primary" onClick={onClose}>
-            {copied ? "Done" : "I've saved it"}
-          </button>
-        </div>
-      </Modal>
-    );
-
+function ConfirmKeyDialog({
+  confirm,
+  busy,
+  error,
+  onClose,
+  onConfirm,
+}: {
+  confirm: Confirm;
+  busy: boolean;
+  error: string;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
   return (
     <Modal
-      className="key-dialog"
-      labelledBy="key-dialog-title"
-      locked={saving}
+      className="confirm-dialog"
+      labelledBy="key-confirm-title"
+      locked={busy}
       onClose={onClose}
     >
-      <h2 id="key-dialog-title">
-        {target ? `Edit ${target.name || "key"}` : "Create an API key"}
+      <h2 id="key-confirm-title">
+        {confirm.action === "revoke" ? "Revoke" : "Delete"}{" "}
+        {confirm.key.name || "this key"}?
       </h2>
-      <form
-        className="fields"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void save();
-        }}
-      >
-        <div className="field">
-          <label htmlFor="key-name">Name</label>
-          <input
-            id="key-name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Who or what uses this key"
-            maxLength={64}
-            required
-            autoFocus
-            autoComplete="off"
-          />
+      <p>
+        {confirm.action === "revoke"
+          ? "vrouter refuses new calls made with this key. Running responses finish. You can't undo this."
+          : "vrouter refuses new calls made with this key. Running responses finish, and its past requests stay in the log. You can't undo this."}
+      </p>
+      {error && (
+        <div className="notice error" role="alert">
+          {error}
         </div>
-        <div className="field">
-          <label htmlFor="key-expiry">Expires</label>
-          <input
-            id="key-expiry"
-            type="datetime-local"
-            value={expiry}
-            min={expiryText(new Date().toISOString())}
-            onChange={(e) => setExpiry(e.target.value)}
-            aria-invalid={!!expiryError}
-            aria-describedby="key-expiry-help"
-          />
-          <p id="key-expiry-help" className={expiryError ? "invalid" : ""}>
-            {expiryError ||
-              "Blank means it never expires. After this time vrouter refuses new calls."}
-          </p>
-        </div>
-        {error && (
-          <div className="notice error" role="alert">
-            {error}
-          </div>
-        )}
-        <div className="dialog-actions">
-          <button
-            type="button"
-            className="secondary"
-            disabled={saving}
-            onClick={onClose}
-          >
-            Cancel
-          </button>
-          <button
-            className="primary"
-            disabled={saving || !name.trim() || !!expiryError}
-          >
-            {target
-              ? saving
-                ? "Saving"
-                : "Save changes"
-              : saving
-                ? "Creating"
-                : "Create key"}
-          </button>
-        </div>
-      </form>
+      )}
+      <div className="dialog-actions">
+        <button className="secondary" disabled={busy} onClick={onClose}>
+          Keep key
+        </button>
+        <button className="primary danger" disabled={busy} onClick={onConfirm}>
+          {confirm.action === "revoke"
+            ? busy
+              ? "Revoking"
+              : "Revoke key"
+            : busy
+              ? "Deleting"
+              : "Delete key"}
+        </button>
+      </div>
     </Modal>
   );
 }

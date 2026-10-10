@@ -16,10 +16,14 @@ export function GatewaySwitcher({
         label="Gateway"
         value={selected ?? ""}
         options={[
-          ...(selected ? [] : [{ value: "", label: "Choose a gateway" }]),
+          ...(selected === null || selected === ""
+            ? [{ value: "", label: "Choose a gateway" }]
+            : []),
           ...gateways.map((g) => ({ value: g.id, label: g.name })),
         ]}
-        onChange={(id) => id && onSelect(id)}
+        onChange={(id) => {
+          if (id) onSelect(id);
+        }}
       />
     </div>
   );

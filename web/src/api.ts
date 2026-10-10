@@ -45,10 +45,13 @@ export const errorMessage = (err: unknown, fallback: string) =>
 // there, so callers can fall back to their own wording.
 export function errorText(body: unknown): string {
   if (typeof body === "string") return body.trim().slice(0, 500);
-  if (!body || typeof body !== "object") return "";
-  const { error, message, type, code } = body as Record<string, unknown>;
+  if (body === null || typeof body !== "object") return "";
+  const error = "error" in body ? body.error : undefined;
+  const message = "message" in body ? body.message : undefined;
+  const type = "type" in body ? body.type : undefined;
+  const code = "code" in body ? body.code : undefined;
   if (typeof error === "string") return errorText(error);
-  if (error && typeof error === "object") {
+  if (typeof error === "object" && error !== null) {
     const inner = errorText(error);
     if (inner) return inner;
   }
@@ -60,7 +63,33 @@ export function errorText(body: unknown): string {
       tag !== "error",
   );
   if (!text) return tags.join(", ");
-  return tags.length ? `${text} (${tags.join(", ")})` : text;
+  return tags.length > 0 ? `${text} (${tags.join(", ")})` : text;
+}
+
+// Everything a request sends except its signal.
+function requestInit(
+  gateway: string | undefined,
+  method: string,
+  body: unknown,
+) {
+  return {
+    method,
+    headers: {
+      ...(gateway === undefined || gateway === ""
+        ? {}
+        : { [gatewayHeader]: gateway }),
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+    },
+    body: body === undefined ? null : JSON.stringify(body),
+  };
+}
+
+// Turns a fetch that never got a response into an error with a readable message.
+function sendError(err: unknown): unknown {
+  if (err instanceof Error && err.name === "TimeoutError")
+    return failure("vrouter did not answer in time.", 0);
+  if (err instanceof TypeError) return failure("Could not reach vrouter.", 0);
+  return err;
 }
 
 // One client per selected gateway. close() ends it when the selection changes:
@@ -73,30 +102,31 @@ export function createClient(options: Options) {
   const reads = new AbortController();
   let closed = false;
 
-  const request: APIRequest = async (path, method = "GET", body) => {
+  // Reads also end when the client closes.
+  const signalFor = (read: boolean) => {
+    const timeout = AbortSignal.timeout(options.timeout ?? 15000);
+    return read ? AbortSignal.any([timeout, reads.signal]) : timeout;
+  };
+
+  const request: APIRequest = async <T>(
+    path: string,
+    method = "GET",
+    body?: unknown,
+  ): Promise<T> => {
     const read = method === "GET";
     if (closed && method !== "DELETE") throw stale();
-    const timeout = AbortSignal.timeout(options.timeout ?? 15000);
+    const signal = signalFor(read);
     let response: Response;
     try {
       response = await send(path, {
-        method,
-        headers: {
-          ...(options.gateway ? { [gatewayHeader]: options.gateway } : {}),
-          ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-        },
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-        signal: read ? AbortSignal.any([timeout, reads.signal]) : timeout,
+        ...requestInit(options.gateway, method, body),
+        signal,
       });
     } catch (err) {
       if (closed && read) throw stale();
-      if (err instanceof Error && err.name === "TimeoutError")
-        throw failure("vrouter did not answer in time.", 0);
-      if (err instanceof TypeError)
-        throw failure("Could not reach vrouter.", 0);
-      throw err;
+      throw sendError(err);
     }
-    const result = await response.json().catch(() => null);
+    const result: unknown = await response.json().catch(() => null);
     if (closed && read) throw stale();
     if (response.status === 401 && !closed) options.onUnauthorized?.();
     if (!response.ok)
@@ -104,7 +134,9 @@ export function createClient(options: Options) {
         errorText(result) || `Request failed (${response.status}).`,
         response.status,
       );
-    return result;
+    // The JSON shapes are the Go handlers' types, kept in sync by hand.
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- API JSON is trusted
+    return result as T;
   };
 
   return {
@@ -119,6 +151,6 @@ export function createClient(options: Options) {
 // Keeps a saved selection, otherwise opens the default gateway, then the first.
 export function pickGateway(gateways: Gateway[], stored: string | null) {
   const has = (id: string) => gateways.some((g) => g.id === id);
-  if (stored && has(stored)) return stored;
+  if (stored !== null && stored !== "" && has(stored)) return stored;
   return has("default") ? "default" : (gateways[0]?.id ?? null);
 }

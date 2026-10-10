@@ -12,9 +12,17 @@ export type QuotaWindow = {
 // without a length and a reset time, for an empty window, and in the first 3%
 // of a window, which is too little to go on.
 function pace(window: QuotaWindow, now: number) {
-  if (!window.seconds || !window.resetAt || window.remaining <= 0) return null;
-  const length = window.seconds * 1000;
-  const left = new Date(window.resetAt).getTime() - now;
+  const { seconds, resetAt } = window;
+  if (
+    seconds === undefined ||
+    seconds === 0 ||
+    resetAt === undefined ||
+    resetAt === "" ||
+    window.remaining <= 0
+  )
+    return null;
+  const length = seconds * 1000;
+  const left = new Date(resetAt).getTime() - now;
   if (!(left > 0 && left <= length)) return null;
   const elapsed = length - left;
   if (elapsed < length * 0.03) return null;
@@ -33,12 +41,13 @@ function pace(window: QuotaWindow, now: number) {
 // The two largest units, rounded up to the minute: "6d 6h", "4h 29m" or "12m".
 function span(ms: number) {
   const minutes = Math.max(1, Math.ceil(ms / 60000));
-  return [
+  const parts: [number, string][] = [
     [Math.floor(minutes / 1440), "d"],
     [Math.floor(minutes / 60) % 24, "h"],
     [minutes % 60, "m"],
-  ]
-    .filter(([n]) => n)
+  ];
+  return parts
+    .filter(([n]) => n > 0)
     .slice(0, 2)
     .map(([n, unit]) => `${n}${unit}`)
     .join(" ");
@@ -58,7 +67,8 @@ export function QuotaWindows({ windows }: { windows: QuotaWindow[] }) {
               ? "deficit"
               : "reserve"
             : "";
-        const reset = w.resetAt ? new Date(w.resetAt).getTime() - now : 0;
+        const resetAt = w.resetAt ?? "";
+        const reset = resetAt ? new Date(resetAt).getTime() - now : 0;
         return (
           <div
             className={`quota-window ${off && `is-${off}`}`}
@@ -68,10 +78,10 @@ export function QuotaWindows({ windows }: { windows: QuotaWindow[] }) {
             <div className="quota-head">
               <span title={w.label}>{w.label}</span>
               <strong>{w.remaining}% left</strong>
-              {w.resetAt && (
+              {resetAt !== "" && (
                 <time
-                  dateTime={w.resetAt}
-                  title={new Date(w.resetAt).toLocaleString()}
+                  dateTime={resetAt}
+                  title={new Date(resetAt).toLocaleString()}
                 >
                   {reset > 0 ? `Resets in ${span(reset)}` : "Reset due"}
                 </time>

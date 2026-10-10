@@ -15,8 +15,12 @@ export type KeyState = "active" | "revoked" | "expired";
 
 // The first reason a call with this key would be refused, if any.
 export function keyState(key: APIKey, now = Date.now()): KeyState {
-  if (key.revokedAt) return "revoked";
-  if (key.expiresAt && new Date(key.expiresAt).getTime() <= now)
+  if (key.revokedAt !== undefined && key.revokedAt !== "") return "revoked";
+  if (
+    key.expiresAt !== undefined &&
+    key.expiresAt !== "" &&
+    new Date(key.expiresAt).getTime() <= now
+  )
     return "expired";
   return "active";
 }
@@ -27,11 +31,12 @@ export const stateLabel: Record<KeyState, string> = {
   expired: "Expired",
 };
 
+const pad = (n: number) => String(n).padStart(2, "0");
+
 // An expiry as the value of a datetime-local input, in the browser's zone.
 export function expiryText(expiresAt?: string) {
-  if (!expiresAt) return "";
+  if (expiresAt === undefined || expiresAt === "") return "";
   const date = new Date(expiresAt);
-  const pad = (n: number) => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 

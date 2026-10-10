@@ -234,9 +234,12 @@ Select a gateway with the `X-Vrouter-Gateway` header. Inference always takes its
 ```sh
 just dev                    # Go server on :8080, Vite on :5173
 just build                  # Build UI and bin/vrouter
-go vet ./...                # Go static checks
-pnpm --dir web build        # Type-check and build the UI
+just check                  # golangci-lint, tsc, oxlint, and oxfmt without writing
+just fmt                    # Format Go (gofumpt, goimports) and the UI (oxfmt)
+just lint                   # golangci-lint and oxlint
 ```
+
+CI runs the same checks, plus `nix flake check`, on every pull request. The linters are strict, and warnings count as errors.
 
 `just dev` uses the normal persistent data directory. Set `VROUTER_DATA_DIR` to a scratch directory for experiments. The UI reloads as you edit, but Go changes need a restart of `just dev`.
 

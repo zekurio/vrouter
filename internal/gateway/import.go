@@ -24,15 +24,16 @@ const (
 )
 
 // ImportCredentials copies provider credentials from JSON files into the
-// account store in dataDir. It accepts the Codex CLI's auth.json and the
-// Claude CLI's .credentials.json.
+// account store in dataDir and returns how many accounts it imported and
+// skipped. It accepts the Codex CLI's auth.json and the Claude CLI's
+// .credentials.json.
 //
 // All files are parsed before the store is touched, so a malformed or
 // unsupported file leaves every existing account unchanged. A credential
 // whose source ID or access token is already stored is skipped instead of
 // replaced: a live account may have refreshed its tokens after the source
 // file was written, and the store's copy is newer.
-func ImportCredentials(dataDir string, paths []string) (imported, skipped int, err error) {
+func ImportCredentials(dataDir string, paths []string) (int, int, error) {
 	if len(paths) == 0 {
 		return 0, 0, errors.New("no credential files to import")
 	}
@@ -49,6 +50,7 @@ func ImportCredentials(dataDir string, paths []string) (imported, skipped int, e
 		return 0, 0, fmt.Errorf("open account store: %w", err)
 	}
 	defer store.close()
+	imported, skipped := 0, 0
 	if err := store.update(func(state *diskState) error {
 		for _, account := range accounts {
 			if credentialStored(state.Accounts, account) {
@@ -103,7 +105,7 @@ func importCredential(path string) (storedAccount, error) {
 // readImportFile reads at most 1 MiB plus one byte so an oversized file is
 // rejected before it can be decoded.
 func readImportFile(path string) ([]byte, error) {
-	file, err := os.Open(path)
+	file, err := os.Open(path) //nolint:gosec // the operator names the credential files to import
 	if err != nil {
 		return nil, err
 	}

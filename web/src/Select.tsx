@@ -1,4 +1,11 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type RefObject,
+} from "react";
 import { Check, ChevronDown } from "lucide-react";
 
 export type SelectOption<T extends string> = { value: T; label: string };
@@ -28,9 +35,11 @@ export function Select<T extends string>({
   );
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) return undefined;
     const close = (e: PointerEvent) => {
-      if (!root.current?.contains(e.target as Node)) setOpen(false);
+      const inside =
+        e.target instanceof Node && root.current?.contains(e.target) === true;
+      if (!inside) setOpen(false);
     };
     document.addEventListener("pointerdown", close);
     return () => document.removeEventListener("pointerdown", close);
@@ -47,7 +56,8 @@ export function Select<T extends string>({
   };
   const choose = (index: number) => {
     setOpen(false);
-    if (options[index].value !== value) onChange(options[index].value);
+    const option = options[index];
+    if (option !== undefined && option.value !== value) onChange(option.value);
   };
   const match = (key: string) => {
     const now = Date.now();
@@ -81,9 +91,10 @@ export function Select<T extends string>({
       Home: 0,
       End: last,
     };
-    if (e.key in move) {
+    const target = move[e.key];
+    if (target !== undefined) {
       e.preventDefault();
-      setActive(move[e.key]);
+      setActive(target);
     } else if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       choose(active);
@@ -133,31 +144,65 @@ export function Select<T extends string>({
         <ChevronDown size={14} aria-hidden />
       </button>
       {open && (
-        <ul
-          className="select-menu"
-          id={`${id}-list`}
-          role="listbox"
-          aria-label={label}
-          ref={list}
-          // Keep focus on the trigger while the pointer works the list.
-          onMouseDown={(e) => e.preventDefault()}
-        >
-          {options.map((o, i) => (
-            <li
-              key={o.value}
-              id={`${id}-${i}`}
-              role="option"
-              aria-selected={o.value === value}
-              className={i === active ? "active" : ""}
-              onMouseMove={() => setActive(i)}
-              onClick={() => choose(i)}
-            >
-              {o.label}
-              {o.value === value && <Check size={13} aria-hidden />}
-            </li>
-          ))}
-        </ul>
+        <SelectMenu
+          id={id}
+          label={label}
+          value={value}
+          options={options}
+          active={active}
+          listRef={list}
+          onActive={setActive}
+          onChoose={choose}
+        />
       )}
     </div>
+  );
+}
+
+function SelectMenu<T extends string>({
+  id,
+  label,
+  value,
+  options,
+  active,
+  listRef,
+  onActive,
+  onChoose,
+}: {
+  id: string;
+  label: string;
+  value: T;
+  options: SelectOption<T>[];
+  active: number;
+  listRef: RefObject<HTMLUListElement | null>;
+  onActive: (index: number) => void;
+  onChoose: (index: number) => void;
+}) {
+  return (
+    <ul
+      className="select-menu"
+      id={`${id}-list`}
+      role="listbox"
+      aria-label={label}
+      ref={listRef}
+      // Keep focus on the trigger while the pointer works the list.
+      onMouseDown={(e) => e.preventDefault()}
+    >
+      {options.map((o, i) => (
+        // oxlint-disable-next-line jsx-a11y/click-events-have-key-events -- the combobox trigger handles keys via aria-activedescendant
+        <li
+          key={o.value}
+          id={`${id}-${i}`}
+          role="option"
+          aria-selected={o.value === value}
+          className={i === active ? "active" : ""}
+          onMouseMove={() => onActive(i)}
+          onClick={() => onChoose(i)}
+        >
+          {o.label}
+          {o.value === value && <Check size={13} aria-hidden />}
+        </li>
+      ))}
+    </ul>
   );
 }

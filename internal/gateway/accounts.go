@@ -17,32 +17,7 @@ func (s *server) accounts(ctx context.Context) []Account {
 	var wg sync.WaitGroup
 	limit := make(chan struct{}, 4)
 	for i, a := range records {
-		name := a.Label
-		if name == "" {
-			name = a.Email
-		}
-		if name == "" {
-			name = providerLabel(a.Provider)
-		}
-		status := "connected"
-		note := ""
-		if !routableAuth(a) {
-			status = "unavailable"
-			note = "This sign-in method is no longer supported. Add the account using Codex sign-in."
-		} else if a.Disabled {
-			status = "disabled"
-		} else if a.AccessToken == "" || (!a.ExpiresAt.IsZero() && time.Now().After(a.ExpiresAt) && a.RefreshToken == "") {
-			status = "unavailable"
-			note = "Sign in again to renew this connection."
-		}
-		// A native Codex record is only safe to renew in place when it already
-		// binds a verified workspace and user subject; an unverified import stays
-		// usable but is never rebound to a new user. A Claude OAuth record is
-		// only safe to renew in place when a prior identity (account UUID or
-		// email) can tell it apart from another Claude account.
-		reconnectable := (a.Provider == "codex" && a.AuthMode == "codex" && a.AccountID != "" && a.Subject != "") ||
-			(a.Provider == "claude" && a.AuthMode == "oauth" && (a.AccountID != "" || a.Email != ""))
-		accounts[i] = Account{ID: a.ID, Name: name, Provider: provider(a.Provider), AuthMode: a.AuthMode, Status: status, StatusMessage: note, Plan: planName(provider(a.Provider), a.Plan), Window: "Allowance not reported", Email: a.Email, CreatedAt: &a.CreatedAt, Reconnectable: reconnectable}
+		accounts[i] = accountView(a)
 		if a.Disabled || !routableAuth(a) || a.AuthMode == "api_key" {
 			continue
 		}
@@ -60,6 +35,39 @@ func (s *server) accounts(ctx context.Context) []Account {
 	wg.Wait()
 	sort.Slice(accounts, func(i, j int) bool { return accounts[i].Name < accounts[j].Name })
 	return accounts
+}
+
+// accountView is the dashboard row of a saved account before its quota.
+func accountView(a storedAccount) Account {
+	name := a.Label
+	if name == "" {
+		name = a.Email
+	}
+	if name == "" {
+		name = providerLabel(a.Provider)
+	}
+	status, note := accountStatus(a)
+	// A native Codex record is only safe to renew in place when it already
+	// binds a verified workspace and user subject; an unverified import stays
+	// usable but is never rebound to a new user. A Claude OAuth record is
+	// only safe to renew in place when a prior identity (account UUID or
+	// email) can tell it apart from another Claude account.
+	reconnectable := (a.Provider == "codex" && a.AuthMode == "codex" && a.AccountID != "" && a.Subject != "") ||
+		(a.Provider == "claude" && a.AuthMode == "oauth" && (a.AccountID != "" || a.Email != ""))
+	return Account{ID: a.ID, Name: name, Provider: provider(a.Provider), AuthMode: a.AuthMode, Status: status, StatusMessage: note, Plan: planName(provider(a.Provider), a.Plan), Window: "Allowance not reported", Email: a.Email, CreatedAt: &a.CreatedAt, Reconnectable: reconnectable}
+}
+
+// accountStatus returns an account's connection state and its explanation.
+func accountStatus(a storedAccount) (string, string) {
+	switch {
+	case !routableAuth(a):
+		return "unavailable", "This sign-in method is no longer supported. Add the account using Codex sign-in."
+	case a.Disabled:
+		return "disabled", ""
+	case a.AccessToken == "" || (!a.ExpiresAt.IsZero() && time.Now().After(a.ExpiresAt) && a.RefreshToken == ""):
+		return "unavailable", "Sign in again to renew this connection."
+	}
+	return "connected", ""
 }
 
 func applyAccountQuota(account *Account, q quotaCache) {
@@ -88,7 +96,9 @@ func applyAccountQuota(account *Account, q quotaCache) {
 }
 
 func (s *server) updateAccount(w http.ResponseWriter, r *http.Request) { s.changeAccount(w, r, false) }
+
 func (s *server) removeAccount(w http.ResponseWriter, r *http.Request) { s.changeAccount(w, r, true) }
+
 func (s *server) changeAccount(w http.ResponseWriter, r *http.Request, remove bool) {
 	var body struct {
 		ID      string `json:"id"`
@@ -140,6 +150,7 @@ func (s *server) changeAccount(w http.ResponseWriter, r *http.Request, remove bo
 		writeJSON(w, 200, map[string]any{"id": body.ID, "enabled": *body.Enabled})
 	}
 }
+
 func (s *server) nativeQuota(ctx context.Context, a storedAccount) quotaCache {
 	s.quotaMu.Lock()
 	if q, ok := s.quotas[a.ID]; ok && quotaFresh(q, time.Now()) {
@@ -162,6 +173,24 @@ func (s *server) nativeQuota(ctx context.Context, a storedAccount) quotaCache {
 	s.quotaPending[a.ID] = pending
 	s.quotaMu.Unlock()
 	defer func() { s.quotaMu.Lock(); delete(s.quotaPending, a.ID); close(pending); s.quotaMu.Unlock() }()
+	q := s.fetchNativeQuota(ctx, a)
+	if q.Error != "" && ctx.Err() != nil {
+		// A caller that gave up says nothing about the provider; do not
+		// cache its failure for everyone else.
+		return q
+	}
+	s.quotaMu.Lock()
+	s.quotas[a.ID] = q
+	if q.Error == "" {
+		s.lastQuotas[a.ID] = q
+	}
+	s.quotaMu.Unlock()
+	return q
+}
+
+// fetchNativeQuota reads an account's usage windows, reset status, and plan
+// from its provider.
+func (s *server) fetchNativeQuota(ctx context.Context, a storedAccount) quotaCache {
 	q := quotaCache{ObservedAt: time.Now().UTC()}
 	var profilePlan chan string
 	if a.Provider == "claude" && a.AuthMode == "oauth" {
@@ -196,17 +225,6 @@ func (s *server) nativeQuota(ctx context.Context, a storedAccount) quotaCache {
 	if profilePlan != nil {
 		q.Plan = <-profilePlan
 	}
-	if q.Error != "" && ctx.Err() != nil {
-		// A caller that gave up says nothing about the provider; do not
-		// cache its failure for everyone else.
-		return q
-	}
-	s.quotaMu.Lock()
-	s.quotas[a.ID] = q
-	if q.Error == "" {
-		s.lastQuotas[a.ID] = q
-	}
-	s.quotaMu.Unlock()
 	return q
 }
 

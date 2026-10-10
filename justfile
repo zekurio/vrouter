@@ -18,3 +18,18 @@ dev:
 
 dev-web:
     pnpm --dir web dev
+
+# Format Go and the UI.
+fmt:
+    golangci-lint fmt
+    pnpm --dir web format
+
+# Lint Go and the UI.
+lint:
+    golangci-lint run
+    pnpm --dir web lint
+
+# Check formatting, lints, and types without changing files.
+check:
+    golangci-lint run
+    pnpm --dir web check

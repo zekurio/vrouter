@@ -1,3 +1,5 @@
+// Package gateway routes model API requests across provider accounts and serves
+// the management API behind the web UI.
 package gateway
 
 import (
@@ -18,6 +20,7 @@ import (
 	"time"
 )
 
+// Config configures a gateway.
 type Config struct {
 	DataDir, AdminToken string
 	// PublicURL is the browser-facing HTTP(S) origin, without a path.
@@ -30,6 +33,8 @@ type Config struct {
 	// comma-separated "plan" or "provider:plan". Empty skips the Codex Pro plans.
 	WindowSkipPlans string
 }
+
+// Model is a model offered through the gateway.
 type Model struct {
 	ID                 string   `json:"id"`
 	Name               string   `json:"name"`
@@ -42,6 +47,7 @@ type Model struct {
 	ReasoningSupported bool     `json:"reasoningSupported,omitempty"`
 }
 
+// Account is a provider account as shown in the UI.
 type Account struct {
 	ID              string        `json:"id"`
 	Name            string        `json:"name"`
@@ -61,6 +67,7 @@ type Account struct {
 	AvailableResets *int          `json:"availableResets,omitempty"`
 }
 
+// State is the dashboard snapshot of models and accounts.
 type State struct {
 	ObservedAt time.Time `json:"observedAt"`
 	Models     []Model   `json:"models"`
@@ -97,6 +104,7 @@ type server struct {
 	sequence     atomic.Uint64
 }
 
+// DefaultDataDir returns the data directory used when none is configured.
 func DefaultDataDir() string {
 	if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
 		return filepath.Join(dir, "vrouter")
@@ -107,6 +115,8 @@ func DefaultDataDir() string {
 	}
 	return filepath.Join(home, ".local", "state", "vrouter")
 }
+
+// New opens the data directory and returns the gateway handler.
 func New(cfg Config, assets fs.FS) (http.Handler, error) {
 	publicURL, err := parsePublicURL(cfg.PublicURL)
 	if err != nil {
@@ -140,7 +150,8 @@ func New(cfg Config, assets fs.FS) (http.Handler, error) {
 // newGatewayStore builds one gateway's handlers over its view of the store.
 // The root authorizes management once, then dispatches to a gateway's mgmt mux.
 func newGatewayStore(cfg Config, assets fs.FS, store *accountStore) *server {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	base, _ := http.DefaultTransport.(*http.Transport)
+	transport := base.Clone()
 	transport.ResponseHeaderTimeout = 60 * time.Second
 	noRedirect := func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	s := &server{cfg: cfg, gatewayID: defaultGatewayID, client: &http.Client{Transport: transport, Timeout: 12 * time.Second, CheckRedirect: noRedirect}, streamClient: &http.Client{Transport: transport, CheckRedirect: noRedirect}, quotas: map[string]quotaCache{}, lastQuotas: map[string]quotaCache{}, oauth: map[string]oauthSession{}, catalogs: map[string]catalogCache{}, windowWatch: map[string]windowWatch{}}
@@ -148,7 +159,7 @@ func newGatewayStore(cfg Config, assets fs.FS, store *accountStore) *server {
 	mux := http.NewServeMux()
 	s.mux = mux
 	s.mgmt = http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, map[string]string{"status": "ok"}) })
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, map[string]string{"status": "ok"}) })
 	management := []struct {
 		pattern string
 		handler http.HandlerFunc
@@ -173,25 +184,27 @@ func newGatewayStore(cfg Config, assets fs.FS, store *accountStore) *server {
 		mux.HandleFunc(route.pattern, s.authorize(s.dispatchManagement))
 		s.mgmt.HandleFunc(route.pattern, route.handler)
 	}
-	unknown := func(w http.ResponseWriter, r *http.Request) {
+	unknown := func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 404, map[string]string{"error": "Unknown management endpoint"})
 	}
 	mux.HandleFunc("/api/", unknown)
 	s.mgmt.HandleFunc("/api/", unknown)
 	mux.Handle("/v1/", http.HandlerFunc(s.serveInference))
-	mux.HandleFunc("/v1beta/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1beta/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 404, map[string]string{"error": "This protocol is not supported by vrouter"})
 	})
 	mux.HandleFunc("/", staticHandler(assets))
 	s.handler = mux
 	return s
 }
+
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "same-origin")
 	w.Header().Set("X-Frame-Options", "DENY")
 	s.handler.ServeHTTP(w, r)
 }
+
 func (s *server) Close() error {
 	if s.stopWindows != nil {
 		s.stopWindows()
@@ -222,6 +235,7 @@ func (s *server) Close() error {
 	}
 	return err
 }
+
 func tokenEqual(a, b string) bool {
 	x, y := sha256.Sum256([]byte(a)), sha256.Sum256([]byte(b))
 	return subtle.ConstantTimeCompare(x[:], y[:]) == 1
@@ -338,5 +352,5 @@ func providerLabel(value string) string {
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+	_ = json.NewEncoder(w).Encode(value) //nolint:errchkjson // the status is already sent, so a failed encode cannot be reported
 }

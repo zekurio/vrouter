@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"regexp"
 	"sort"
@@ -25,6 +26,7 @@ type modelPolicy struct {
 }
 type managedModel struct {
 	Model
+
 	Enabled  bool   `json:"enabled"`
 	Alias    string `json:"alias"`
 	ReadOnly string `json:"readOnly,omitempty"`
@@ -45,6 +47,7 @@ func policyRevision(p modelPolicy) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
+
 func policyChannel(provider string) string {
 	switch provider {
 	case "codex", "claude":
@@ -58,6 +61,7 @@ func wildcardMatches(pattern, id string) bool {
 	match, _ := regexp.MatchString(pattern, strings.ToLower(id))
 	return match
 }
+
 func excludedModel(p modelPolicy, channel, id string) (bool, bool) {
 	excluded, wildcard := false, false
 	for _, pattern := range p.Excluded[channel] {
@@ -68,6 +72,7 @@ func excludedModel(p modelPolicy, channel, id string) (bool, bool) {
 	}
 	return excluded, wildcard
 }
+
 func (s *server) readModelSettings(ctx context.Context) (modelSettings, modelPolicy, error) {
 	// Stay inside the dashboard's own request timeout when a provider stalls.
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
@@ -111,6 +116,7 @@ func (s *server) readModelSettings(ctx context.Context) (modelSettings, modelPol
 	})
 	return result, p, err
 }
+
 func (s *server) getModelSettings(w http.ResponseWriter, r *http.Request) {
 	s.modelMu.Lock()
 	defer s.modelMu.Unlock()
@@ -152,12 +158,8 @@ func (s *server) putModelSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err = s.store.update(func(d *diskState) error {
-		for k, v := range patch.Excluded {
-			d.Policy.Excluded[k] = v
-		}
-		for k, v := range patch.Aliases {
-			d.Policy.Aliases[k] = v
-		}
+		maps.Copy(d.Policy.Excluded, patch.Excluded)
+		maps.Copy(d.Policy.Aliases, patch.Aliases)
 		return nil
 	})
 	if err != nil {
@@ -198,41 +200,10 @@ func applyModelChanges(settings modelSettings, p modelPolicy, changes []modelCha
 		row.Enabled, row.Alias = *change.Enabled, alias
 		channel := policyChannel(row.Provider)
 		touched[channel] = true
-		excluded := []string{}
-		for _, id := range nextPolicy.Excluded[channel] {
-			if !strings.EqualFold(id, row.ID) {
-				excluded = append(excluded, id)
-			}
-		}
-		if !row.Enabled {
-			excluded = append(excluded, row.ID)
-		}
-		nextPolicy.Excluded[channel] = excluded
-		aliases := []modelAlias{}
-		for _, a := range nextPolicy.Aliases[channel] {
-			if !strings.EqualFold(a.Name, row.ID) {
-				aliases = append(aliases, a)
-			}
-		}
-		if alias != "" {
-			aliases = append(aliases, modelAlias{Name: row.ID, Alias: alias})
-		}
-		nextPolicy.Aliases[channel] = aliases
+		policySetModel(nextPolicy, channel, *row)
 	}
-	// Reserve native IDs too: an alias must never shadow another model or alias.
-	owners := map[string]string{}
-	for _, m := range result.Models {
-		owners[strings.ToLower(m.ID)] = m.ID
-	}
-	for _, m := range result.Models {
-		if m.Alias == "" {
-			continue
-		}
-		key := strings.ToLower(m.Alias)
-		if owner, exists := owners[key]; exists && owner != m.ID {
-			return result, p, fmt.Errorf("Alias %q conflicts with another model ID or alias.", m.Alias)
-		}
-		owners[key] = m.ID
+	if err := modelAliasConflict(result.Models); err != nil {
+		return result, p, err
 	}
 	result.Revision = policyRevision(nextPolicy)
 	patch := modelPolicy{Excluded: map[string][]string{}, Aliases: map[string][]modelAlias{}}
@@ -241,4 +212,48 @@ func applyModelChanges(settings modelSettings, p modelPolicy, changes []modelCha
 		patch.Aliases[channel] = nextPolicy.Aliases[channel]
 	}
 	return result, patch, nil
+}
+
+// policySetModel replaces a model's exclusion and alias in a channel policy.
+func policySetModel(p modelPolicy, channel string, row managedModel) {
+	excluded := []string{}
+	for _, id := range p.Excluded[channel] {
+		if !strings.EqualFold(id, row.ID) {
+			excluded = append(excluded, id)
+		}
+	}
+	if !row.Enabled {
+		excluded = append(excluded, row.ID)
+	}
+	p.Excluded[channel] = excluded
+	aliases := []modelAlias{}
+	for _, a := range p.Aliases[channel] {
+		if !strings.EqualFold(a.Name, row.ID) {
+			aliases = append(aliases, a)
+		}
+	}
+	if row.Alias != "" {
+		aliases = append(aliases, modelAlias{Name: row.ID, Alias: row.Alias})
+	}
+	p.Aliases[channel] = aliases
+}
+
+// modelAliasConflict reserves native IDs too: an alias must never shadow
+// another model or alias.
+func modelAliasConflict(models []managedModel) error {
+	owners := map[string]string{}
+	for _, m := range models {
+		owners[strings.ToLower(m.ID)] = m.ID
+	}
+	for _, m := range models {
+		if m.Alias == "" {
+			continue
+		}
+		key := strings.ToLower(m.Alias)
+		if owner, exists := owners[key]; exists && owner != m.ID {
+			return fmt.Errorf("Alias %q conflicts with another model ID or alias.", m.Alias)
+		}
+		owners[key] = m.ID
+	}
+	return nil
 }

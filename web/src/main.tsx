@@ -1,217 +1,77 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import {
-  Boxes,
-  ChartColumn,
-  Check,
-  CircleHelp,
-  Eye,
-  EyeOff,
-  KeyRound,
-  LayoutGrid,
-  LogOut,
-  Monitor,
-  Moon,
-  RefreshCw,
-  Sun,
-  TriangleAlert,
-  Users,
-} from "lucide-react";
+import { Check, RefreshCw, TriangleAlert } from "lucide-react";
 import "./style.css";
 import "@fontsource-variable/dm-sans";
-import {
-  createClient,
-  errorMessage,
-  pickGateway,
-  statusOf,
-  type AuthInfo,
-  type Gateway,
-} from "./api";
-import { GatewaySwitcher } from "./GatewaySwitcher";
+import { createClient, type AuthInfo } from "./api";
 import { HelpDialog } from "./HelpDialog";
 import { PrivacyProvider, storedHideEmails, storeHideEmails } from "./Privacy";
 import { readStored, writeStored } from "./storage";
+import { TopBar, type Theme } from "./TopBar";
+import { gatewayKey, useSession } from "./useSession";
 import { pages, Workspace, type Page } from "./Workspace";
 
 const pageOf = (hash: string) =>
-  pages.find((p) => p.toLowerCase() === hash.slice(1)) || "Overview";
-const pageIcons = {
-  Overview: LayoutGrid,
-  Models: Boxes,
-  Accounts: Users,
-  Keys: KeyRound,
-  Usage: ChartColumn,
-} satisfies Record<Page, unknown>;
-const themes = ["system", "dark", "light"] as const;
-type Theme = (typeof themes)[number];
-const themeIcons = { system: Monitor, dark: Moon, light: Sun };
+  pages.find((p) => p.toLowerCase() === hash.slice(1)) ?? "Overview";
 const themeKey = "vrouter-theme";
 const storedTheme = (): Theme => {
   const value = readStored(themeKey);
   return value === "system" || value === "light" ? value : "dark";
 };
-const gatewayKey = "vrouter-gateway";
-function RouterLogo() {
-  return (
-    <svg
-      width="30"
-      height="30"
-      viewBox="4 4 24 24"
-      fill="none"
-      strokeWidth="3.75"
-      strokeLinecap="round"
-      aria-hidden="true"
-    >
-      <path d="M7.25 8.5 16 23.5" stroke="currentColor" />
-      <path d="M24.75 8.5 19.94 16.75" stroke="var(--accent)" />
-    </svg>
-  );
-}
-function App() {
-  const [page, setPage] = useState<Page>(() => pageOf(location.hash));
-  // "login" covers every signed-out state, "ready" every signed-in one.
-  const [phase, setPhase] = useState<"loading" | "login" | "ready" | "error">(
-    "loading",
-  );
-  const [auth, setAuth] = useState<AuthInfo | null>(null);
-  const [gateways, setGateways] = useState<Gateway[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [error, setError] = useState("");
-  const [loginError, setLoginError] = useState("");
-  const [token, setToken] = useState("");
-  const sequence = useRef(0);
-  // Several requests can report the same expired session.
-  const ending = useRef(false);
-  // Not scoped to a gateway: sign-in and the gateway list work without one.
-  const [client] = useState(() => createClient({}));
-  const [toast, setToast] = useState<{ text: string; failed?: boolean } | null>(
-    null,
-  );
-  // Set by the open gateway while it has unsaved model drafts.
-  const unsaved = useRef(false);
+
+// The chosen theme, following the system setting when it is "system".
+function useTheme() {
   const [theme, setTheme] = useState<Theme>(storedTheme);
   const [systemLight, setSystemLight] = useState(
     () => matchMedia("(prefers-color-scheme: light)").matches,
   );
-  const [hideEmails, setHideEmails] = useState(storedHideEmails);
-  const [help, setHelp] = useState(false);
   const light = theme === "system" ? systemLight : theme === "light";
-
-  function signedOut(info: AuthInfo | null) {
-    setAuth(info);
-    setGateways([]);
-    setSelected(null);
-    setPhase("login");
-  }
-  // Checks management access, then loads the available account stores. With an
-  // admin token the server keeps the sign-in in a cookie this page cannot read,
-  // so a reload stays signed in.
-  async function load() {
-    const current = ++sequence.current;
-    setPhase("loading");
-    setError("");
-    let info: AuthInfo | null = null;
-    try {
-      info = await client.request<AuthInfo>("/api/auth");
-      if (current !== sequence.current) return;
-      const list = await client.request<{ gateways: Gateway[] }>(
-        "/api/gateways",
-      );
-      if (current !== sequence.current) return;
-      const next = list.gateways || [];
-      setAuth(info);
-      setGateways(next);
-      setSelected(pickGateway(next, readStored(gatewayKey)));
-      setLoginError("");
-      ending.current = false;
-      setPhase("ready");
-    } catch (err) {
-      if (current !== sequence.current) return;
-      if (info && statusOf(err) === 401) return signedOut(info);
-      setError(errorMessage(err, "Could not load vrouter."));
-      setPhase("error");
-    }
-  }
-  // Keeps the open gateway unless the server stopped listing it.
-  async function reloadGateways() {
-    const current = sequence.current;
-    try {
-      const list = await client.request<{ gateways: Gateway[] }>(
-        "/api/gateways",
-      );
-      if (current !== sequence.current) return;
-      const next = list.gateways || [];
-      setGateways(next);
-      setSelected((id) => (id && next.some((g) => g.id === id) ? id : null));
-    } catch {
-      // The open gateway already shows its own error.
-    }
-  }
   useEffect(() => {
-    void load();
-    const change = () => setPage(pageOf(location.hash));
     const system = matchMedia("(prefers-color-scheme: light)");
     const scheme = () => setSystemLight(system.matches);
-    window.addEventListener("hashchange", change);
     system.addEventListener("change", scheme);
-    return () => {
-      window.removeEventListener("hashchange", change);
-      system.removeEventListener("change", scheme);
-    };
+    return () => system.removeEventListener("change", scheme);
   }, []);
   useEffect(() => {
-    if (!toast) return;
+    document.documentElement.dataset["theme"] = light ? "light" : "dark";
+    writeStored(themeKey, theme);
+  }, [light, theme]);
+  return { theme, setTheme };
+}
+
+type ToastMessage = { text: string; failed?: boolean };
+
+// A short message that hides itself after a moment.
+function useToast() {
+  const [toast, setToast] = useState<ToastMessage | null>(null);
+  useEffect(() => {
+    if (!toast) return undefined;
     const id = setTimeout(() => setToast(null), 2500);
     return () => clearTimeout(id);
   }, [toast]);
+  return [toast, setToast] as const;
+}
+
+function App() {
+  const [page, setPage] = useState<Page>(() => pageOf(location.hash));
+  // Not scoped to a gateway: sign-in and the gateway list work without one.
+  const [client] = useState(() => createClient({}));
+  // Set by the open gateway while it has unsaved model drafts.
+  const unsaved = useRef(false);
+  const session = useSession(client, unsaved);
+  const { phase, auth, gateways, selected } = session;
+  const [toast, setToast] = useToast();
+  const { theme, setTheme } = useTheme();
+  const [hideEmails, setHideEmails] = useState(storedHideEmails);
+  const [help, setHelp] = useState(false);
+
   useEffect(() => {
-    document.documentElement.dataset.theme = light ? "light" : "dark";
-    writeStored(themeKey, theme);
-  }, [light, theme]);
+    const change = () => setPage(pageOf(location.hash));
+    window.addEventListener("hashchange", change);
+    return () => window.removeEventListener("hashchange", change);
+  }, []);
   useEffect(() => storeHideEmails(hideEmails), [hideEmails]);
 
-  async function signIn() {
-    const current = ++sequence.current;
-    const value = token;
-    setToken("");
-    setLoginError("");
-    setPhase("loading");
-    try {
-      await client.request("/api/auth/session", "POST", { token: value });
-    } catch (err) {
-      if (current !== sequence.current) return;
-      setLoginError(errorMessage(err, "Could not sign in."));
-      setPhase("login");
-      return;
-    }
-    if (current === sequence.current) void load();
-  }
-  const canSignOut = phase === "ready" && auth?.mode === "token";
-  async function signOut() {
-    if (
-      unsaved.current &&
-      !confirm("Discard unsaved model changes and sign out?")
-    )
-      return;
-    setLoginError("");
-    try {
-      await client.request("/api/auth/session", "DELETE");
-    } catch {
-      // The reload below shows whether the session is still open.
-    }
-    void load();
-  }
-  const sessionEnded = () => {
-    if (ending.current) return;
-    ending.current = true;
-    if (auth?.mode === "external") {
-      // A document navigation lets the authentication proxy start login again.
-      location.reload();
-      return;
-    }
-    setLoginError("Your session ended. Sign in again.");
-    void load();
-  };
   const select = (id: string) => {
     if (id === selected) return;
     if (
@@ -220,7 +80,7 @@ function App() {
     )
       return;
     writeStored(gatewayKey, id);
-    setSelected(id);
+    session.setSelected(id);
   };
   const navigate = (next: Page) => {
     setPage(next);
@@ -240,87 +100,27 @@ function App() {
     }
   };
   const gateway = gateways.find((g) => g.id === selected);
-  const nextTheme = themes[(themes.indexOf(theme) + 1) % themes.length];
-  const ThemeIcon = themeIcons[theme];
 
   return (
     <PrivacyProvider value={hideEmails}>
-      <header className={`topbar ${gateway ? "" : "is-bare"}`}>
-        <a
-          className="wordmark"
-          href="#overview"
-          onClick={() => navigate("Overview")}
-        >
-          <RouterLogo />
-          <span>
-            <strong>vrouter</strong>
-          </span>
-        </a>
-        {phase === "ready" && gateways.length > (gateway ? 1 : 0) && (
-          <GatewaySwitcher
-            gateways={gateways}
-            selected={gateway ? gateway.id : null}
-            onSelect={select}
-          />
-        )}
-        {gateway && (
-          <nav aria-label="Main navigation">
-            {pages.map((item) => {
-              const Icon = pageIcons[item];
-              return (
-                <a
-                  key={item}
-                  href={`#${item.toLowerCase()}`}
-                  className={page === item ? "active" : ""}
-                  aria-current={page === item ? "page" : undefined}
-                  onClick={() => navigate(item)}
-                >
-                  <Icon size={19} aria-hidden="true" />
-                  {item}
-                </a>
-              );
-            })}
-          </nav>
-        )}
-        <div className="header-actions">
-          <button
-            className="icon-button"
-            aria-label={
-              hideEmails ? "Show email addresses" : "Hide email addresses"
-            }
-            title={hideEmails ? "Show email addresses" : "Hide email addresses"}
-            onClick={() => setHideEmails(!hideEmails)}
-          >
-            {hideEmails ? <EyeOff size={16} /> : <Eye size={16} />}
-          </button>
-          <button
-            className="icon-button"
-            aria-label={`Theme: ${theme}. Switch to ${nextTheme}`}
-            title={`Theme: ${theme}`}
-            onClick={() => setTheme(nextTheme)}
-          >
-            <ThemeIcon size={16} />
-          </button>
-          <button
-            className="icon-button"
-            aria-label="Show API endpoints"
-            title="API endpoints"
-            onClick={() => setHelp(true)}
-          >
-            <CircleHelp size={16} />
-          </button>
-          {canSignOut && (
-            <button
-              className="icon-button"
-              aria-label="Sign out"
-              title="Sign out"
-              onClick={signOut}
-            >
-              <LogOut size={16} />
-            </button>
-          )}
-        </div>
-      </header>
+      <TopBar
+        gateway={gateway}
+        gateways={gateways}
+        ready={phase === "ready"}
+        page={page}
+        navigate={navigate}
+        onSelect={select}
+        actions={{
+          hideEmails,
+          setHideEmails,
+          theme,
+          setTheme,
+          onHelp: () => setHelp(true),
+          onSignOut: session.canSignOut
+            ? () => void session.signOut()
+            : undefined,
+        }}
+      />
       <main>
         {phase === "loading" && (
           <div className="loading" role="status" aria-label="Loading">
@@ -329,66 +129,22 @@ function App() {
         )}
         {phase === "error" && (
           <div className="notice error" role="alert">
-            {error} <button onClick={() => void load()}>Try again</button>
+            {session.error}{" "}
+            <button onClick={() => void session.load()}>Try again</button>
           </div>
         )}
         {phase === "login" && auth && (
-          <section className="login-panel">
-            <h1>Sign in</h1>
-            {loginError && (
-              <div className="notice error" role="alert">
-                {loginError}
-              </div>
-            )}
-            {auth.mode === "local" ? (
-              <>
-                <p className="login-note">
-                  This vrouter has no sign-in configured. It only answers a
-                  browser running on the same machine, at a loopback address.
-                </p>
-                <button className="primary" onClick={() => void load()}>
-                  Try again
-                </button>
-              </>
-            ) : auth.mode === "external" ? (
-              <>
-                <p className="login-note">
-                  Your sign-in proxy did not accept this session.
-                </p>
-                {/* A document navigation lets the proxy start login again. */}
-                <button className="primary" onClick={() => location.reload()}>
-                  Sign in again
-                </button>
-              </>
-            ) : (
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void signIn();
-                }}
-              >
-                <label htmlFor="admin-token">Admin token</label>
-                <input
-                  id="admin-token"
-                  type="password"
-                  value={token}
-                  onChange={(e) => setToken(e.target.value)}
-                  required
-                  autoComplete="current-password"
-                />
-                <button className="primary">Sign in with token</button>
-              </form>
-            )}
-          </section>
+          <LoginPanel
+            auth={auth}
+            error={session.loginError}
+            token={session.token}
+            setToken={session.setToken}
+            onRetry={() => void session.load()}
+            onSignIn={() => void session.signIn()}
+          />
         )}
         {phase === "ready" && !gateway && (
-          <div className="empty">
-            <p>
-              {gateways.length
-                ? "That gateway is no longer available. Choose another."
-                : "No gateway is available."}
-            </p>
-          </div>
+          <NoGateway others={gateways.length > 0} />
         )}
         {phase === "ready" && gateway && auth && (
           <Workspace
@@ -396,30 +152,118 @@ function App() {
             gateway={gateway}
             page={page}
             navigate={navigate}
-            authMode={auth.mode}
             publicUrl={auth.publicUrl}
-            onUnauthorized={sessionEnded}
-            onGone={() => void reloadGateways()}
+            onUnauthorized={session.sessionEnded}
+            onGone={() => void session.reloadGateways()}
             copy={copy}
             notify={(text) => setToast({ text })}
-            onDirty={(dirty) => (unsaved.current = dirty)}
+            onDirty={(dirty) => {
+              unsaved.current = dirty;
+            }}
           />
         )}
       </main>
       {help && (
         <HelpDialog
-          publicUrl={auth?.publicUrl || ""}
+          publicUrl={auth?.publicUrl ?? ""}
           copy={copy}
           onClose={() => setHelp(false)}
         />
       )}
-      {toast && (
-        <div className="toast" role={toast.failed ? "alert" : "status"}>
-          {toast.failed ? <TriangleAlert size={15} /> : <Check size={15} />}
-          {toast.text}
-        </div>
-      )}
+      {toast && <Toast toast={toast} />}
     </PrivacyProvider>
   );
 }
-createRoot(document.getElementById("root")!).render(<App />);
+
+function NoGateway({ others }: { others: boolean }) {
+  return (
+    <div className="empty">
+      <p>
+        {others
+          ? "That gateway is no longer available. Choose another."
+          : "No gateway is available."}
+      </p>
+    </div>
+  );
+}
+
+function Toast({ toast }: { toast: ToastMessage }) {
+  return (
+    <div className="toast" role={toast.failed === true ? "alert" : "status"}>
+      {toast.failed === true ? (
+        <TriangleAlert size={15} />
+      ) : (
+        <Check size={15} />
+      )}
+      {toast.text}
+    </div>
+  );
+}
+
+function LoginPanel({
+  auth,
+  error,
+  token,
+  setToken,
+  onRetry,
+  onSignIn,
+}: {
+  auth: AuthInfo;
+  error: string;
+  token: string;
+  setToken: (token: string) => void;
+  onRetry: () => void;
+  onSignIn: () => void;
+}) {
+  return (
+    <section className="login-panel">
+      <h1>Sign in</h1>
+      {error && (
+        <div className="notice error" role="alert">
+          {error}
+        </div>
+      )}
+      {auth.mode === "local" ? (
+        <>
+          <p className="login-note">
+            This vrouter has no sign-in configured. It only answers a browser
+            running on the same machine, at a loopback address.
+          </p>
+          <button className="primary" onClick={onRetry}>
+            Try again
+          </button>
+        </>
+      ) : auth.mode === "external" ? (
+        <>
+          <p className="login-note">
+            Your sign-in proxy did not accept this session.
+          </p>
+          {/* A document navigation lets the proxy start login again. */}
+          <button className="primary" onClick={() => location.reload()}>
+            Sign in again
+          </button>
+        </>
+      ) : (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            onSignIn();
+          }}
+        >
+          <label htmlFor="admin-token">Admin token</label>
+          <input
+            id="admin-token"
+            type="password"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            required
+            autoComplete="current-password"
+          />
+          <button className="primary">Sign in with token</button>
+        </form>
+      )}
+    </section>
+  );
+}
+
+createRoot(document.querySelector("#root")!).render(<App />);

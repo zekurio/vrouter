@@ -23,7 +23,7 @@ func (s *server) openCallback(id, provider, authMode string) (string, error) {
 	default:
 		return "", errors.New("unsupported sign-in method")
 	}
-	l, err := net.Listen("tcp4", "127.0.0.1:"+port)
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp4", "127.0.0.1:"+port)
 	if err != nil {
 		return "", errors.New("callback listener unavailable")
 	}
@@ -32,7 +32,7 @@ func (s *server) openCallback(id, provider, authMode string) (string, error) {
 	}
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.receiveCallback(w, r, id, path) }), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 30 * time.Second}
 	s.callbacks[id] = []*http.Server{srv}
-	go srv.Serve(l)
+	go func() { _ = srv.Serve(l) }()
 	return "http://" + net.JoinHostPort(host, fmtPort(l.Addr())) + path, nil
 }
 func fmtPort(addr net.Addr) string { _, port, _ := net.SplitHostPort(addr.String()); return port }
@@ -57,6 +57,7 @@ func (s *server) sweepOAuth() {
 		delete(s.callbacks, id)
 	}
 }
+
 func (s *server) receiveCallback(w http.ResponseWriter, r *http.Request, id, path string) {
 	page := callbackPage{Title: "Sign-in link not recognized", Body: "Start again from Add account in vrouter."}
 	status := 400
@@ -68,7 +69,7 @@ func (s *server) receiveCallback(w http.ResponseWriter, r *http.Request, id, pat
 		w.WriteHeader(status)
 		_ = callbackTemplate.Execute(w, page)
 	}()
-	if r.Method != "GET" || r.URL.Path != path || len(r.URL.RawQuery) > 16<<10 {
+	if r.Method != http.MethodGet || r.URL.Path != path || len(r.URL.RawQuery) > 16<<10 {
 		return
 	}
 	s.oauthMu.Lock()
@@ -100,6 +101,7 @@ type callbackPage struct {
 	OK                  bool
 }
 
+//nolint:gochecknoglobals // parsed once at startup
 var callbackTemplate = template.Must(template.New("callback").Parse(`<!doctype html>
 <html lang="en">
 <head>

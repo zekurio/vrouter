@@ -1,3 +1,4 @@
+// Command vrouter runs the model gateway and serves its web UI.
 package main
 
 import (
@@ -67,6 +68,13 @@ func main() {
 		slog.Error("configuration error", "error", err)
 		os.Exit(1)
 	}
+	if err := serve(addr, handler); err != nil {
+		slog.Error("server stopped", "error", err)
+		os.Exit(1)
+	}
+}
+
+func serve(addr string, handler http.Handler) error {
 	if closer, ok := handler.(io.Closer); ok {
 		defer closer.Close()
 	}
@@ -83,8 +91,8 @@ func main() {
 	}()
 	slog.Info("vrouter listening", "address", addr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		slog.Error("server stopped", "error", err)
-		os.Exit(1)
+		return err
 	}
 	<-shutdownDone
+	return nil
 }

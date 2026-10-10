@@ -33,33 +33,16 @@ func randomToken() string {
 	}
 	return base64.RawURLEncoding.EncodeToString(b[:])
 }
+
 func (s *server) startOAuth(w http.ResponseWriter, r *http.Request) {
 	p := r.PathValue("provider")
 	if p != "codex" && p != "claude" {
 		writeJSON(w, 400, map[string]string{"error": "Choose Codex or Claude"})
 		return
 	}
-	var input struct {
-		AccountID string `json:"accountId"`
-		AuthMode  string `json:"authMode"`
-	}
-	if r.Body != nil {
-		err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&input)
-		if err != nil && err != io.EOF {
-			writeJSON(w, 400, map[string]string{"error": "Invalid sign-in request"})
-			return
-		}
-	}
-	requested := strings.ToLower(strings.TrimSpace(input.AuthMode))
-	if requested != "" {
-		if p != "codex" {
-			writeJSON(w, 400, map[string]string{"error": "This sign-in method is not supported for Claude"})
-			return
-		}
-		if requested != "codex" {
-			writeJSON(w, 400, map[string]string{"error": "Unsupported sign-in method. Use Codex sign-in."})
-			return
-		}
+	accountID, ok := oauthStartAccount(w, r, p)
+	if !ok {
+		return
 	}
 	s.oauthMu.Lock()
 	defer s.oauthMu.Unlock()
@@ -78,57 +61,10 @@ func (s *server) startOAuth(w http.ResponseWriter, r *http.Request) {
 		endpoint = "https://claude.ai/oauth/authorize"
 		scope = claudeScope
 	}
-	if input.AccountID != "" {
-		var selected *storedAccount
-		for _, a := range s.store.snapshot().Accounts {
-			if a.ID == input.AccountID && a.Provider == p {
-				candidate := a
-				selected = &candidate
-				break
-			}
-		}
-		if selected == nil {
-			missing := "Saved Claude registration not found"
-			if p == "codex" {
-				missing = "Saved Codex registration not found"
-			}
-			writeJSON(w, 404, map[string]string{"error": missing})
+	if accountID != "" {
+		if status, message := s.bindOAuthReconnect(p, accountID, &session, query); status != 0 {
+			writeJSON(w, status, map[string]string{"error": message})
 			return
-		}
-		switch p {
-		case "claude":
-			if selected.AuthMode != "oauth" {
-				writeJSON(w, 404, map[string]string{"error": "Saved Claude registration not found"})
-				return
-			}
-			// Reconnect runs the shared Claude sign-in client used by token
-			// refresh. A record stored with a different client cannot complete
-			// this flow, so it is refused instead of authorizing the wrong
-			// registration.
-			if selected.ClientID != claudeClientID {
-				writeJSON(w, 400, map[string]string{"error": "Saved Claude connection uses a different sign-in client and cannot be renewed"})
-				return
-			}
-			session.AccountID = selected.ID
-			if selected.Email != "" {
-				query.Set("login_hint", selected.Email)
-			}
-		case "codex":
-			if selected.AuthMode != "codex" {
-				writeJSON(w, 400, map[string]string{"error": "This connection cannot be renewed. Add the account using Codex sign-in."})
-				return
-			}
-			if selected.ClientID != codexNativeClientID {
-				writeJSON(w, 400, map[string]string{"error": "Saved Codex connection uses a different sign-in client and cannot be renewed"})
-				return
-			}
-			// Reconnect binds the previously verified workspace and user.
-			// Imported records without a subject must be added again instead.
-			if selected.AccountID == "" || selected.Subject == "" {
-				writeJSON(w, 400, map[string]string{"error": "Saved Codex connection has no verified user identity to renew. Add the account again instead."})
-				return
-			}
-			session.AccountID = selected.ID
 		}
 	}
 	if p == "codex" {
@@ -158,14 +94,7 @@ func (s *server) startOAuth(w http.ResponseWriter, r *http.Request) {
 		uri, err = s.openCallback(id, p, session.AuthMode)
 	}
 	if err != nil {
-		message := "Could not open the loopback callback listener. Retry the sign-in."
-		switch {
-		case p == "claude":
-			message = "Could not open the loopback callback listener. Close any application using Claude's port 54545 and retry."
-		case session.AuthMode == "codex":
-			message = "Could not open the local Codex callback on 127.0.0.1:1455. Close Codex CLI or cancel the pending sign-in using that port, then retry."
-		}
-		writeJSON(w, 502, map[string]string{"error": message})
+		writeJSON(w, 502, map[string]string{"error": oauthCallbackFailure(p, session.AuthMode)})
 		return
 	}
 	session.RedirectURI = uri
@@ -181,10 +110,101 @@ func (s *server) startOAuth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"id": id, "provider": p, "flow": session.Flow, "url": endpoint + "?" + query.Encode(), "redirectUri": uri, "expiresAt": session.Expires})
 }
 
+// oauthStartAccount decodes a sign-in request and returns the saved account
+// it reconnects, if any. Only native Codex sign-in may be named explicitly.
+func oauthStartAccount(w http.ResponseWriter, r *http.Request, p string) (string, bool) {
+	var input struct {
+		AccountID string `json:"accountId"`
+		AuthMode  string `json:"authMode"`
+	}
+	if r.Body != nil {
+		err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&input)
+		if err != nil && err != io.EOF {
+			writeJSON(w, 400, map[string]string{"error": "Invalid sign-in request"})
+			return "", false
+		}
+	}
+	requested := strings.ToLower(strings.TrimSpace(input.AuthMode))
+	if requested != "" {
+		if p != "codex" {
+			writeJSON(w, 400, map[string]string{"error": "This sign-in method is not supported for Claude"})
+			return "", false
+		}
+		if requested != "codex" {
+			writeJSON(w, 400, map[string]string{"error": "Unsupported sign-in method. Use Codex sign-in."})
+			return "", false
+		}
+	}
+	return input.AccountID, true
+}
+
+// bindOAuthReconnect binds a sign-in to the saved account it renews. It
+// returns the HTTP status and message of a refusal, or 0.
+func (s *server) bindOAuthReconnect(p, accountID string, session *oauthSession, query url.Values) (int, string) {
+	var selected *storedAccount
+	for _, a := range s.store.snapshot().Accounts {
+		if a.ID == accountID && a.Provider == p {
+			candidate := a
+			selected = &candidate
+			break
+		}
+	}
+	if selected == nil {
+		missing := "Saved Claude registration not found"
+		if p == "codex" {
+			missing = "Saved Codex registration not found"
+		}
+		return 404, missing
+	}
+	switch p {
+	case "claude":
+		if selected.AuthMode != "oauth" {
+			return 404, "Saved Claude registration not found"
+		}
+		// Reconnect runs the shared Claude sign-in client used by token
+		// refresh. A record stored with a different client cannot complete
+		// this flow, so it is refused instead of authorizing the wrong
+		// registration.
+		if selected.ClientID != claudeClientID {
+			return 400, "Saved Claude connection uses a different sign-in client and cannot be renewed"
+		}
+		session.AccountID = selected.ID
+		if selected.Email != "" {
+			query.Set("login_hint", selected.Email)
+		}
+	case "codex":
+		if selected.AuthMode != "codex" {
+			return 400, "This connection cannot be renewed. Add the account using Codex sign-in."
+		}
+		if selected.ClientID != codexNativeClientID {
+			return 400, "Saved Codex connection uses a different sign-in client and cannot be renewed"
+		}
+		// Reconnect binds the previously verified workspace and user.
+		// Imported records without a subject must be added again instead.
+		if selected.AccountID == "" || selected.Subject == "" {
+			return 400, "Saved Codex connection has no verified user identity to renew. Add the account again instead."
+		}
+		session.AccountID = selected.ID
+	}
+	return 0, ""
+}
+
+// oauthCallbackFailure explains a loopback listener that could not open.
+func oauthCallbackFailure(p, authMode string) string {
+	switch {
+	case p == "claude":
+		return "Could not open the loopback callback listener. Close any application using Claude's port 54545 and retry."
+	case authMode == "codex":
+		return "Could not open the local Codex callback on 127.0.0.1:1455. Close Codex CLI or cancel the pending sign-in using that port, then retry."
+	}
+	return "Could not open the loopback callback listener. Retry the sign-in."
+}
+
 func (s *server) saveOAuthSession(id string, session oauthSession) {
 	s.oauth[id] = session
 	time.AfterFunc(time.Until(session.Expires)+time.Second, func() { s.oauthMu.Lock(); defer s.oauthMu.Unlock(); s.sweepOAuth() })
 }
+
 func (s *server) session(w http.ResponseWriter, r *http.Request) (oauthSession, bool) {
 	session, ok := s.oauth[r.PathValue("id")]
 	if !ok || time.Now().After(session.Expires) {
@@ -194,6 +214,7 @@ func (s *server) session(w http.ResponseWriter, r *http.Request) (oauthSession, 
 	}
 	return session, true
 }
+
 func (s *server) oauthStatus(w http.ResponseWriter, r *http.Request) {
 	s.oauthMu.Lock()
 	defer s.oauthMu.Unlock()
@@ -213,6 +234,7 @@ func (s *server) oauthStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]string{"status": status, "error": session.Error})
 }
+
 func (s *server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		RedirectURL string `json:"redirectUrl"`
@@ -232,22 +254,10 @@ func (s *server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "Finish device sign-in with the provider. No callback is needed."})
 		return
 	}
-	var q url.Values
-	if session.Flow == "code" {
-		code, state, ok := strings.Cut(strings.TrimSpace(body.Code), "#")
-		if !ok || code == "" || state == "" || strings.ContainsAny(code+state, " \t\r\n#") {
-			writeJSON(w, 400, map[string]string{"error": "Paste the complete authorization code from Claude, including # and the text after it"})
-			return
-		}
-		q = url.Values{"code": {code}, "state": {state}}
-	} else {
-		u, err := url.Parse(strings.TrimSpace(body.RedirectURL))
-		expected, _ := url.Parse(session.RedirectURI)
-		if err != nil || u.User != nil || u.Fragment != "" || u.Scheme != expected.Scheme || u.Host != expected.Host || u.Path != expected.Path {
-			writeJSON(w, 400, map[string]string{"error": "Callback address does not match this sign-in"})
-			return
-		}
-		q = u.Query()
+	q, refusal := oauthPastedCallback(session, body.RedirectURL, body.Code)
+	if refusal != "" {
+		writeJSON(w, 400, map[string]string{"error": refusal})
+		return
 	}
 	if err := s.completeOAuth(r.Context(), r.PathValue("id"), q); err != nil {
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
@@ -256,21 +266,31 @@ func (s *server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "connected"})
 }
 
+// oauthPastedCallback reads the authorization result a user pasted: a Claude
+// code#state pair, or the loopback address of this sign-in. It returns the
+// message of a refusal.
+func oauthPastedCallback(session oauthSession, redirectURL, pasted string) (url.Values, string) {
+	if session.Flow == "code" {
+		code, state, ok := strings.Cut(strings.TrimSpace(pasted), "#")
+		if !ok || code == "" || state == "" || strings.ContainsAny(code+state, " \t\r\n#") {
+			return nil, "Paste the complete authorization code from Claude, including # and the text after it"
+		}
+		return url.Values{"code": {code}, "state": {state}}, ""
+	}
+	u, err := url.Parse(strings.TrimSpace(redirectURL))
+	expected, _ := url.Parse(session.RedirectURI)
+	if err != nil || u.User != nil || u.Fragment != "" || u.Scheme != expected.Scheme || u.Host != expected.Host || u.Path != expected.Path {
+		return nil, "Callback address does not match this sign-in"
+	}
+	return u.Query(), ""
+}
+
 // oauthMu is held throughout callback validation and exchange. A submitted
 // authorization code is consumed even when exchange fails, and cannot replay.
 func (s *server) completeOAuth(ctx context.Context, id string, q url.Values) error {
 	session, ok := s.oauth[id]
-	if !ok || time.Now().After(session.Expires) {
-		return errors.New("Sign-in expired")
-	}
-	if session.Submitted || session.Completed {
-		return errors.New("Callback already submitted")
-	}
-	if len(q["state"]) != 1 || !tokenEqual(q.Get("state"), session.State) || len(q["code"]) > 1 || len(q["client_id"]) > 1 || len(q["error"]) > 1 {
-		return errors.New("Callback does not match this sign-in")
-	}
-	if q.Get("code") == "" && q.Get("error") == "" {
-		return errors.New("Callback has no authorization result")
+	if err := oauthCallbackMismatch(session, ok, q); err != nil {
+		return err
 	}
 	session.Submitted = true
 	s.oauth[id] = session
@@ -285,15 +305,8 @@ func (s *server) completeOAuth(ctx context.Context, id string, q url.Values) err
 	if q.Get("error") != "" {
 		return fail("Sign-in was not approved. Start again to grant access.")
 	}
-	if session.Provider == "codex" {
-		if session.AuthMode != "codex" {
-			return fail("Unsupported sign-in method. Start a new Codex sign-in.")
-		}
-		// A native callback need not name the public client, but cannot
-		// substitute a different one.
-		if issued := q.Get("client_id"); issued != "" && issued != session.ClientID {
-			return fail("Returned client ID does not match the native sign-in client")
-		}
+	if refusal := codexCallbackRefusal(session, q); refusal != "" {
+		return fail(refusal)
 	}
 	fields := url.Values{"grant_type": {"authorization_code"}, "client_id": {session.ClientID}, "code": {q.Get("code")}, "code_verifier": {session.Verifier}, "redirect_uri": {session.RedirectURI}}
 	endpoint := codexNativeTokenURL
@@ -307,24 +320,76 @@ func (s *server) completeOAuth(ctx context.Context, id string, q url.Values) err
 	if err != nil {
 		return fail("Could not exchange the authorization code. Start a new sign-in.")
 	}
+	a, refusal := s.oauthAccount(ctx, session, tokens)
+	if refusal != "" {
+		return fail(refusal)
+	}
+	a, err = s.saveOAuthAccount(session.AccountID, a)
+	if err != nil {
+		return fail("Could not save the verified connection")
+	}
+	s.catalogMu.Lock()
+	delete(s.catalogs, a.ID)
+	s.catalogMu.Unlock()
+	s.quotaMu.Lock()
+	delete(s.quotas, a.ID)
+	delete(s.lastQuotas, a.ID)
+	s.quotaMu.Unlock()
+	session.Completed = true
+	session.Verifier = ""
+	session.Nonce = ""
+	session.DeviceAuthID = ""
+	session.UserCode = ""
+	s.oauth[id] = session
+	s.sweepOAuth()
+	return nil
+}
+
+// oauthCallbackMismatch checks a callback against its pending session before
+// the authorization code is consumed.
+func oauthCallbackMismatch(session oauthSession, found bool, q url.Values) error {
+	if !found || time.Now().After(session.Expires) {
+		return errors.New("Sign-in expired")
+	}
+	if session.Submitted || session.Completed {
+		return errors.New("Callback already submitted")
+	}
+	if len(q["state"]) != 1 || !tokenEqual(q.Get("state"), session.State) || len(q["code"]) > 1 || len(q["client_id"]) > 1 || len(q["error"]) > 1 {
+		return errors.New("Callback does not match this sign-in")
+	}
+	if q.Get("code") == "" && q.Get("error") == "" {
+		return errors.New("Callback has no authorization result")
+	}
+	return nil
+}
+
+// codexCallbackRefusal returns why a Codex callback cannot be exchanged.
+func codexCallbackRefusal(session oauthSession, q url.Values) string {
+	if session.Provider != "codex" {
+		return ""
+	}
+	if session.AuthMode != "codex" {
+		return "Unsupported sign-in method. Start a new Codex sign-in."
+	}
+	// A native callback need not name the public client, but cannot
+	// substitute a different one.
+	if issued := q.Get("client_id"); issued != "" && issued != session.ClientID {
+		return "Returned client ID does not match the native sign-in client"
+	}
+	return ""
+}
+
+// oauthAccount builds the account for exchanged tokens. A Codex identity
+// comes only from a verified ID token. It returns the message of a refusal.
+func (s *server) oauthAccount(ctx context.Context, session oauthSession, tokens tokenResponse) (storedAccount, string) {
 	a := storedAccount{ID: randomToken(), Provider: session.Provider, AccessToken: tokens.AccessToken, RefreshToken: tokens.RefreshToken, IDToken: tokens.IDToken, ClientID: session.ClientID, ExpiresAt: time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second), CreatedAt: time.Now().UTC(), AuthMode: "oauth"}
 	if tokens.Scope != nil {
 		a.Scopes = strings.Fields(*tokens.Scope)
 	}
 	if session.Provider == "codex" {
-		var identity verifiedIdentity
-		if session.Flow == "device" {
-			identity, err = s.verifyDeviceIDToken(ctx, tokens.IDToken, session.ClientID)
-		} else {
-			identity, err = s.verifyIDToken(ctx, tokens.IDToken, session.ClientID, session.Nonce)
-		}
-		if err != nil {
-			return fail("Provider identity could not be verified. Start a new sign-in.")
-		}
-		// A native login without a workspace cannot route subscription
-		// traffic and cannot be bound safely, so it is refused.
-		if identity.WorkspaceID == "" {
-			return fail("Codex sign-in did not return a workspace identity. Start a new sign-in.")
+		identity, refusal := s.codexOAuthIdentity(ctx, session, tokens.IDToken)
+		if refusal != "" {
+			return a, refusal
 		}
 		a.AuthMode = "codex"
 		a.AccountID = identity.WorkspaceID
@@ -342,10 +407,34 @@ func (s *server) completeOAuth(ctx context.Context, id string, q url.Values) err
 	if a.Label == "" {
 		a.Label = providerLabel(a.Provider)
 	}
-	err = s.store.update(func(d *diskState) error {
+	return a, ""
+}
+
+func (s *server) codexOAuthIdentity(ctx context.Context, session oauthSession, idToken string) (verifiedIdentity, string) {
+	var identity verifiedIdentity
+	var err error
+	if session.Flow == "device" {
+		identity, err = s.verifyDeviceIDToken(ctx, idToken, session.ClientID)
+	} else {
+		identity, err = s.verifyIDToken(ctx, idToken, session.ClientID, session.Nonce)
+	}
+	if err != nil {
+		return identity, "Provider identity could not be verified. Start a new sign-in."
+	}
+	// A native login without a workspace cannot route subscription
+	// traffic and cannot be bound safely, so it is refused.
+	if identity.WorkspaceID == "" {
+		return identity, "Codex sign-in did not return a workspace identity. Start a new sign-in."
+	}
+	return identity, ""
+}
+
+// saveOAuthAccount stores a verified sign-in and returns the saved record.
+func (s *server) saveOAuthAccount(selectedID string, a storedAccount) (storedAccount, error) {
+	err := s.store.update(func(d *diskState) error {
 		selected, same := -1, -1
 		for i, old := range d.Accounts {
-			if session.AccountID != "" && old.ID == session.AccountID {
+			if selectedID != "" && old.ID == selectedID {
 				selected = i
 				continue
 			}
@@ -356,7 +445,7 @@ func (s *server) completeOAuth(ctx context.Context, id string, q url.Values) err
 		// A selected reconnect must still find its record, and the record must
 		// still describe the freshly verified identity. Anything else is
 		// refused rather than silently replaced.
-		if session.AccountID != "" {
+		if selectedID != "" {
 			if selected < 0 {
 				return errors.New("selected account was removed")
 			}
@@ -376,24 +465,7 @@ func (s *server) completeOAuth(ctx context.Context, id string, q url.Values) err
 		d.Accounts = append(d.Accounts, a)
 		return nil
 	})
-	if err != nil {
-		return fail("Could not save the verified connection")
-	}
-	s.catalogMu.Lock()
-	delete(s.catalogs, a.ID)
-	s.catalogMu.Unlock()
-	s.quotaMu.Lock()
-	delete(s.quotas, a.ID)
-	delete(s.lastQuotas, a.ID)
-	s.quotaMu.Unlock()
-	session.Completed = true
-	session.Verifier = ""
-	session.Nonce = ""
-	session.DeviceAuthID = ""
-	session.UserCode = ""
-	s.oauth[id] = session
-	s.sweepOAuth()
-	return nil
+	return a, err
 }
 
 // oauthSameAccount reports whether a freshly authorized credential is the same
