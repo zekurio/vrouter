@@ -295,6 +295,11 @@ func forwardRequest(r *http.Request, prepared *preparedInference, a storedAccoun
 	if channel == "claude" && prepared.fast {
 		addAnthropicBeta(req, claudeFastBeta)
 	}
+	// Without this header ChatGPT sends each turn to any machine, and the
+	// prompt cache misses.
+	if prepared.session != "" {
+		req.Header.Set("Session-Id", prepared.session)
+	}
 	return req, nil
 }
 

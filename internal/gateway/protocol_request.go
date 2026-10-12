@@ -3,6 +3,8 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,8 +82,10 @@ type preparedInference struct {
 	fast                   bool
 	speed                  string
 	ignoredParameters      []string
-	payload                map[string]json.RawMessage
-	accounts               []storedAccount
+	// session is the Codex subscription cache affinity key, sent as session-id.
+	session  string
+	payload  map[string]json.RawMessage
+	accounts []storedAccount
 }
 
 // Select the model before quota admission. The endpoint only selects the
@@ -256,6 +260,51 @@ func (p *preparedInference) applyCodexRequestRules(payload, clientPayload map[st
 	p.upstreamStream = true
 	if _, ok := payload["instructions"]; !ok {
 		payload["instructions"] = ""
+	}
+	p.session = codexSession(payload)
+	if payload["prompt_cache_key"] == nil && p.session != "" {
+		payload["prompt_cache_key"] = p.session
+	}
+	return nil
+}
+
+// codexSession returns the key that keeps one conversation on one cache.
+// ChatGPT routes a subscription request by its session-id header, not by
+// prompt_cache_key, so every turn must present the same value. A client that
+// sends no key gets one from the start of its conversation, which later turns
+// repeat unchanged.
+func codexSession(payload map[string]any) string {
+	key := str(payload["prompt_cache_key"])
+	unsafe := func(r rune) bool { return r <= ' ' || r >= 0x7f }
+	if key != "" && len(key) <= 64 && !strings.ContainsFunc(key, unsafe) {
+		return key
+	}
+	seed := any(key)
+	if key == "" {
+		seed = []any{payload["model"], payload["instructions"], codexSessionAnchor(payload["input"])}
+	}
+	data, err := json.Marshal(seed)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:16])
+}
+
+// codexSessionAnchor returns the first user item of a Responses input. Items
+// before it, such as a system prompt, are often the same in every conversation.
+func codexSessionAnchor(input any) any {
+	items, ok := input.([]any)
+	if !ok {
+		return input
+	}
+	for _, item := range items {
+		if str(object(item)["role"]) == "user" {
+			return item
+		}
+	}
+	if len(items) > 0 {
+		return items[0]
 	}
 	return nil
 }
