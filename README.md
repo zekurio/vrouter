@@ -155,7 +155,7 @@ Messages `metadata.user_id` has no equivalent on the other side. vrouter drops i
 
 Claude caches a prompt only when the request asks for it. vrouter asks for automatic caching on every Responses or Chat request it converts for Claude. Messages requests keep their own `cache_control`.
 
-Responses and Chat clients may send `prompt_cache_key`. vrouter forwards it to Codex and drops it for Claude.
+Responses and Chat clients may send `prompt_cache_key`. vrouter forwards it to Codex and drops it for Claude. A Codex subscription picks the cache from a `session-id` header instead, so vrouter sends the key there too. When a request has no key, vrouter derives one from the model, the instructions and the first user message, so every turn of a conversation shares it.
 
 ### Fast mode
 
