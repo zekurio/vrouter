@@ -147,6 +147,7 @@ func (s *usageStore) pending(ctx context.Context) ([]telemetryRecord, error) {
 		}
 		r.StartedAt = time.UnixMilli(started).UTC()
 		r.Outcome = outcomeIncomplete
+		r.Reason = reasonRestart
 		pending = append(pending, r)
 	}
 	return pending, rows.Err()

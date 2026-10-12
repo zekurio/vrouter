@@ -90,7 +90,7 @@ func relayNativeInference(w http.ResponseWriter, r *http.Request, reader io.Read
 	for {
 		n, err := reader.Read(buf)
 		if n > 0 && !relayInferenceChunk(w, scrubber.next(buf[:n]), p.stream) {
-			attempt.outcome = outcomeIncomplete
+			attempt.cutShort(reasonClientClosed)
 			return
 		}
 		// The provider's terminal event ends the stream. Clients may
@@ -104,16 +104,17 @@ func relayNativeInference(w http.ResponseWriter, r *http.Request, reader io.Read
 			continue
 		}
 		if !relayInferenceChunk(w, scrubber.flush(), p.stream) {
-			attempt.outcome = outcomeIncomplete
+			attempt.cutShort(reasonClientClosed)
 			return
 		}
 		switch {
 		case r.Context().Err() != nil:
-			attempt.outcome = outcomeIncomplete
+			attempt.cutShort(reasonClientClosed)
 		case !errors.Is(err, io.EOF):
 			attempt.outcome = outcomeError
+			attempt.failure = "Provider connection failed mid-response"
 		case p.upstreamStream && !attempt.usage.terminal:
-			attempt.outcome = outcomeIncomplete
+			attempt.cutShort(reasonUpstreamEnded)
 		}
 		return
 	}
@@ -148,18 +149,23 @@ func readProtocolBody(reader io.Reader, protocol wireProtocol, sink *replySink) 
 func failInferenceReply(w http.ResponseWriter, r *http.Request, err error, attempt *inferenceAttempt, stream bool, sink *replySink) {
 	if err == nil {
 		err = errors.New("Provider stream ended before its terminal event")
-		attempt.outcome = outcomeIncomplete
+		attempt.cutShort(reasonUpstreamEnded)
 	} else {
 		attempt.outcome = outcomeError
 	}
 	var writeErr protocolWriteError
 	if r.Context().Err() != nil || errors.As(err, &writeErr) {
-		attempt.outcome = outcomeIncomplete
+		attempt.cutShort(reasonClientClosed)
 		return
 	}
 	reply := sink.reply
 	reply.status = "failed"
 	reply.errorBody = safeProtocolError(map[string]any{"type": "provider_stream_error", "message": err.Error()}, sink.account)
+	if attempt.outcome == outcomeError {
+		if body, jsonErr := json.Marshal(reply.errorBody); jsonErr == nil {
+			attempt.failure = errorSummary(body, sink.account)
+		}
+	}
 	if stream {
 		_ = sink.emitter.finish()
 		return
@@ -169,7 +175,7 @@ func failInferenceReply(w http.ResponseWriter, r *http.Request, err error, attem
 
 func writeInferenceReply(w http.ResponseWriter, status int, attempt *inferenceAttempt, p *preparedInference, reply *protocolReply) {
 	if p.client == messagesProtocol && replyHasPartialTool(reply) {
-		attempt.outcome = outcomeIncomplete
+		attempt.cutShort(reasonPartialTool)
 		writeJSON(w, 502, map[string]any{"error": map[string]any{"type": "provider_incomplete_error", "message": "Provider ended with partial tool arguments. Use streaming to receive these fragments."}})
 		return
 	}

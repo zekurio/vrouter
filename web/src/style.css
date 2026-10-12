@@ -2363,6 +2363,14 @@ dialog .notice {
 .request-result.incomplete {
   color: var(--amber);
 }
+.request-table .request-failure {
+  display: -webkit-box;
+  max-width: 260px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
 
 /* Six nav items and the gateway switcher need two rows below this width. */
 @media (max-width: 1100px) {

@@ -366,5 +366,15 @@ func (s *server) usageHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 503, map[string]string{"error": "Usage accounting is unavailable. Try again shortly."})
 		return
 	}
+	// Requests logged before account names were recorded take the current name.
+	names := map[string]string{}
+	for _, a := range s.store.snapshot().Accounts {
+		names[a.ID] = telemetryAccountName(a)
+	}
+	for i := range report.Requests {
+		if record := &report.Requests[i]; record.AccountName == "" {
+			record.AccountName = names[record.AccountID]
+		}
+	}
 	writeJSON(w, 200, report)
 }

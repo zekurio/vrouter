@@ -10,8 +10,12 @@ export type RequestRecord = {
   nativeModel: string;
   provider: string;
   accountId: string;
+  // The account's email or label. Absent when the account is unknown.
+  accountName?: string;
   status: number;
   durationMs: number;
+  // Time until a streamed response opened its first output block.
+  firstOutputMs?: number;
   inputTokens: number;
   outputTokens: number;
   // Cache reads and cache writes are both subsets of inputTokens.
@@ -26,6 +30,27 @@ export type RequestRecord = {
   speed?: Speed;
   stream: boolean;
   outcome: "success" | "error" | "incomplete";
+  // Why an incomplete request stopped. Older records have none.
+  reason?: CutReason;
+  // Redacted error summary of a failed request.
+  failure?: string;
+};
+export type CutReason =
+  | "output_limit"
+  | "content_filter"
+  | "provider_stopped"
+  | "client_closed"
+  | "upstream_ended"
+  | "partial_tool"
+  | "restart";
+const cutReasonLabel: Record<CutReason, string> = {
+  output_limit: "Output limit",
+  content_filter: "Content filter",
+  provider_stopped: "Stopped by provider",
+  client_closed: "Client disconnected",
+  upstream_ended: "Stream dropped",
+  partial_tool: "Partial tool call",
+  restart: "Interrupted by restart",
 };
 export const speeds = ["fast", "ultrafast"] as const;
 export type Speed = (typeof speeds)[number];
@@ -43,12 +68,16 @@ export function formatDuration(ms: number) {
   return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
 }
 
-// "200" for a clean call, otherwise the reason it did not finish cleanly.
+// The status for a clean call, otherwise the reason it did not finish cleanly.
 export function resultLabel(record: RequestRecord) {
   if (record.outcome === "incomplete")
-    return record.status ? `${record.status}, cut short` : "Cut short";
-  if (record.outcome === "error")
+    return record.reason ? cutReasonLabel[record.reason] : "Cut short";
+  if (record.outcome === "error") {
+    // The status went out before the response broke.
+    if (record.status >= 200 && record.status < 300)
+      return record.stream ? "Failed mid-stream" : "Failed mid-response";
     return record.status ? `${record.status} error` : "Failed";
+  }
   return record.status ? String(record.status) : "Done";
 }
 

@@ -129,7 +129,7 @@ The Usage page shows what the gateway's requests would cost at public API list p
 
 vrouter keeps running totals for each five-minute period by provider, model, key, and speed tier, and retains them permanently. Days and hours on the page follow the browser's time zone.
 
-The Requests view lists the latest 1,000 requests per gateway with their timing, model, key, account, outcome, HTTP status, and token counts. Older requests leave the list but stay in the totals. Prompts, completions, credentials, and raw provider error text are never stored. A request left running after a process restart is recorded as cut short, with unknown token usage. A request without a usage report adds no tokens or cost, and a request on a model without a list price counts as unpriced.
+The Requests view lists the latest 1,000 requests per gateway with their timing, model, key, account, outcome, HTTP status, and token counts. Streamed requests show the time to first output. Requests that were cut short say why: the output limit, a content filter, the provider stopping, the client disconnecting, the provider stream dropping, or a process restart. Older requests leave the list but stay in the totals. Prompts, completions, and credentials are never stored. A failed request keeps a short error summary after the same redaction applied to the error the client receives. A request left running after a process restart is recorded as cut short, with unknown token usage. A request without a usage report adds no tokens or cost, and a request on a model without a list price counts as unpriced.
 
 Back up the entire data directory with the service stopped, including `usage.sqlite` and any `-wal`/`-shm` files. Copying only the live database file can miss committed WAL data.
 

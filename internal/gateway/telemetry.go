@@ -8,28 +8,36 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
 
 // Telemetry is deliberately narrow: counts, routing identifiers, timing and
-// outcome. Prompts, completions, headers, provider tokens and provider error
-// text are never persisted.
+// outcome. Prompts, completions, headers and provider tokens are never
+// persisted. A failed request keeps a short error summary that has been
+// through the same redaction as the error sent to the client.
 type telemetryRecord struct {
-	ID           string    `json:"id"`
-	StartedAt    time.Time `json:"startedAt"`
-	GatewayID    string    `json:"gatewayId"`
-	KeyID        string    `json:"keyId"`
-	KeyName      string    `json:"keyName"`
-	Model        string    `json:"model"`
-	NativeModel  string    `json:"nativeModel"`
-	Provider     string    `json:"provider"`
-	AccountID    string    `json:"accountId"`
-	Status       int       `json:"status"`
-	DurationMs   int64     `json:"durationMs"`
-	InputTokens  int64     `json:"inputTokens"`
-	OutputTokens int64     `json:"outputTokens"`
-	CachedTokens int64     `json:"cachedTokens"`
+	ID          string    `json:"id"`
+	StartedAt   time.Time `json:"startedAt"`
+	GatewayID   string    `json:"gatewayId"`
+	KeyID       string    `json:"keyId"`
+	KeyName     string    `json:"keyName"`
+	Model       string    `json:"model"`
+	NativeModel string    `json:"nativeModel"`
+	Provider    string    `json:"provider"`
+	AccountID   string    `json:"accountId"`
+	// AccountName is the account's email or label when the request finished,
+	// so the log still names an account after it is removed.
+	AccountName string `json:"accountName,omitempty"`
+	Status      int    `json:"status"`
+	DurationMs  int64  `json:"durationMs"`
+	// FirstOutputMs is the time until a streamed response opened its first
+	// output block. Zero when not streamed or when no output arrived.
+	FirstOutputMs int64 `json:"firstOutputMs,omitempty"`
+	InputTokens   int64 `json:"inputTokens"`
+	OutputTokens  int64 `json:"outputTokens"`
+	CachedTokens  int64 `json:"cachedTokens"`
 	// CacheWriteTokens are Claude cache-creation tokens. Like CachedTokens they
 	// are a subset of InputTokens, kept apart because the API bills them at a
 	// different rate.
@@ -46,6 +54,10 @@ type telemetryRecord struct {
 	Speed   string `json:"speed,omitempty"`
 	Stream  bool   `json:"stream"`
 	Outcome string `json:"outcome"`
+	// Reason says why an incomplete request stopped. Empty for other outcomes.
+	Reason string `json:"reason,omitempty"`
+	// Failure is the redacted error summary of a failed request.
+	Failure string `json:"failure,omitempty"`
 }
 
 const (
@@ -53,28 +65,49 @@ const (
 	outcomeError      = "error"
 	outcomeIncomplete = "incomplete"
 
-	maxTelemetryField = 256
+	// Reasons an incomplete request stopped.
+	reasonOutputLimit     = "output_limit"
+	reasonContentFilter   = "content_filter"
+	reasonProviderStopped = "provider_stopped"
+	reasonClientClosed    = "client_closed"
+	reasonUpstreamEnded   = "upstream_ended"
+	reasonPartialTool     = "partial_tool"
+	reasonRestart         = "restart"
+
+	maxTelemetryField   = 256
+	maxTelemetryFailure = 1024
 )
 
 func validateTelemetryRecord(record telemetryRecord) error {
 	if len(record.ID) > 64 || len(record.GatewayID) > 64 || len(record.KeyID) > 64 {
 		return errors.New("gateway: telemetry record has an oversized identifier")
 	}
-	for _, value := range []string{record.KeyName, record.Model, record.NativeModel, record.Provider, record.AccountID} {
-		if len(value) > maxTelemetryField {
-			return errors.New("gateway: telemetry record has an oversized field")
-		}
+	if err := validateTelemetryText(record); err != nil {
+		return err
 	}
 	if err := validateTelemetryLabels(record); err != nil {
 		return err
 	}
-	if record.Status < 0 || record.Status > 999 || record.DurationMs < 0 {
+	if record.Status < 0 || record.Status > 999 || record.DurationMs < 0 || record.FirstOutputMs < 0 {
 		return errors.New("gateway: telemetry record has invalid counters")
 	}
 	for _, value := range []int64{record.InputTokens, record.OutputTokens, record.CachedTokens, record.CacheWriteTokens, record.TotalTokens} {
 		if value < 0 || value > 1<<62 {
 			return errors.New("gateway: telemetry record has invalid token counts")
 		}
+	}
+	return nil
+}
+
+// validateTelemetryText checks the bounds of the free-text fields.
+func validateTelemetryText(record telemetryRecord) error {
+	for _, value := range []string{record.KeyName, record.Model, record.NativeModel, record.Provider, record.AccountID, record.AccountName} {
+		if len(value) > maxTelemetryField {
+			return errors.New("gateway: telemetry record has an oversized field")
+		}
+	}
+	if len(record.Failure) > maxTelemetryFailure || !utf8.ValidString(record.Failure) {
+		return errors.New("gateway: telemetry record has an invalid failure summary")
 	}
 	return nil
 }
@@ -90,6 +123,11 @@ func validateTelemetryLabels(record telemetryRecord) error {
 	case "", speedFast, speedUltrafast:
 	default:
 		return errors.New("gateway: telemetry record has an unknown speed")
+	}
+	switch record.Reason {
+	case "", reasonOutputLimit, reasonContentFilter, reasonProviderStopped, reasonClientClosed, reasonUpstreamEnded, reasonPartialTool, reasonRestart:
+	default:
+		return errors.New("gateway: telemetry record has an unknown reason")
 	}
 	return nil
 }
@@ -117,14 +155,88 @@ type inferenceAttempt struct {
 	model     string
 	native    string
 	provider  string
-	accountID string
-	stream    bool
+	// account is the last account the request was sent to. Its credentials
+	// redact provider error text before it is stored.
+	account storedAccount
+	stream  bool
 	// speed is the premium tier the request asked for.
-	speed        string
-	outcome      string
+	speed   string
+	outcome string
+	// reason is set with outcomeIncomplete by the code that cut the request
+	// short. failure is an error summary that the written response does not
+	// carry, such as a stream that broke after its status was sent.
+	reason       string
+	failure      string
 	bodyComplete bool
 	durationMs   int64
 	usage        usageParser
+}
+
+func (a *inferenceAttempt) cutShort(reason string) {
+	a.outcome, a.reason = outcomeIncomplete, reason
+}
+
+// cutReason explains an incomplete outcome. Without a reason from the gateway,
+// the provider stopped the response itself.
+func (a *inferenceAttempt) cutReason(outcome string) string {
+	if outcome != outcomeIncomplete {
+		return ""
+	}
+	return firstNonEmpty(a.reason, a.usage.incompleteReason, reasonProviderStopped)
+}
+
+// failureSummary describes a failed request: an error the gateway noted, then
+// an error event in the provider stream, then the error document written to
+// the client.
+func (a *inferenceAttempt) failureSummary(outcome string, written []byte) string {
+	if outcome != outcomeError {
+		return ""
+	}
+	if a.failure != "" {
+		return boundedText(a.failure, maxTelemetryFailure)
+	}
+	if summary := errorSummary(a.usage.failure, a.account); summary != "" {
+		return summary
+	}
+	return errorSummary(written, a.account)
+}
+
+// firstOutputMs measures a streamed response from the request start.
+func (a *inferenceAttempt) firstOutputMs() int64 {
+	if !a.usage.stream || a.usage.firstOutput.IsZero() {
+		return 0
+	}
+	return max(a.usage.firstOutput.Sub(a.startedAt).Milliseconds(), 0)
+}
+
+// errorSummary reads an error document, or the error object itself, and
+// redacts it as client error responses are redacted. The code or type leads
+// when it adds to the message.
+func errorSummary(raw []byte, account storedAccount) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	rawMessage, rawType, rawCode := providerErrorFields(bytes.NewReader(raw))
+	message := sanitizeProviderMessage(rawMessage, account)
+	tag := providerErrorTag(rawCode, false, account)
+	if tag == "" {
+		tag = providerErrorTag(rawType, true, account)
+	}
+	if tag == providerErrorType {
+		tag = ""
+	}
+	switch {
+	case message == "":
+		message = tag
+	case tag != "" && !strings.Contains(message, tag):
+		message = tag + ": " + message
+	}
+	return boundedText(message, maxTelemetryFailure)
+}
+
+// telemetryAccountName is how the request log names an account.
+func telemetryAccountName(a storedAccount) string {
+	return boundedField(strings.TrimSpace(firstNonEmpty(a.Email, a.Label)))
 }
 
 // usageTrusted reports whether the provider response was delivered to a
@@ -219,18 +331,42 @@ type rawUsageEnvelope struct {
 	ServiceTier string          `json:"service_tier"`
 	Error       json.RawMessage `json:"error"`
 	StopReason  string          `json:"stop_reason"`
-	Delta       *struct {
+	// IncompleteDetails is set on a non-streamed incomplete Responses body.
+	IncompleteDetails *incompleteDetails `json:"incomplete_details"`
+	Delta             *struct {
 		StopReason string `json:"stop_reason"`
 	} `json:"delta"`
 	Message *struct {
 		Usage json.RawMessage `json:"usage"`
 	} `json:"message"`
 	Response *struct {
-		Usage       json.RawMessage `json:"usage"`
-		Error       json.RawMessage `json:"error"`
-		Status      string          `json:"status"`
-		ServiceTier string          `json:"service_tier"`
+		Usage             json.RawMessage    `json:"usage"`
+		Error             json.RawMessage    `json:"error"`
+		Status            string             `json:"status"`
+		ServiceTier       string             `json:"service_tier"`
+		IncompleteDetails *incompleteDetails `json:"incomplete_details"`
 	} `json:"response"`
+}
+
+type incompleteDetails struct {
+	Reason string `json:"reason"`
+}
+
+// incompleteReason maps a Responses incomplete_details reason.
+func (d *incompleteDetails) incompleteReason() string {
+	if d == nil {
+		return ""
+	}
+	switch d.Reason {
+	case "max_output_tokens":
+		return reasonOutputLimit
+	case "content_filter":
+		return reasonContentFilter
+	case "":
+		return ""
+	default:
+		return reasonProviderStopped
+	}
 }
 
 // usageParser accumulates provider-reported usage with bounded memory. It
@@ -268,7 +404,14 @@ type usageParser struct {
 	// providerIncomplete marks a terminal response.incomplete event: the
 	// provider stopped the response early, so it is not a success.
 	providerIncomplete bool
-	lastEvent          string
+	// incompleteReason is why the provider stopped, when it said.
+	incompleteReason string
+	// failure is the first error object the provider sent, kept for the
+	// request log. It is redacted only when the log entry is written.
+	failure json.RawMessage
+	// firstOutput is when the stream opened its first output block.
+	firstOutput time.Time
+	lastEvent   string
 	// speed is the tier the provider reported serving, from Claude usage.speed
 	// or the OpenAI service_tier. speedReported stays false until one arrives.
 	speed         string
@@ -440,9 +583,32 @@ func (u *usageParser) parseJSON(data []byte) {
 	usable := u.applyEnvelopeUsage(&envelope)
 	if envelope.StopReason == "max_tokens" || envelope.Delta != nil && envelope.Delta.StopReason == "max_tokens" {
 		u.providerIncomplete = true
+		u.incompleteReason = reasonOutputLimit
+	}
+	if reason := envelope.IncompleteDetails.incompleteReason(); reason != "" {
+		u.incompleteReason = reason
 	}
 	u.applyEnvelopeType(&envelope, usable)
 	u.applyEnvelopeFailure(&envelope)
+	if u.terminalFailure && u.failure == nil {
+		u.failure = envelopeFailure(&envelope, data)
+	}
+}
+
+// envelopeFailure picks the error object of a failure event. A Codex error
+// event carries its message and code at the top level.
+func envelopeFailure(envelope *rawUsageEnvelope, data []byte) json.RawMessage {
+	failure := json.RawMessage(bytes.Clone(data))
+	switch {
+	case rawUsageError(envelope.Error):
+		failure = envelope.Error
+	case envelope.Response != nil && rawUsageError(envelope.Response.Error):
+		failure = envelope.Response.Error
+	}
+	if len(failure) > providerErrorReadMax {
+		return nil
+	}
+	return failure
 }
 
 // applyEnvelopeUsage folds every usage object of one event and reports
@@ -469,6 +635,14 @@ func (u *usageParser) applyEnvelopeType(envelope *rawUsageEnvelope, usable bool)
 		u.terminal = true
 		u.providerIncomplete = true
 		u.terminalUsage = usable && envelope.Response != nil && finalUsageReport(envelope.Response.Usage, true)
+		if envelope.Response != nil {
+			u.incompleteReason = firstNonEmpty(envelope.Response.IncompleteDetails.incompleteReason(), u.incompleteReason)
+		}
+	case "content_block_start", "response.output_item.added":
+		// The model started its first output block, reasoning included.
+		if u.firstOutput.IsZero() {
+			u.firstOutput = time.Now()
+		}
 	case "message_delta":
 		// Claude reports its final cumulative output count here, just before
 		// message_stop.
@@ -634,10 +808,14 @@ func clampTokenCount(value int64) int64 {
 // boundary, so an oversized client value can never make the registry
 // unwritable or contain invalid UTF-8.
 func boundedField(value string) string {
-	if len(value) <= maxTelemetryField {
+	return boundedText(value, maxTelemetryField)
+}
+
+func boundedText(value string, limit int) string {
+	if len(value) <= limit {
 		return value
 	}
-	cut := maxTelemetryField
+	cut := limit
 	for cut > 0 && !utf8.RuneStart(value[cut]) {
 		cut--
 	}
@@ -647,12 +825,14 @@ func boundedField(value string) string {
 // ---------------------------------------------------------------------------
 // Attempt writer
 
-// attemptWriter records the status inferred from what the handler wrote. It
-// unwraps for http.ResponseController so streaming flushes are preserved.
+// attemptWriter records the status inferred from what the handler wrote, and
+// the body of an error response for the request log. It unwraps for
+// http.ResponseController so streaming flushes are preserved.
 type attemptWriter struct {
 	http.ResponseWriter
 
-	status int
+	status    int
+	errorBody []byte
 }
 
 func (w *attemptWriter) WriteHeader(status int) {
@@ -665,6 +845,9 @@ func (w *attemptWriter) WriteHeader(status int) {
 func (w *attemptWriter) Write(data []byte) (int, error) {
 	if w.status == 0 {
 		w.status = 200
+	}
+	if w.status >= 400 && len(w.errorBody)+len(data) <= providerErrorReadMax {
+		w.errorBody = append(w.errorBody, data...)
 	}
 	return w.ResponseWriter.Write(data)
 }

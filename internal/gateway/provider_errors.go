@@ -50,8 +50,8 @@ var (
 // before closing resp.Body and writes the result with the provider status.
 //
 // The body is read to at most 64 KiB and parsed as JSON only. The accepted
-// shapes are {"error":{"type","message","code"}}, {"error":"message"}, and
-// the same fields at the top level. Anything else - HTML, malformed JSON,
+// shapes are {"error":{"type","message","code"}}, {"error":"message"},
+// {"detail":"message"}, and the same fields at the top level. Anything else - HTML, malformed JSON,
 // oversized bodies - falls back to the HTTP status text, so a raw body or
 // stack trace is never echoed. The message is capped at 4096 characters.
 //
@@ -83,7 +83,7 @@ func sanitizedProviderError(reader io.Reader, status int, a storedAccount) map[s
 		rawMessage, rawType, rawCode := providerErrorFields(reader)
 		typeName = providerErrorTag(rawType, true, a)
 		code = providerErrorTag(rawCode, false, a)
-		message, _ = sanitizeProviderMessage(rawMessage, a)
+		message = sanitizeProviderMessage(rawMessage, a)
 	}
 	if message == "" {
 		message = http.StatusText(status)
@@ -113,6 +113,8 @@ func providerErrorFields(reader io.Reader) (string, string, string) {
 		Type    json.RawMessage `json:"type"`
 		Message json.RawMessage `json:"message"`
 		Code    json.RawMessage `json:"code"`
+		// Detail is the FastAPI error shape, which the ChatGPT backend uses.
+		Detail json.RawMessage `json:"detail"`
 	}
 	if json.Unmarshal(raw, &top) != nil {
 		return "", "", ""
@@ -132,7 +134,7 @@ func providerErrorFields(reader io.Reader) (string, string, string) {
 		}
 		return providerRawString(nested.Message), providerRawString(nested.Type), providerRawCode(nested.Code)
 	}
-	return providerRawString(top.Message), providerRawString(top.Type), providerRawCode(top.Code)
+	return firstNonEmpty(providerRawString(top.Message), providerRawString(top.Detail)), providerRawString(top.Type), providerRawCode(top.Code)
 }
 
 func providerRawString(raw json.RawMessage) string {
@@ -176,18 +178,18 @@ func providerErrorTag(raw string, isType bool, a storedAccount) string {
 }
 
 // sanitizeProviderMessage trims, flattens, redacts, and caps a provider
-// message. The boolean is false when the text is empty or looks like HTML or
-// a stack trace, in which case the caller uses the status fallback.
-func sanitizeProviderMessage(raw string, a storedAccount) (string, bool) {
+// message. It returns "" when the text is empty or looks like HTML or a stack
+// trace, in which case the caller uses the status fallback.
+func sanitizeProviderMessage(raw string, a storedAccount) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || providerMessageUnsafe(raw) {
-		return "", false
+		return ""
 	}
 	message := redactProviderSecrets(strings.Join(strings.Fields(raw), " "), a)
 	if runes := []rune(message); len(runes) > providerErrorMessageMax {
 		message = string(runes[:providerErrorMessageMax])
 	}
-	return message, true
+	return message
 }
 
 // providerMessageUnsafe reports whether text must not be echoed: HTML,

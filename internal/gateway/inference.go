@@ -163,9 +163,11 @@ func (s *server) finishAttempt(attempt *inferenceAttempt, recorder *attemptWrite
 		Model:            boundedField(attempt.model),
 		NativeModel:      boundedField(attempt.native),
 		Provider:         boundedField(attempt.provider),
-		AccountID:        boundedField(attempt.accountID),
+		AccountID:        boundedField(attempt.account.ID),
+		AccountName:      telemetryAccountName(attempt.account),
 		Status:           status,
 		DurationMs:       attempt.durationMs,
+		FirstOutputMs:    attempt.firstOutputMs(),
 		InputTokens:      totals.Input,
 		OutputTokens:     totals.Output,
 		CachedTokens:     totals.Cached,
@@ -176,6 +178,8 @@ func (s *server) finishAttempt(attempt *inferenceAttempt, recorder *attemptWrite
 		Speed:            attempt.billedSpeed(forwarded),
 		Stream:           attempt.stream,
 		Outcome:          outcome,
+		Reason:           attempt.cutReason(outcome),
+		Failure:          attempt.failureSummary(outcome, recorder.errorBody),
 	}
 	s.manager.settle(record, usageAccepted)
 }
@@ -246,7 +250,7 @@ func (s *server) forwardRotation(w http.ResponseWriter, r *http.Request, attempt
 			writeJSON(w, 400, map[string]string{"error": "Invalid inference request"})
 			return nil
 		}
-		attempt.provider, attempt.accountID = a.Provider, a.ID
+		attempt.provider, attempt.account = a.Provider, a
 		resp, err := s.streamClient.Do(req)
 		if err != nil {
 			writeJSON(w, 502, map[string]string{"error": "Provider connection failed"})

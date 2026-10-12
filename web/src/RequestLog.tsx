@@ -116,19 +116,9 @@ function Row({ record: r }: { record: RequestRecord }) {
         {r.speed && <span className="cell-sub">{speedLabel[r.speed]}</span>}
       </td>
       <td>{keyLabel(r)}</td>
-      <td>
-        {r.provider ? providerLabel(r.provider) : "Not routed"}
-        {r.accountId && (
-          <span className="cell-sub">
-            <Private>{r.accountId}</Private>
-          </span>
-        )}
-      </td>
-      <td>
-        <span className={`request-result ${r.outcome}`}>{resultLabel(r)}</span>
-        {r.stream && <span className="cell-sub">Streamed</span>}
-      </td>
-      <td className="numeric">{formatDuration(r.durationMs)}</td>
+      <AccountCell record={r} />
+      <ResultCell record={r} />
+      <DurationCell record={r} />
       {r.usageKnown ? (
         <>
           <td className="numeric">
@@ -156,5 +146,54 @@ function Row({ record: r }: { record: RequestRecord }) {
         </td>
       )}
     </tr>
+  );
+}
+
+function AccountCell({ record: r }: { record: RequestRecord }) {
+  return (
+    <td>
+      {r.provider ? providerLabel(r.provider) : "Not routed"}
+      {r.accountName !== undefined && r.accountName !== "" && (
+        <span className="cell-sub">
+          <Private>{r.accountName}</Private>
+        </span>
+      )}
+    </td>
+  );
+}
+
+function ResultCell({ record: r }: { record: RequestRecord }) {
+  return (
+    <td>
+      <span
+        className={`request-result ${r.outcome}`}
+        title={r.status ? `HTTP ${r.status}` : undefined}
+      >
+        {resultLabel(r)}
+      </span>
+      {r.failure !== undefined && r.failure !== "" && (
+        <span className="cell-sub request-failure" title={r.failure}>
+          {r.failure}
+        </span>
+      )}
+    </td>
+  );
+}
+
+// Streaming is the usual case, so only a buffered response is labelled.
+function DurationCell({ record: r }: { record: RequestRecord }) {
+  return (
+    <td className="numeric">
+      {formatDuration(r.durationMs)}
+      {r.stream ? (
+        r.firstOutputMs !== undefined && (
+          <span className="cell-sub" title="Time to first output">
+            First output {formatDuration(r.firstOutputMs)}
+          </span>
+        )
+      ) : (
+        <span className="cell-sub">Not streamed</span>
+      )}
+    </td>
   );
 }
