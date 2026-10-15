@@ -2351,6 +2351,11 @@ dialog .notice {
   font-size: 10.5px;
   color: var(--muted);
 }
+/* A set width, so hiding or showing addresses does not resize the columns.
+   Longer addresses wrap instead. */
+.request-table .request-account {
+  width: 190px;
+}
 .request-table .usage-unknown {
   color: var(--muted);
 }
