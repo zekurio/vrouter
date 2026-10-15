@@ -74,7 +74,9 @@ export function RequestLog({ requests }: { requests: RequestRecord[] }) {
                 <th scope="col">Time</th>
                 <th scope="col">Model</th>
                 <th scope="col">Key</th>
-                <th scope="col">Account</th>
+                <th scope="col" className="request-account">
+                  Account
+                </th>
                 <th scope="col">Result</th>
                 <th scope="col" className="numeric">
                   Duration
@@ -155,7 +157,7 @@ function AccountCell({ record: r }: { record: RequestRecord }) {
       {r.provider ? providerLabel(r.provider) : "Not routed"}
       {r.accountName !== undefined && r.accountName !== "" && (
         <span className="cell-sub">
-          <Private>{r.accountName}</Private>
+          <Private peek>{r.accountName}</Private>
         </span>
       )}
     </td>
