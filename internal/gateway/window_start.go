@@ -117,18 +117,13 @@ func windowStartPayload(model Model, provider string) map[string]any {
 	return payload
 }
 
-// watchWindows keeps a 5-hour window running on every subscription account of
-// every gateway. Only the root engine runs it.
+// watchWindows keeps a 5-hour window running on every subscription account.
 func (s *server) watchWindows(ctx context.Context) {
 	defer close(s.windowsDone)
 	ticker := time.NewTicker(windowCheckInterval)
 	defer ticker.Stop()
 	for {
-		for _, gateway := range s.manager.registry.snapshot().Gateways {
-			if engine, err := s.manager.engine(gateway.ID); err == nil {
-				engine.startIdleWindows(ctx)
-			}
-		}
+		s.startIdleWindows(ctx)
 		select {
 		case <-ctx.Done():
 			return
@@ -175,7 +170,7 @@ func (s *server) startIdleWindows(ctx context.Context) {
 			s.windowWatch[account.ID] = watch
 			s.windowMu.Unlock()
 			if err != nil && !repeated {
-				slog.Warn("5-hour window not started", "gateway", s.gatewayID, "account", account.ID, "error", err)
+				slog.Warn("5-hour window not started", "account", account.ID, "error", err)
 			}
 		}(account)
 	}
@@ -220,7 +215,7 @@ func (s *server) ensureWindow(ctx context.Context, account storedAccount) (*time
 	complete := windowTriggerComplete(resp.Body, account.Provider)
 	after := s.freshNativeQuota(ctx, account)
 	if next := observedWindow(after, "five-hour"); complete && after.Error == "" && activeWindowReset(next) != nil {
-		slog.Info("5-hour window started", "gateway", s.gatewayID, "account", account.ID, "model", model.ID, "reset_at", *next.ResetAt)
+		slog.Info("5-hour window started", "account", account.ID, "model", model.ID, "reset_at", *next.ResetAt)
 		return next.ResetAt, nil
 	}
 	return nil, errors.New("trigger sent, but a new 5-hour reset time is not confirmed")

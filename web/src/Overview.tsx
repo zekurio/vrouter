@@ -7,7 +7,7 @@ import {
   providerStyle,
 } from "./ProviderBrand";
 
-// The account pools of a gateway, with a card for each account.
+// The account pools, with a card for each account.
 export function Overview({
   accounts,
   pool,
@@ -188,6 +188,9 @@ function AccountCard({ account: a }: { account: Account }) {
             <Private peek>{accountLabel(a)}</Private>
           </h3>
           <span className="plan">{a.plan || providerLabel(a.provider)}</span>
+          <span className={`scope-badge ${a.scope}`}>
+            {a.scope === "global" ? "Shared" : "Personal"}
+          </span>
           {accountState(a) && (
             <span className={`account-state ${a.status}`}>
               {accountState(a)}

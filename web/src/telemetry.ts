@@ -3,13 +3,16 @@
 export type RequestRecord = {
   id: string;
   startedAt: string;
-  gatewayId: string;
+  // The user who owns the key. Absent for a key no user owns.
+  userId?: string;
   keyId: string;
   keyName: string;
   model: string;
   nativeModel: string;
   provider: string;
   accountId: string;
+  // Whether a shared or a personal account served the request.
+  accountScope?: "global" | "personal";
   // The account's email or label. Absent when the account is unknown.
   accountName?: string;
   status: number;

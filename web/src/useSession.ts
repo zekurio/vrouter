@@ -7,39 +7,64 @@ import {
 } from "react";
 import {
   errorMessage,
-  pickGateway,
   statusOf,
   type AuthInfo,
-  type Gateway,
   type createClient,
+  type SessionUser,
 } from "./api";
-import { readStored } from "./storage";
 
-export const gatewayKey = "vrouter-gateway";
+// Why the server sent the browser back from a sign-in, keyed by ?signin=.
+const signInErrors: Record<string, string> = {
+  unavailable:
+    "vrouter could not reach the identity provider. Try again in a moment.",
+  expired:
+    "The sign-in expired or was opened in another browser. Start it again.",
+  cancelled: "Sign-in was cancelled.",
+  failed:
+    "Sign-in failed. Try again, or ask an admin to check the vrouter log.",
+  denied:
+    "Your account is not in a group that may use vrouter. Ask an admin for access.",
+  disabled: "Your vrouter access is disabled. Ask an admin to enable it.",
+};
 
-// Management sign-in and the gateways it opens. "login" covers every
-// signed-out state, "ready" every signed-in one.
+// Reads and removes the reason a sign-in came back without a session.
+function returnedSignInError() {
+  const params = new URLSearchParams(location.search);
+  const reason = params.get("signin");
+  if (reason === null) return "";
+  params.delete("signin");
+  const query = params.toString();
+  history.replaceState(
+    null,
+    "",
+    `${location.pathname}${query ? `?${query}` : ""}${location.hash}`,
+  );
+  return signInErrors[reason] ?? signInErrors["failed"] ?? "";
+}
+
+// The server sends the browser to the identity provider and back.
+const signIn = () => location.assign("/api/auth/login");
+
+// Management sign-in. "login" covers every signed-out state, "ready" every
+// signed-in one.
 export function useSession(
   client: ReturnType<typeof createClient>,
-  // Set by the open gateway while it has unsaved model drafts.
+  // Set by the workspace while it has unsaved model drafts.
   unsaved: RefObject<boolean>,
 ) {
   const [phase, setPhase] = useState<"loading" | "login" | "ready" | "error">(
     "loading",
   );
   const [auth, setAuth] = useState<AuthInfo | null>(null);
-  const [gateways, setGateways] = useState<Gateway[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [user, setUser] = useState<SessionUser | null>(null);
   const [error, setError] = useState("");
-  const [loginError, setLoginError] = useState("");
-  const [token, setToken] = useState("");
+  const [loginError, setLoginError] = useState(returnedSignInError);
   const sequence = useRef(0);
   // Several requests can report the same expired session.
   const ending = useRef(false);
 
-  // Checks management access, then loads the available account stores. With an
-  // admin token the server keeps the sign-in in a cookie this page cannot read,
-  // so a reload stays signed in.
+  // The session lives in a cookie this page cannot read, so a reload stays
+  // signed in.
   const load = useCallback(async () => {
     const current = ++sequence.current;
     setPhase("loading");
@@ -48,14 +73,12 @@ export function useSession(
     try {
       info = await client.request<AuthInfo>("/api/auth");
       if (current !== sequence.current) return;
-      const list = await client.request<{ gateways: Gateway[] | null }>(
-        "/api/gateways",
+      const session = await client.request<{ user: SessionUser }>(
+        "/api/auth/session",
       );
       if (current !== sequence.current) return;
-      const next = list.gateways ?? [];
       setAuth(info);
-      setGateways(next);
-      setSelected(pickGateway(next, readStored(gatewayKey)));
+      setUser(session.user);
       setLoginError("");
       ending.current = false;
       setPhase("ready");
@@ -63,8 +86,7 @@ export function useSession(
       if (current !== sequence.current) return;
       if (info && statusOf(err) === 401) {
         setAuth(info);
-        setGateways([]);
-        setSelected(null);
+        setUser(null);
         setPhase("login");
         return;
       }
@@ -72,44 +94,10 @@ export function useSession(
       setPhase("error");
     }
   }, [client]);
-  // Keeps the open gateway unless the server stopped listing it.
-  async function reloadGateways() {
-    const current = sequence.current;
-    try {
-      const list = await client.request<{ gateways: Gateway[] | null }>(
-        "/api/gateways",
-      );
-      if (current !== sequence.current) return;
-      const next = list.gateways ?? [];
-      setGateways(next);
-      setSelected((id) =>
-        id !== null && id !== "" && next.some((g) => g.id === id) ? id : null,
-      );
-    } catch {
-      // The open gateway already shows its own error.
-    }
-  }
   useEffect(() => {
     void load();
   }, [load]);
 
-  async function signIn() {
-    const current = ++sequence.current;
-    const value = token;
-    setToken("");
-    setLoginError("");
-    setPhase("loading");
-    try {
-      await client.request("/api/auth/session", "POST", { token: value });
-    } catch (err) {
-      if (current !== sequence.current) return;
-      setLoginError(errorMessage(err, "Could not sign in."));
-      setPhase("login");
-      return;
-    }
-    if (current === sequence.current) void load();
-  }
-  const canSignOut = phase === "ready" && auth?.mode === "token";
   async function signOut() {
     if (
       unsaved.current &&
@@ -127,11 +115,6 @@ export function useSession(
   const sessionEnded = () => {
     if (ending.current) return;
     ending.current = true;
-    if (auth?.mode === "external") {
-      // A document navigation lets the authentication proxy start login again.
-      location.reload();
-      return;
-    }
     setLoginError("Your session ended. Sign in again.");
     void load();
   };
@@ -139,17 +122,11 @@ export function useSession(
   return {
     phase,
     auth,
-    gateways,
-    selected,
-    setSelected,
+    user,
     error,
     loginError,
-    token,
-    setToken,
     load,
-    reloadGateways,
     signIn,
-    canSignOut,
     signOut,
     sessionEnded,
   };

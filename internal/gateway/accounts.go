@@ -11,13 +11,19 @@ import (
 	"time"
 )
 
-func (s *server) accounts(ctx context.Context) []Account {
-	records := s.store.snapshot().Accounts
+// accounts lists the accounts a user can see: the shared ones and their own.
+func (s *server) accounts(ctx context.Context, user userRecord) []Account {
+	var records []storedAccount
+	for _, a := range s.store.snapshot().Accounts {
+		if accountVisible(a, user.ID) {
+			records = append(records, a)
+		}
+	}
 	accounts := make([]Account, len(records))
 	var wg sync.WaitGroup
 	limit := make(chan struct{}, 4)
 	for i, a := range records {
-		accounts[i] = accountView(a)
+		accounts[i] = accountView(a, user)
 		if a.Disabled || !routableAuth(a) || a.AuthMode == "api_key" {
 			continue
 		}
@@ -37,8 +43,9 @@ func (s *server) accounts(ctx context.Context) []Account {
 	return accounts
 }
 
-// accountView is the dashboard row of a saved account before its quota.
-func accountView(a storedAccount) Account {
+// accountView is the dashboard row of a saved account before its quota, as
+// the user sees it.
+func accountView(a storedAccount, user userRecord) Account {
 	name := a.Label
 	if name == "" {
 		name = a.Email
@@ -52,9 +59,10 @@ func accountView(a storedAccount) Account {
 	// usable but is never rebound to a new user. A Claude OAuth record is
 	// only safe to renew in place when a prior identity (account UUID or
 	// email) can tell it apart from another Claude account.
-	reconnectable := (a.Provider == "codex" && a.AuthMode == "codex" && a.AccountID != "" && a.Subject != "") ||
+	manageable := accountManageable(a, user)
+	reconnectable := manageable && (a.Provider == "codex" && a.AuthMode == "codex" && a.AccountID != "" && a.Subject != "") ||
 		(a.Provider == "claude" && a.AuthMode == "oauth" && (a.AccountID != "" || a.Email != ""))
-	return Account{ID: a.ID, Name: name, Provider: provider(a.Provider), AuthMode: a.AuthMode, Status: status, StatusMessage: note, Plan: planName(provider(a.Provider), a.Plan), Window: "Allowance not reported", Email: a.Email, CreatedAt: &a.CreatedAt, Reconnectable: reconnectable}
+	return Account{ID: a.ID, Scope: accountScope(a), Manageable: manageable, Name: name, Provider: provider(a.Provider), AuthMode: a.AuthMode, Status: status, StatusMessage: note, Plan: planName(provider(a.Provider), a.Plan), Window: "Allowance not reported", Email: a.Email, CreatedAt: &a.CreatedAt, Reconnectable: reconnectable}
 }
 
 // accountStatus returns an account's connection state and its explanation.
@@ -115,9 +123,11 @@ func (s *server) changeAccount(w http.ResponseWriter, r *http.Request, remove bo
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
 	missing := errors.New("account not found")
+	user := currentUser(r)
 	err := s.store.update(func(d *diskState) error {
 		for i, a := range d.Accounts {
-			if a.ID == body.ID {
+			// An account the user may not manage is reported as missing.
+			if a.ID == body.ID && accountManageable(a, user) {
 				if remove {
 					d.Accounts = append(d.Accounts[:i], d.Accounts[i+1:]...)
 					delete(d.ResetAttempts, body.ID)
@@ -216,7 +226,7 @@ func (s *server) fetchNativeQuota(ctx context.Context, a storedAccount) quotaCac
 		// Errors contain only local descriptions and HTTP status codes, never
 		// response bodies or credentials. Ignore clients leaving the page.
 		if !errors.Is(ctx.Err(), context.Canceled) {
-			slog.Warn("account quota unavailable", "gateway", s.gatewayID, "account", a.ID,
+			slog.Warn("account quota unavailable", "account", a.ID,
 				"provider", a.Provider, "error", err, "elapsed", time.Since(q.ObservedAt), "retry_at", q.RetryAt)
 		}
 	}

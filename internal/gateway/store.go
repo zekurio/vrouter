@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-const storeStateVersion = 1
-
 // storedAccount is one provider credential owned by this router. It is
 // persisted only in the private state file; tokens must never reach logs,
 // HTTP responses, or error strings.
@@ -25,6 +23,9 @@ type storedAccount struct {
 	Email           string    `json:"email,omitempty"`
 	Plan            string    `json:"plan,omitempty"`
 	AccountID       string    `json:"account_id,omitempty"`
+	// OwnerID is the user a personal account belongs to. Empty means the
+	// account is shared by everyone.
+	OwnerID string `json:"owner_id,omitempty"`
 	// Subject is the verified ID-token subject of a native Codex sign-in. It
 	// binds a saved record to one user, so reconnecting a workspace shared by
 	// several users can never silently switch accounts. Imports have no
@@ -41,12 +42,13 @@ type storedAccount struct {
 	Scopes       []string  `json:"scopes,omitempty"`
 }
 
-// diskState holds one gateway's accounts and model settings in the shared file.
+// diskState holds the provider accounts and model settings in the data file.
 type diskState struct {
-	Version       int                     `json:"version"`
 	Accounts      []storedAccount         `json:"accounts"`
 	Policy        modelPolicy             `json:"policy"`
 	ResetAttempts map[string]resetAttempt `json:"reset_attempts,omitempty"`
+	// Routing names the account tier requests try first.
+	Routing string `json:"routing"`
 }
 
 var (
@@ -54,50 +56,30 @@ var (
 	errStoreInUse  = errors.New("gateway: account store is owned by another process")
 )
 
-// accountStore is a gateway-scoped view of the shared data store.
-// Only the root view owns the process lock.
-type accountStore struct {
-	data      *dataStore
-	gatewayID string
-	owner     bool
-}
+// accountStore is the account and model-settings view of the data store.
+type accountStore struct{ data *dataStore }
 
 func openStore(dir string) (*accountStore, error) {
 	data, err := openDataStore(dir)
 	if err != nil {
 		return nil, err
 	}
-	return &accountStore{data: data, gatewayID: defaultGatewayID, owner: true}, nil
+	return &accountStore{data: data}, nil
 }
 
-func (s *accountStore) close() error {
-	if s.owner {
-		return s.data.close()
-	}
-	return nil
-}
+func (s *accountStore) close() error { return s.data.close() }
 
 func (s *accountStore) snapshot() diskState {
 	s.data.mu.Lock()
 	defer s.data.mu.Unlock()
-	return storeClone(s.data.state.States[s.gatewayID])
+	return storeClone(s.data.state.diskState)
 }
 
 func (s *accountStore) update(mutate func(*diskState) error) error {
 	if mutate == nil {
 		return errors.New("gateway: account update requires a callback")
 	}
-	return s.data.update(func(d *diskData) error {
-		state, ok := d.States[s.gatewayID]
-		if !ok {
-			return errGatewayNotFound
-		}
-		if err := mutate(&state); err != nil {
-			return err
-		}
-		d.States[s.gatewayID] = state
-		return nil
-	})
+	return s.data.update(func(d *diskData) error { return mutate(&d.diskState) })
 }
 
 func storeAcquireLock(path string) (*os.File, error) {
@@ -200,6 +182,9 @@ func storeNormalize(state *diskState) {
 	if state.Policy.Aliases == nil {
 		state.Policy.Aliases = map[string][]modelAlias{}
 	}
+	if state.Routing == "" {
+		state.Routing = routingPersonalFirst
+	}
 	for i := range state.Accounts {
 		state.Accounts[i].Provider = strings.ToLower(strings.TrimSpace(state.Accounts[i].Provider))
 		state.Accounts[i].AuthMode = strings.ToLower(strings.TrimSpace(state.Accounts[i].AuthMode))
@@ -209,8 +194,8 @@ func storeNormalize(state *diskState) {
 // storeValidate enforces the invariants of the credential vocabulary. Errors
 // name the field and position, never the stored values.
 func storeValidate(state diskState) error {
-	if state.Version != storeStateVersion {
-		return fmt.Errorf("gateway: account state version %d is not supported", state.Version)
+	if state.Routing != routingPersonalFirst && state.Routing != routingGlobalFirst {
+		return errors.New("gateway: routing order is not supported")
 	}
 	seen := make(map[string]struct{}, len(state.Accounts))
 	for i := range state.Accounts {

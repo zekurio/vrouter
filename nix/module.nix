@@ -7,6 +7,9 @@
 let
   cfg = config.services.vrouter;
   address = if lib.hasInfix ":" cfg.host then "[${cfg.host}]" else cfg.host;
+  groups = lib.concatStringsSep "," (
+    lib.mapAttrsToList (group: role: "${group}=${role}") cfg.oidc.groups
+  );
 in
 {
   options.services.vrouter = {
@@ -20,7 +23,7 @@ in
     host = lib.mkOption {
       type = lib.types.str;
       default = "127.0.0.1";
-      description = "Listen address. Keep loopback when using an authentication proxy.";
+      description = "Listen address. Keep loopback behind a reverse proxy.";
     };
     port = lib.mkOption {
       type = lib.types.port;
@@ -29,15 +32,50 @@ in
     };
     publicUrl = lib.mkOption {
       type = lib.types.str;
-      default = "";
       example = "https://vrouter.example.com";
-      description = "Browser-facing origin for links and management origin checks. Subpaths are unsupported.";
+      description = ''
+        Browser-facing origin for sign-in redirects, links, and management
+        origin checks. Subpaths are unsupported. The OIDC client's callback URL
+        is this origin followed by /api/auth/callback.
+      '';
     };
-    externalAuth = lib.mkEnableOption ''
-      dashboard authentication by a proxy. The proxy must protect every route
-      except /v1/*, whose requests use vrouter API keys. Every admitted user is
-      an administrator; keep the backend inaccessible to clients
-    '';
+    oidc = {
+      issuer = lib.mkOption {
+        type = lib.types.str;
+        example = "https://id.example.com";
+        description = "Issuer URL of the OpenID Connect provider, such as Pocket ID.";
+      };
+      clientId = lib.mkOption {
+        type = lib.types.str;
+        description = "Client ID of the OIDC client registered for vrouter.";
+      };
+      clientSecretFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "/run/secrets/vrouter_oidc_secret";
+        description = ''
+          File holding the OIDC client secret. systemd passes it to the service
+          as a credential, so it can stay readable by root alone. Leave it null
+          for a public client. Use a runtime path, never a Nix store file.
+        '';
+      };
+      groups = lib.mkOption {
+        type = lib.types.attrsOf (
+          lib.types.enum [
+            "admin"
+            "member"
+          ]
+        );
+        example = {
+          vrouter_admins = "admin";
+          vrouter_users = "member";
+        };
+        description = ''
+          Provider groups and the vrouter role each one grants. People in no
+          listed group cannot sign in. At least one group must grant admin.
+        '';
+      };
+    };
     windowSkipPlans = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ "codex:pro*" ];
@@ -56,8 +94,8 @@ in
       default = null;
       example = "/run/secrets/vrouter_env";
       description = ''
-        Runtime environment file for VROUTER_ADMIN_TOKEN.
-        Required without externalAuth. Use a runtime path, never a Nix store file.
+        Optional runtime environment file for other VROUTER_* variables.
+        Use a runtime path, never a Nix store file.
       '';
     };
   };
@@ -65,8 +103,14 @@ in
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        assertion = cfg.externalAuth || cfg.environmentFile != null;
-        message = "services.vrouter requires externalAuth or an environmentFile containing VROUTER_ADMIN_TOKEN.";
+        assertion = lib.elem "admin" (lib.attrValues cfg.oidc.groups);
+        message = "services.vrouter.oidc.groups must grant admin to at least one group.";
+      }
+      {
+        assertion = lib.all (group: !(lib.hasInfix "," group || lib.hasInfix "=" group)) (
+          lib.attrNames cfg.oidc.groups
+        );
+        message = "services.vrouter.oidc.groups names cannot contain commas or equals signs.";
       }
     ];
 
@@ -81,12 +125,21 @@ in
         # /var/lib/vrouter can be a symlink, which the data store refuses.
         VROUTER_DATA_DIR = ".";
         VROUTER_PUBLIC_URL = cfg.publicUrl;
-        VROUTER_EXTERNAL_AUTH = if cfg.externalAuth then "1" else "0";
+        VROUTER_OIDC_ISSUER = cfg.oidc.issuer;
+        VROUTER_OIDC_CLIENT_ID = cfg.oidc.clientId;
+        VROUTER_OIDC_GROUPS = groups;
         VROUTER_WINDOW_SKIP_PLANS = lib.concatStringsSep "," cfg.windowSkipPlans;
+      }
+      // lib.optionalAttrs (cfg.oidc.clientSecretFile != null) {
+        # systemd expands %d to the service's credentials directory.
+        VROUTER_OIDC_CLIENT_SECRET_FILE = "%d/oidc-client-secret";
       };
       serviceConfig = {
         ExecStart = lib.getExe cfg.package;
         EnvironmentFile = lib.optional (cfg.environmentFile != null) cfg.environmentFile;
+        LoadCredential = lib.optional (
+          cfg.oidc.clientSecretFile != null
+        ) "oidc-client-secret:${cfg.oidc.clientSecretFile}";
         DynamicUser = true;
         StateDirectory = "vrouter";
         StateDirectoryMode = "0700";

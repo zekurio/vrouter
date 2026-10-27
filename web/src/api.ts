@@ -1,25 +1,24 @@
-// Management API client. With an admin token, the browser sends the sign-in
-// cookie on its own; this code never holds the token after sign-in.
+// Management API client. The browser sends the session cookie on its own;
+// this code never sees it.
 
 export type APIRequest = <T>(
   path: string,
   method?: string,
   body?: unknown,
 ) => Promise<T>;
-export type AuthMode = "local" | "token" | "external";
-export type AuthInfo = { mode: AuthMode; publicUrl: string };
-export type Gateway = {
+// Where sign-in leads: the identity provider's host.
+export type AuthInfo = { publicUrl: string; issuer: string };
+export type Role = "admin" | "member";
+export type SessionUser = {
   id: string;
   name: string;
-  ownerId: string;
-  createdAt: string;
+  email: string;
+  // The identity provider's profile picture URL, or "".
+  picture: string;
+  role: Role;
 };
 
-export const gatewayHeader = "X-Vrouter-Gateway";
-
 type Options = {
-  // Gateway every request is scoped to. Omit for the auth and gateway-list calls.
-  gateway?: string;
   onUnauthorized?: () => void;
   fetch?: typeof fetch;
   timeout?: number;
@@ -28,7 +27,7 @@ type Options = {
 const failure = (message: string, status: number) =>
   Object.assign(new Error(message), { status });
 const stale = () =>
-  Object.assign(new Error("This gateway is no longer selected."), {
+  Object.assign(new Error("This page has closed."), {
     name: "AbortError",
     status: 0,
   });
@@ -67,19 +66,10 @@ export function errorText(body: unknown): string {
 }
 
 // Everything a request sends except its signal.
-function requestInit(
-  gateway: string | undefined,
-  method: string,
-  body: unknown,
-) {
+function requestInit(method: string, body: unknown) {
   return {
     method,
-    headers: {
-      ...(gateway === undefined || gateway === ""
-        ? {}
-        : { [gatewayHeader]: gateway }),
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-    },
+    headers: body === undefined ? {} : { "Content-Type": "application/json" },
     body: body === undefined ? null : JSON.stringify(body),
   };
 }
@@ -92,11 +82,11 @@ function sendError(err: unknown): unknown {
   return err;
 }
 
-// One client per selected gateway. close() ends it when the selection changes:
-// reads in flight are aborted and later reads are refused, so an old gateway's
-// data cannot land in the new one's pages. Writes already sent are left to
-// finish, and DELETE still goes out after close, because an unmounting provider
-// sign-in has to release its session on the gateway that created it.
+// close() ends a client when the pages using it unmount, as on sign-out: reads
+// in flight are aborted and later reads are refused, so a closed page never
+// receives data. Writes already sent are left to finish, and DELETE still goes
+// out after close, because an unmounting provider sign-in has to release its
+// session on the server.
 export function createClient(options: Options) {
   const send = options.fetch ?? ((...args) => fetch(...args));
   const reads = new AbortController();
@@ -119,7 +109,7 @@ export function createClient(options: Options) {
     let response: Response;
     try {
       response = await send(path, {
-        ...requestInit(options.gateway, method, body),
+        ...requestInit(method, body),
         signal,
       });
     } catch (err) {
@@ -146,11 +136,4 @@ export function createClient(options: Options) {
       reads.abort();
     },
   };
-}
-
-// Keeps a saved selection, otherwise opens the default gateway, then the first.
-export function pickGateway(gateways: Gateway[], stored: string | null) {
-  const has = (id: string) => gateways.some((g) => g.id === id);
-  if (stored !== null && stored !== "" && has(stored)) return stored;
-  return has("default") ? "default" : (gateways[0]?.id ?? null);
 }

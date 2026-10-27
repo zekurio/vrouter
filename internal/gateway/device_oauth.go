@@ -22,8 +22,8 @@ const (
 	codexDeviceRedirectURL  = "https://auth.openai.com/deviceauth/callback"
 )
 
-func (s *server) hostedOAuth(r *http.Request) bool {
-	u, err := url.Parse(s.appURL(r))
+func (s *server) hostedOAuth() bool {
+	u, err := url.Parse(s.cfg.PublicURL)
 	if err != nil {
 		return true
 	}

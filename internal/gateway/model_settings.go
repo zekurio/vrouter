@@ -73,13 +73,15 @@ func excludedModel(p modelPolicy, channel, id string) (bool, bool) {
 	return excluded, wildcard
 }
 
-func (s *server) readModelSettings(ctx context.Context) (modelSettings, modelPolicy, error) {
+// readModelSettings lists the models of the accounts a user's requests can
+// use with their settings. The settings themselves apply to everyone.
+func (s *server) readModelSettings(ctx context.Context, userID string) (modelSettings, modelPolicy, error) {
 	// Stay inside the dashboard's own request timeout when a provider stalls.
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 	p := s.store.snapshot().Policy
 	result := modelSettings{Models: []managedModel{}, Revision: policyRevision(p)}
-	models, err := s.rawModels(ctx)
+	models, err := s.rawModels(ctx, userID)
 	rows := map[string]Model{}
 	for _, m := range models {
 		rows[modelKey(m.Provider, m.ID)] = m
@@ -120,7 +122,7 @@ func (s *server) readModelSettings(ctx context.Context) (modelSettings, modelPol
 func (s *server) getModelSettings(w http.ResponseWriter, r *http.Request) {
 	s.modelMu.Lock()
 	defer s.modelMu.Unlock()
-	settings, _, err := s.readModelSettings(r.Context())
+	settings, _, err := s.readModelSettings(r.Context(), currentUser(r).ID)
 	if err != nil {
 		writeJSON(w, 502, map[string]string{"error": "Could not load all provider catalogs. Refresh or reconnect unavailable accounts."})
 		return
@@ -143,7 +145,7 @@ func (s *server) putModelSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	s.modelMu.Lock()
 	defer s.modelMu.Unlock()
-	settings, p, err := s.readModelSettings(r.Context())
+	settings, p, err := s.readModelSettings(r.Context(), currentUser(r).ID)
 	if err != nil {
 		writeJSON(w, 502, map[string]string{"error": "Could not load provider catalogs"})
 		return

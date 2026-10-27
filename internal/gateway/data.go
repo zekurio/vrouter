@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,14 +16,19 @@ import (
 const (
 	dataFileName = "vrouter.json"
 	dataMaxBytes = 128 << 20
+	dataVersion  = 2
+	dataV1Backup = "vrouter.v1.json"
+	// defaultGatewayV1 is the only gateway version 1 data could use.
+	defaultGatewayV1 = "default"
 )
 
 // Configuration changes commit together in JSON. Request accounting lives
 // in SQLite so inference never rewrites credentials or model policy.
 type diskData struct {
-	Version  int                  `json:"version"`
-	States   map[string]diskState `json:"accounts"`
-	Registry diskRegistry         `json:"registry"`
+	diskState
+	diskRegistry
+
+	Version int `json:"version"`
 }
 
 type dataStore struct {
@@ -82,36 +88,22 @@ func (s *dataStore) close() error {
 }
 
 func dataClone(d diskData) diskData {
-	out := diskData{Version: d.Version, Registry: registryClone(d.Registry), States: make(map[string]diskState, len(d.States))}
-	for id, state := range d.States {
-		out.States[id] = storeClone(state)
-	}
-	return out
+	return diskData{Version: d.Version, diskState: storeClone(d.diskState), diskRegistry: registryClone(d.diskRegistry)}
 }
 
 func normalizeData(d *diskData) error {
-	if d.Version != 1 {
+	if d.Version != dataVersion {
 		return errors.New("gateway: data version is not supported")
 	}
-	registryNormalize(&d.Registry)
-	if err := registryValidate(d.Registry); err != nil {
+	storeNormalize(&d.diskState)
+	if err := storeValidate(d.diskState); err != nil {
 		return err
 	}
-	if len(d.States) != len(d.Registry.Gateways) {
-		return errors.New("gateway: account stores do not match gateways")
+	registryNormalize(&d.diskRegistry)
+	if err := registryValidate(d.diskRegistry); err != nil {
+		return err
 	}
-	for _, gateway := range d.Registry.Gateways {
-		state, ok := d.States[gateway.ID]
-		if !ok {
-			return errors.New("gateway: missing gateway accounts")
-		}
-		storeNormalize(&state)
-		if err := storeValidate(state); err != nil {
-			return err
-		}
-		d.States[gateway.ID] = state
-	}
-	return nil
+	return validateOwners(d.Accounts, d.Users)
 }
 
 func (s *dataStore) update(mutate func(*diskData) error) error {
@@ -135,7 +127,7 @@ func (s *dataStore) update(mutate func(*diskData) error) error {
 }
 
 func (s *dataStore) write(d diskData) error {
-	raw, err := json.Marshal(d)
+	raw, err := json.Marshal(d) //nolint:errchkjson // a failed encoding must never replace the saved credentials
 	if err != nil {
 		return errors.New("gateway: could not encode data")
 	}
@@ -180,21 +172,111 @@ func readPrivateState(path string, limit int64) ([]byte, error) {
 
 func (s *dataStore) load() error {
 	raw, err := readPrivateState(s.path, dataMaxBytes)
-	if errors.Is(err, os.ErrNotExist) {
-		s.state = diskData{Version: 1, States: map[string]diskState{defaultGatewayID: {Version: storeStateVersion}}, Registry: diskRegistry{Version: registryVersion}}
-		err = nil
-	} else if err == nil {
-		decoder := json.NewDecoder(bytes.NewReader(raw))
-		decoder.DisallowUnknownFields()
-		if decoder.Decode(&s.state) != nil || decoder.Decode(&struct{}{}) != io.EOF {
-			return errors.New("gateway: data is malformed")
-		}
-	}
-	if err != nil {
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		s.state = diskData{Version: dataVersion}
+	case err != nil:
 		return err
+	case dataFileVersion(raw) == 1:
+		return s.upgradeV1(raw)
+	case decodeStrict(raw, &s.state) != nil:
+		return errors.New("gateway: data is malformed")
 	}
 	if err := normalizeData(&s.state); err != nil {
 		return err
 	}
 	return s.write(s.state)
+}
+
+// dataFileVersion reads only the version, so an older layout can be told
+// apart before it is decoded. Unreadable data reports zero.
+func dataFileVersion(raw []byte) int {
+	var header struct {
+		Version int `json:"version"`
+	}
+	_ = json.Unmarshal(raw, &header)
+	return header.Version
+}
+
+func decodeStrict(raw []byte, out any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return errors.New("trailing data")
+	}
+	return nil
+}
+
+// upgradeV1 rewrites version 1 data in the current layout. The old file is
+// copied aside first, because a version 1 build cannot read the new one.
+func (s *dataStore) upgradeV1(raw []byte) error {
+	state, err := upgradeDataV1(raw)
+	if err != nil {
+		return err
+	}
+	if err := normalizeData(&state); err != nil {
+		return err
+	}
+	if err := atomicWritePrivate(filepath.Join(filepath.Dir(s.path), dataV1Backup), "data backup", raw); err != nil {
+		return err
+	}
+	if err := s.write(state); err != nil {
+		return err
+	}
+	s.state = state
+	slog.Info("data upgraded to version 2", "backup", dataV1Backup)
+	return nil
+}
+
+// dataV1 is the layout before gateways were removed. Every gateway had its
+// own accounts and model policy, and every key named its gateway. Only the
+// default gateway could be used.
+type dataV1 struct {
+	Version  int                    `json:"version"`
+	States   map[string]dataV1State `json:"accounts"`
+	Registry struct {
+		Version  int `json:"version"`
+		Gateways []struct {
+			ID        string          `json:"id"`
+			Name      string          `json:"name"`
+			OwnerID   string          `json:"ownerId"`
+			CreatedAt json.RawMessage `json:"createdAt"`
+		} `json:"gateways"`
+		Keys      []keyRecord     `json:"keys"`
+		Telemetry json.RawMessage `json:"telemetry,omitempty"`
+	} `json:"registry"`
+}
+
+type dataV1State struct {
+	diskState
+
+	Version int `json:"version"`
+}
+
+// upgradeDataV1 keeps the default gateway's accounts, model policy, and keys.
+// Data with other gateways is refused rather than merged or dropped.
+func upgradeDataV1(raw []byte) (diskData, error) {
+	var old dataV1
+	if err := decodeStrict(raw, &old); err != nil || old.Version != 1 {
+		return diskData{}, errors.New("gateway: version 1 data is malformed")
+	}
+	for _, gateway := range old.Registry.Gateways {
+		if gateway.ID != defaultGatewayV1 {
+			return diskData{}, errors.New("gateway: the data has gateways besides the default one, which this version cannot upgrade")
+		}
+	}
+	for id := range old.States {
+		if id != defaultGatewayV1 {
+			return diskData{}, errors.New("gateway: the data has gateways besides the default one, which this version cannot upgrade")
+		}
+	}
+	for _, key := range old.Registry.Keys {
+		if key.GatewayID != defaultGatewayV1 {
+			return diskData{}, errors.New("gateway: a key belongs to an unknown gateway")
+		}
+	}
+	return diskData{Version: dataVersion, diskState: old.States[defaultGatewayV1].diskState, diskRegistry: diskRegistry{Keys: old.Registry.Keys}}, nil
 }

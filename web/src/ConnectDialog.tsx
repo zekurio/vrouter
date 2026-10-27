@@ -6,6 +6,8 @@ import { ConnectSteps } from "./ConnectSteps";
 
 // Providers vrouter can sign in to. Codex is the pool for OpenAI sign-in.
 export const connectable = ["codex", "claude"];
+// Shared accounts serve everyone; personal ones only their owner.
+export type Scope = "global" | "personal";
 
 export type Connection = {
   id: string;
@@ -22,6 +24,10 @@ type Props = {
   provider: string;
   // Set when renewing a saved account instead of registering a new one.
   accountId?: string | undefined;
+  // Who a new account belongs to.
+  scope: Scope;
+  // Lets an admin choose the scope along with the provider.
+  setScope: ((scope: Scope) => void) | undefined;
   request: APIRequest;
   choose: (provider: string) => void;
   onClose: () => void;
@@ -33,12 +39,14 @@ type Props = {
 function useSignIn({
   provider,
   target,
+  scope,
   attempt,
   request,
   onConnected,
 }: {
   provider: string;
   target: string;
+  scope: Scope;
   // Bumped to start over with the same provider and target.
   attempt: number;
   request: APIRequest;
@@ -56,7 +64,7 @@ function useSignIn({
     if (!provider) return undefined;
     let stopped = false;
     // Frees a sign-in the server still holds. DELETE goes out even after the
-    // gateway's client has closed.
+    // client has closed.
     const cancel = (sessionId: string) =>
       void request(`/api/oauth/sessions/${sessionId}`, "DELETE").catch(
         () => {},
@@ -66,7 +74,7 @@ function useSignIn({
         const next = await request<Connection>(
           `/api/oauth/${provider}`,
           "POST",
-          target ? { accountId: target } : undefined,
+          target ? { accountId: target } : { scope },
         );
         if (stopped) {
           cancel(next.id);
@@ -91,7 +99,7 @@ function useSignIn({
       if (pending && new Date(pending.expiresAt).getTime() > Date.now())
         cancel(pending.id);
     };
-  }, [provider, attempt, target, request]);
+  }, [provider, attempt, target, scope, request]);
 
   useEffect(() => {
     if (!session || phase !== "pending") return undefined;
@@ -154,16 +162,21 @@ function useSignIn({
   return { session, phase, error, now, reset };
 }
 
-function dialogTitle(phase: Phase, name: string, target: string) {
+function dialogTitle(phase: Phase, name: string, target: string, scope: Scope) {
   if (!name) return "Add an account";
   if (phase === "connected")
     return target ? `${name} account reconnected` : `${name} sign-in saved`;
-  return target ? `Reconnect ${name} account` : `Add a ${name} account`;
+  if (target) return `Reconnect ${name} account`;
+  return scope === "global"
+    ? `Add a shared ${name} account`
+    : `Add a ${name} account`;
 }
 
 export function ConnectDialog({
   provider,
   accountId,
+  scope,
+  setScope,
   request,
   choose,
   onClose,
@@ -177,10 +190,18 @@ export function ConnectDialog({
   const [attempt, setAttempt] = useState(0);
   // Reconnect applies to the first attempt and retries. Add another starts fresh.
   const [target, setTarget] = useState(accountId ?? "");
-  useEffect(() => dialog.current?.showModal(), []);
+  useEffect(() => {
+    const opener = document.activeElement;
+    dialog.current?.showModal();
+    // Unmounting skips the browser's own focus restore.
+    return () => {
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
+  }, []);
   const { session, phase, error, now, reset } = useSignIn({
     provider,
     target,
+    scope,
     attempt,
     request,
     onConnected,
@@ -239,7 +260,7 @@ export function ConnectDialog({
       aria-labelledby="connect-title"
     >
       <div className="dialog-heading">
-        <h2 id="connect-title">{dialogTitle(phase, name, target)}</h2>
+        <h2 id="connect-title">{dialogTitle(phase, name, target, scope)}</h2>
         {phase !== "connected" && phase !== "error" && (
           <button
             className="icon-button"
@@ -251,10 +272,11 @@ export function ConnectDialog({
         )}
       </div>
       {name === "" ? (
-        <ProviderChoice choose={choose} />
+        <ProviderChoice choose={choose} scope={scope} setScope={setScope} />
       ) : phase === "connected" ? (
         <ConnectDone
           name={name}
+          scope={scope}
           onAnother={() => restart("")}
           onClose={onClose}
         />
@@ -288,12 +310,42 @@ export function ConnectDialog({
   );
 }
 
-function ProviderChoice({ choose }: { choose: (provider: string) => void }) {
+const scopeChoices: { value: Scope; label: string }[] = [
+  { value: "personal", label: "Personal" },
+  { value: "global", label: "Shared" },
+];
+
+function ProviderChoice({
+  choose,
+  scope,
+  setScope,
+}: {
+  choose: (provider: string) => void;
+  scope: Scope;
+  setScope: ((scope: Scope) => void) | undefined;
+}) {
   return (
     <>
       <p className="dialog-lead">
-        Tokens stay on the server and never pass through this browser.
+        Tokens stay on the server and never pass through this browser.{" "}
+        {scope === "global"
+          ? "Every user's API keys can use a shared account."
+          : "Only your API keys use a personal account."}
       </p>
+      {setScope && (
+        <div className="tabs scope-choice" role="group" aria-label="Owner">
+          {scopeChoices.map((c) => (
+            <button
+              key={c.value}
+              aria-pressed={scope === c.value}
+              className={scope === c.value ? "selected" : ""}
+              onClick={() => setScope(c.value)}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="provider-choice">
         {connectable.map((p) => (
           <button key={p} style={providerStyle(p)} onClick={() => choose(p)}>
@@ -311,18 +363,21 @@ function ProviderChoice({ choose }: { choose: (provider: string) => void }) {
 
 function ConnectDone({
   name,
+  scope,
   onAnother,
   onClose,
 }: {
   name: string;
+  scope: Scope;
   onAnother: () => void;
   onClose: () => void;
 }) {
   return (
     <>
       <p className="dialog-lead connect-done">
-        <Check size={16} /> Added to the {name} pool. vrouter hasn&apos;t sent a
-        test request, so confirm with a client call.
+        <Check size={16} /> Added to{" "}
+        {scope === "global" ? `the shared ${name}` : `your ${name}`} accounts.
+        vrouter hasn&apos;t sent a test request, so confirm with a client call.
       </p>
       <div className="dialog-actions">
         <button className="secondary" onClick={onAnother}>
