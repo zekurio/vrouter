@@ -6,8 +6,8 @@ export type APIRequest = <T>(
   method?: string,
   body?: unknown,
 ) => Promise<T>;
-// Where sign-in leads: the identity provider's host.
-export type AuthInfo = { publicUrl: string; issuer: string };
+// Where sign-in leads: the identity provider's name, or its host.
+export type AuthInfo = { publicUrl: string; provider: string };
 export type Role = "admin" | "member";
 export type SessionUser = {
   id: string;

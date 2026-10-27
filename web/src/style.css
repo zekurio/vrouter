@@ -122,7 +122,8 @@ ul {
   list-style: none;
 }
 button svg,
-a svg {
+a svg,
+.toast svg {
   flex-shrink: 0;
 }
 code,

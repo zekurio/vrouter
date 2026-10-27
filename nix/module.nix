@@ -53,6 +53,15 @@ in
         type = lib.types.str;
         description = "Client ID of the OIDC client registered for vrouter.";
       };
+      name = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "Pocket ID";
+        description = ''
+          Name of the identity provider on the sign-in page. Null shows the
+          issuer's host.
+        '';
+      };
       clientSecretFile = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
@@ -103,6 +112,9 @@ in
         VROUTER_OIDC_ISSUER = cfg.oidc.issuer;
         VROUTER_OIDC_CLIENT_ID = cfg.oidc.clientId;
         VROUTER_WINDOW_SKIP_PLANS = lib.concatStringsSep "," cfg.windowSkipPlans;
+      }
+      // lib.optionalAttrs (cfg.oidc.name != null) {
+        VROUTER_OIDC_NAME = cfg.oidc.name;
       }
       // lib.optionalAttrs (cfg.oidc.clientSecretFile != null) {
         # systemd expands %d to the service's credentials directory.

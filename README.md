@@ -38,6 +38,7 @@ vrouter does not load `.env` files. Export variables or set them in your service
 | `VROUTER_OIDC_CLIENT_ID` | Required. The OIDC client's ID |
 | `VROUTER_OIDC_CLIENT_SECRET` | The client secret. Leave it unset for a public client, which relies on PKCE alone |
 | `VROUTER_OIDC_CLIENT_SECRET_FILE` | A file that holds the client secret, in place of `VROUTER_OIDC_CLIENT_SECRET` |
+| `VROUTER_OIDC_NAME` | The provider's name on the sign-in page, such as `Pocket ID`. Defaults to the issuer's host |
 | `VROUTER_WINDOW_SKIP_PLANS` | Plans that never get an automatic 5-hour window trigger, default `codex:pro*` |
 
 `VROUTER_ADMIN_TOKEN`, `VROUTER_EXTERNAL_AUTH`, and `VROUTER_OIDC_GROUPS` were removed. vrouter refuses to start while any of them is set, so an old configuration fails loudly instead of locking people out or leaving the dashboard open.
@@ -140,7 +141,7 @@ vrouter = {
 
 The module passes `clientSecretFile` to the service as a systemd credential, so the file can stay readable by root alone. Supply it through SOPS or another secret manager. Never put secrets in Nix expressions or store-backed files. Leave `clientSecretFile` unset for a public client.
 
-The service listens on `127.0.0.1:8080` and opens no firewall ports. It runs as a dynamic systemd user and keeps state in `/var/lib/vrouter` with mode `0700`. The options are `host`, `port`, `package`, `publicUrl`, `oidc.issuer`, `oidc.clientId`, `oidc.clientSecretFile`, `windowSkipPlans`, and `environmentFile`. The environment file is optional and can set any other variable from [Configuration](#configuration).
+The service listens on `127.0.0.1:8080` and opens no firewall ports. It runs as a dynamic systemd user and keeps state in `/var/lib/vrouter` with mode `0700`. The options are `host`, `port`, `package`, `publicUrl`, `oidc.issuer`, `oidc.clientId`, `oidc.clientSecretFile`, `oidc.name`, `windowSkipPlans`, and `environmentFile`. The environment file is optional and can set any other variable from [Configuration](#configuration).
 
 Read logs with `journalctl -u vrouter`. Back up `/var/lib/private/vrouter`, which is systemd's backing directory for the state. Stop the service before you restore it or import credentials.
 
