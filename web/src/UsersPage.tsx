@@ -59,7 +59,7 @@ function useUsers(request: APIRequest) {
   return { users, setUsers, error, loading, load };
 }
 
-// Everyone who has signed in. Roles follow identity provider groups, so the
+// Everyone who has signed in. Roles follow the identity provider, so the
 // page only disables and enables people.
 export function UsersPage({
   user: me,
@@ -102,8 +102,8 @@ export function UsersPage({
   return (
     <div className="users">
       <p className="page-lead">
-        People appear here after their first sign-in. Roles come from identity
-        provider groups and update at every sign-in.
+        People appear here after their first sign-in. Roles come from the
+        identity provider&apos;s vrouter_role claim and update at every sign-in.
       </p>
       {error && (
         <div className="notice error" role="alert">

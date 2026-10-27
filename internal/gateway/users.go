@@ -12,8 +12,8 @@ import (
 	"time"
 )
 
-// Roles a user can hold. The identity provider's groups decide the role at
-// every sign-in; vrouter has no way to change it.
+// Roles a user can hold. The identity provider's vrouter_role claim decides
+// the role at every sign-in; vrouter has no way to change it.
 const (
 	roleAdmin  = "admin"
 	roleMember = "member"

@@ -7,11 +7,15 @@
 let
   cfg = config.services.vrouter;
   address = if lib.hasInfix ":" cfg.host then "[${cfg.host}]" else cfg.host;
-  groups = lib.concatStringsSep "," (
-    lib.mapAttrsToList (group: role: "${group}=${role}") cfg.oidc.groups
-  );
 in
 {
+  imports = [
+    (lib.mkRemovedOptionModule [ "services" "vrouter" "oidc" "groups" ] ''
+      Roles now come from the identity provider's vrouter_role claim. Give each
+      person a vrouter_role of admin or member instead.
+    '')
+  ];
+
   options.services.vrouter = {
     enable = lib.mkEnableOption "vrouter model gateway";
     package = lib.mkOption {
@@ -59,22 +63,6 @@ in
           for a public client. Use a runtime path, never a Nix store file.
         '';
       };
-      groups = lib.mkOption {
-        type = lib.types.attrsOf (
-          lib.types.enum [
-            "admin"
-            "member"
-          ]
-        );
-        example = {
-          vrouter_admins = "admin";
-          vrouter_users = "member";
-        };
-        description = ''
-          Provider groups and the vrouter role each one grants. People in no
-          listed group cannot sign in. At least one group must grant admin.
-        '';
-      };
     };
     windowSkipPlans = lib.mkOption {
       type = lib.types.listOf lib.types.str;
@@ -101,19 +89,6 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = lib.elem "admin" (lib.attrValues cfg.oidc.groups);
-        message = "services.vrouter.oidc.groups must grant admin to at least one group.";
-      }
-      {
-        assertion = lib.all (group: !(lib.hasInfix "," group || lib.hasInfix "=" group)) (
-          lib.attrNames cfg.oidc.groups
-        );
-        message = "services.vrouter.oidc.groups names cannot contain commas or equals signs.";
-      }
-    ];
-
     systemd.services.vrouter = {
       description = "vrouter model gateway";
       wantedBy = [ "multi-user.target" ];
@@ -127,7 +102,6 @@ in
         VROUTER_PUBLIC_URL = cfg.publicUrl;
         VROUTER_OIDC_ISSUER = cfg.oidc.issuer;
         VROUTER_OIDC_CLIENT_ID = cfg.oidc.clientId;
-        VROUTER_OIDC_GROUPS = groups;
         VROUTER_WINDOW_SKIP_PLANS = lib.concatStringsSep "," cfg.windowSkipPlans;
       }
       // lib.optionalAttrs (cfg.oidc.clientSecretFile != null) {

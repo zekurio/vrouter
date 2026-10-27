@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -24,12 +25,12 @@ type OIDCConfig struct {
 	ClientID string
 	// ClientSecret is empty for a public client, which relies on PKCE alone.
 	ClientSecret string
-	// Groups maps provider groups to roles as comma-separated group=role
-	// pairs. People in no listed group cannot sign in.
-	Groups string
 }
 
 const (
+	// roleClaim is the ID token or userinfo claim that holds a person's
+	// vrouter role. People without admin or member in it cannot sign in.
+	roleClaim        = "vrouter_role"
 	loginCookie      = "vrouter_login"
 	loginLifetime    = 10 * time.Minute
 	oidcCallbackPath = "/api/auth/callback"
@@ -58,7 +59,6 @@ func parsePendingLogin(value string) (pendingLogin, bool) {
 type oidcClient struct {
 	cfg      OIDCConfig
 	issuer   *url.URL
-	roles    map[string]string
 	redirect string
 	client   *http.Client
 
@@ -80,11 +80,7 @@ func newOIDCClient(cfg OIDCConfig, publicURL string, client *http.Client) (*oidc
 	if publicURL == "" {
 		return nil, errors.New("VROUTER_PUBLIC_URL is required, because sign-in returns to it")
 	}
-	roles, err := parseGroupRoles(cfg.Groups)
-	if err != nil {
-		return nil, err
-	}
-	return &oidcClient{cfg: cfg, issuer: issuer, roles: roles, redirect: publicURL + oidcCallbackPath, client: client}, nil
+	return &oidcClient{cfg: cfg, issuer: issuer, redirect: publicURL + oidcCallbackPath, client: client}, nil
 }
 
 func loopbackHost(host string) bool {
@@ -92,38 +88,19 @@ func loopbackHost(host string) bool {
 	return host == "localhost" || (ip != nil && ip.IsLoopback())
 }
 
-// parseGroupRoles reads group=role pairs. At least one group must grant
-// admin, or nobody could manage shared accounts.
-func parseGroupRoles(value string) (map[string]string, error) {
-	roles := map[string]string{}
-	admin := false
-	for pair := range strings.SplitSeq(value, ",") {
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue
-		}
-		group, role, ok := strings.Cut(pair, "=")
-		group, role = strings.TrimSpace(group), strings.ToLower(strings.TrimSpace(role))
-		if !ok || group == "" || (role != roleAdmin && role != roleMember) {
-			return nil, fmt.Errorf("VROUTER_OIDC_GROUPS: %q is not a group=admin or group=member pair", pair)
-		}
-		if _, duplicate := roles[group]; duplicate {
-			return nil, fmt.Errorf("VROUTER_OIDC_GROUPS lists %q twice", group)
-		}
-		roles[group] = role
-		admin = admin || role == roleAdmin
+// claimRole reads the role claim, a string or a list of strings. Admin wins
+// over member, and any other value grants nothing.
+func claimRole(raw json.RawMessage) string {
+	var values []string
+	var one string
+	if json.Unmarshal(raw, &one) == nil {
+		values = []string{one}
+	} else if json.Unmarshal(raw, &values) != nil {
+		return ""
 	}
-	if !admin {
-		return nil, errors.New("VROUTER_OIDC_GROUPS must map at least one group to admin, such as vrouter_admins=admin")
-	}
-	return roles, nil
-}
-
-// role is the highest role any of the groups grants, or "" for none.
-func (c *oidcClient) role(groups []string) string {
 	role := ""
-	for _, group := range groups {
-		switch c.roles[group] {
+	for _, value := range values {
+		switch strings.ToLower(strings.TrimSpace(value)) {
 		case roleAdmin:
 			return roleAdmin
 		case roleMember:
@@ -131,6 +108,11 @@ func (c *oidcClient) role(groups []string) string {
 		}
 	}
 	return role
+}
+
+// claimMissing reports whether a claim was absent or null.
+func claimMissing(raw json.RawMessage) bool {
+	return len(raw) == 0 || string(raw) == "null"
 }
 
 func (c *oidcClient) issuerHost() string { return c.issuer.Host }
@@ -154,52 +136,52 @@ func (c *oidcClient) discover(ctx context.Context) (*oidc.Provider, oauth2.Confi
 		ClientSecret: c.cfg.ClientSecret,
 		Endpoint:     provider.Endpoint(),
 		RedirectURL:  c.redirect,
-		Scopes:       []string{oidc.ScopeOpenID, oidc.ScopeEmail, oidc.ScopeProfile, "groups"},
+		Scopes:       []string{oidc.ScopeOpenID, oidc.ScopeEmail, oidc.ScopeProfile},
 	}
 	return provider, config, nil
 }
 
-// exchange redeems an authorization code and verifies the ID token it
-// returns. Groups come from the ID token, or from userinfo when the token
-// carries none.
-func (c *oidcClient) exchange(ctx context.Context, code string, login pendingLogin) (oidcIdentity, []string, error) {
+// exchange redeems an authorization code, verifies the ID token it returns,
+// and reads the person's role. The role comes from the ID token, or from
+// userinfo when the token carries none, and is "" for no role.
+func (c *oidcClient) exchange(ctx context.Context, code string, login pendingLogin) (oidcIdentity, string, error) {
 	provider, config, err := c.discover(ctx)
 	if err != nil {
-		return oidcIdentity{}, nil, err
+		return oidcIdentity{}, "", err
 	}
 	ctx = oidc.ClientContext(ctx, c.client)
 	token, err := config.Exchange(ctx, code, oauth2.VerifierOption(login.verifier))
 	if err != nil {
-		return oidcIdentity{}, nil, fmt.Errorf("code exchange: %w", err)
+		return oidcIdentity{}, "", fmt.Errorf("code exchange: %w", err)
 	}
 	raw, ok := token.Extra("id_token").(string)
 	if !ok || raw == "" {
-		return oidcIdentity{}, nil, errors.New("the provider returned no ID token")
+		return oidcIdentity{}, "", errors.New("the provider returned no ID token")
 	}
 	idToken, err := provider.Verifier(&oidc.Config{ClientID: c.cfg.ClientID}).Verify(ctx, raw)
 	if err != nil {
-		return oidcIdentity{}, nil, fmt.Errorf("ID token: %w", err)
+		return oidcIdentity{}, "", fmt.Errorf("ID token: %w", err)
 	}
 	if !tokenEqual(idToken.Nonce, login.nonce) {
-		return oidcIdentity{}, nil, errors.New("ID token nonce does not match")
+		return oidcIdentity{}, "", errors.New("ID token nonce does not match")
 	}
 	var claims struct {
-		Email             string    `json:"email"`
-		Name              string    `json:"name"`
-		PreferredUsername string    `json:"preferred_username"`
-		Picture           string    `json:"picture"`
-		Groups            *[]string `json:"groups"`
+		Email             string          `json:"email"`
+		Name              string          `json:"name"`
+		PreferredUsername string          `json:"preferred_username"`
+		Picture           string          `json:"picture"`
+		Role              json.RawMessage `json:"vrouter_role"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
-		return oidcIdentity{}, nil, fmt.Errorf("ID token claims: %w", err)
+		return oidcIdentity{}, "", fmt.Errorf("ID token claims: %w", err)
 	}
-	if claims.Groups == nil {
+	if claimMissing(claims.Role) {
 		info, err := provider.UserInfo(ctx, config.TokenSource(ctx, token))
 		if err != nil {
-			return oidcIdentity{}, nil, fmt.Errorf("userinfo: %w", err)
+			return oidcIdentity{}, "", fmt.Errorf("userinfo: %w", err)
 		}
 		if err := info.Claims(&claims); err != nil {
-			return oidcIdentity{}, nil, fmt.Errorf("userinfo claims: %w", err)
+			return oidcIdentity{}, "", fmt.Errorf("userinfo claims: %w", err)
 		}
 	}
 	name := claims.Name
@@ -207,10 +189,7 @@ func (c *oidcClient) exchange(ctx context.Context, code string, login pendingLog
 		name = claims.PreferredUsername
 	}
 	identity := oidcIdentity{issuer: idToken.Issuer, subject: idToken.Subject, email: claims.Email, name: name, picture: pictureURL(claims.Picture)}
-	if claims.Groups == nil {
-		return identity, nil, nil
-	}
-	return identity, *claims.Groups, nil
+	return identity, claimRole(claims.Role), nil
 }
 
 // startLogin sends the browser to the identity provider. A short-lived cookie
@@ -236,7 +215,7 @@ func (s *server) signInFailed(w http.ResponseWriter, r *http.Request, reason str
 }
 
 // finishLogin handles the provider's redirect back. It signs the browser in
-// only for a verified identity in a mapped group.
+// only for a verified identity whose role claim grants access.
 func (s *server) finishLogin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	s.setCookie(w, loginCookie, "", "/api/auth", -1, http.SameSiteLaxMode)
@@ -257,15 +236,14 @@ func (s *server) finishLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	identity, groups, err := s.oidc.exchange(ctx, query.Get("code"), login)
+	identity, role, err := s.oidc.exchange(ctx, query.Get("code"), login)
 	if err != nil {
 		slog.Warn("sign-in failed", "error", err)
 		s.signInFailed(w, r, "failed")
 		return
 	}
-	role := s.oidc.role(groups)
 	if role == "" {
-		slog.Info("sign-in refused: the user is in no group VROUTER_OIDC_GROUPS lists")
+		slog.Info("sign-in refused: the " + roleClaim + " claim grants neither admin nor member")
 		s.signInFailed(w, r, "denied")
 		return
 	}

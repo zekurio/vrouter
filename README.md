@@ -8,7 +8,7 @@ Install [Nix and devenv](https://devenv.sh/getting-started/) and run `devenv she
 
 vrouter needs an OpenID Connect provider for sign-in. In Pocket ID:
 
-1. Create a group for admins, such as `vrouter_admins`, and one for everyone else, such as `vrouter_users`. Add people to them.
+1. Give each person a custom claim named `vrouter_role` with the value `admin` or `member`. Set it on the user, or on a group such as `vrouter_admins` so everyone in the group inherits it.
 2. Add an OIDC client named vrouter with the callback URL `http://localhost:8080/api/auth/callback`. Use your public URL in place of `http://localhost:8080` when vrouter runs elsewhere.
 3. Copy the client ID and secret.
 
@@ -20,7 +20,6 @@ export VROUTER_PUBLIC_URL=http://localhost:8080
 export VROUTER_OIDC_ISSUER=https://id.example.com
 export VROUTER_OIDC_CLIENT_ID=client-id-from-pocket-id
 export VROUTER_OIDC_CLIENT_SECRET_FILE=/run/secrets/vrouter-oidc
-export VROUTER_OIDC_GROUPS='vrouter_admins=admin,vrouter_users=member'
 ./bin/vrouter
 ```
 
@@ -39,20 +38,19 @@ vrouter does not load `.env` files. Export variables or set them in your service
 | `VROUTER_OIDC_CLIENT_ID` | Required. The OIDC client's ID |
 | `VROUTER_OIDC_CLIENT_SECRET` | The client secret. Leave it unset for a public client, which relies on PKCE alone |
 | `VROUTER_OIDC_CLIENT_SECRET_FILE` | A file that holds the client secret, in place of `VROUTER_OIDC_CLIENT_SECRET` |
-| `VROUTER_OIDC_GROUPS` | Required. Comma-separated `group=role` pairs, where the role is `admin` or `member`. At least one group must map to `admin` |
 | `VROUTER_WINDOW_SKIP_PLANS` | Plans that never get an automatic 5-hour window trigger, default `codex:pro*` |
 
-`VROUTER_ADMIN_TOKEN` and `VROUTER_EXTERNAL_AUTH` were removed. vrouter refuses to start while either is set, so an old configuration cannot leave the dashboard open by accident.
+`VROUTER_ADMIN_TOKEN`, `VROUTER_EXTERNAL_AUTH`, and `VROUTER_OIDC_GROUPS` were removed. vrouter refuses to start while any of them is set, so an old configuration fails loudly instead of locking people out or leaving the dashboard open.
 
 ## Users and roles
 
-Everyone signs in through the identity provider. vrouter asks for the `openid`, `email`, `profile`, and `groups` scopes and reads the groups from the ID token, or from userinfo when the token has none. It verifies the token's signature, audience, and nonce, and uses PKCE.
+Everyone signs in through the identity provider. vrouter asks for the `openid`, `email`, and `profile` scopes and reads the `vrouter_role` claim from the ID token, or from userinfo when the token has none. Pocket ID sends custom claims with the `profile` scope. Other providers may need a mapper that adds the claim to the ID token or userinfo. It verifies the token's signature, audience, and nonce, and uses PKCE.
 
-`VROUTER_OIDC_GROUPS` decides who gets in. A person in an admin group is an admin. A person in a member group and no admin group is a member. Anyone in neither is turned away and never gets a vrouter user. The role follows the groups at every sign-in, so to promote or demote someone, change their groups and have them sign in again.
+The `vrouter_role` claim decides who gets in. `admin` makes a person an admin and `member` a member. The claim may also be a list, in which case `admin` wins over `member`. Anyone without either value is turned away and never gets a vrouter user. The role follows the claim at every sign-in, so to promote or demote someone, change their claim and have them sign in again.
 
 Members manage their own API keys and personal accounts and see their own usage. Admins also add and manage shared accounts, change model settings and the routing order, see everyone's usage, revoke or delete anyone's key, and disable users. Nobody sees another person's personal accounts, admins included.
 
-A sign-in lasts seven days. Signing out ends it right away. Removing someone from their groups does not end a session they already have, so disable them on the Users page as well. Disabling signs the person out and refuses their API keys. Enabling them restores the keys.
+A sign-in lasts seven days. Signing out ends it right away. Removing someone's claim does not end a session they already have, so disable them on the Users page as well. Disabling signs the person out and refuses their API keys. Enabling them restores the keys.
 
 The first admin who signs in adopts every API key from before users existed, along with the keys' usage history.
 
@@ -135,10 +133,6 @@ vrouter = {
       issuer = "https://id.example.com";
       clientId = "client-id-from-pocket-id";
       clientSecretFile = config.sops.secrets.vrouter_oidc_secret.path;
-      groups = {
-        vrouter_admins = "admin";
-        vrouter_users = "member";
-      };
     };
   };
 }
@@ -146,7 +140,7 @@ vrouter = {
 
 The module passes `clientSecretFile` to the service as a systemd credential, so the file can stay readable by root alone. Supply it through SOPS or another secret manager. Never put secrets in Nix expressions or store-backed files. Leave `clientSecretFile` unset for a public client.
 
-The service listens on `127.0.0.1:8080` and opens no firewall ports. It runs as a dynamic systemd user and keeps state in `/var/lib/vrouter` with mode `0700`. The options are `host`, `port`, `package`, `publicUrl`, `oidc.issuer`, `oidc.clientId`, `oidc.clientSecretFile`, `oidc.groups`, `windowSkipPlans`, and `environmentFile`. The environment file is optional and can set any other variable from [Configuration](#configuration).
+The service listens on `127.0.0.1:8080` and opens no firewall ports. It runs as a dynamic systemd user and keeps state in `/var/lib/vrouter` with mode `0700`. The options are `host`, `port`, `package`, `publicUrl`, `oidc.issuer`, `oidc.clientId`, `oidc.clientSecretFile`, `windowSkipPlans`, and `environmentFile`. The environment file is optional and can set any other variable from [Configuration](#configuration).
 
 Read logs with `journalctl -u vrouter`. Back up `/var/lib/private/vrouter`, which is systemd's backing directory for the state. Stop the service before you restore it or import credentials.
 

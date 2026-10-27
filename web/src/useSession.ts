@@ -22,8 +22,7 @@ const signInErrors: Record<string, string> = {
   cancelled: "Sign-in was cancelled.",
   failed:
     "Sign-in failed. Try again, or ask an admin to check the vrouter log.",
-  denied:
-    "Your account is not in a group that may use vrouter. Ask an admin for access.",
+  denied: "Your account has no vrouter role. Ask an admin for access.",
   disabled: "Your vrouter access is disabled. Ask an admin to enable it.",
 };
 

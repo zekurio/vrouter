@@ -27,7 +27,6 @@ func main() {
 		OIDC: gateway.OIDCConfig{
 			Issuer:   os.Getenv("VROUTER_OIDC_ISSUER"),
 			ClientID: os.Getenv("VROUTER_OIDC_CLIENT_ID"),
-			Groups:   os.Getenv("VROUTER_OIDC_GROUPS"),
 		},
 		StartWindows:    true,
 		WindowSkipPlans: os.Getenv("VROUTER_WINDOW_SKIP_PLANS"),
@@ -57,9 +56,13 @@ func main() {
 		slog.Error("invalid listen address", "error", err)
 		os.Exit(1)
 	}
-	for _, name := range []string{"VROUTER_ADMIN_TOKEN", "VROUTER_EXTERNAL_AUTH"} {
+	for name, fix := range map[string]string{
+		"VROUTER_ADMIN_TOKEN":   "people now sign in through OpenID Connect. Unset it and set the VROUTER_OIDC_ variables instead.",
+		"VROUTER_EXTERNAL_AUTH": "people now sign in through OpenID Connect. Unset it and set the VROUTER_OIDC_ variables instead.",
+		"VROUTER_OIDC_GROUPS":   "roles now come from the identity provider's vrouter_role claim. Unset it and give each person a vrouter_role of admin or member.",
+	} {
 		if os.Getenv(name) != "" {
-			slog.Error(name + " was removed; people now sign in through OpenID Connect. Unset it and set the VROUTER_OIDC_ variables instead.")
+			slog.Error(name + " was removed; " + fix)
 			os.Exit(1)
 		}
 	}
