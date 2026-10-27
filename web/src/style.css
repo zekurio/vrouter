@@ -779,7 +779,7 @@ dialog .tabs {
 .quota-list {
   container-type: inline-size;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(244px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
   gap: 20px 28px;
 }
 /* One line, so the bars of a grid row line up. A long label gives way first. */
@@ -833,7 +833,7 @@ dialog .tabs {
 }
 /* A weekly window without a 5-hour window keeps the second column, so it
    lines up with the weekly bars of accounts that report both. */
-@container (min-width: 516px) {
+@container (min-width: 548px) {
   .account-windows .quota-window[data-window="weekly"]:first-child {
     grid-column: 2;
   }
@@ -1860,6 +1860,10 @@ dialog .notice {
   }
 }
 @media (max-width: 480px) {
+  /* Phones give the quota windows the whole row, under the switch too. */
+  .account-windows {
+    grid-column: 1 / -1;
+  }
   .topbar {
     height: auto;
     padding-top: 18px;
