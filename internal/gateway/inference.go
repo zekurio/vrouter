@@ -6,25 +6,10 @@ import (
 	"time"
 )
 
-// serveInference is the /v1 entry point. It selects the gateway from the
-// presented API key, never from a header, and hands the request to the engine
-// that owns the key.
+// serveInference is the /v1 entry point. Every request needs a client key.
 func (s *server) serveInference(w http.ResponseWriter, r *http.Request) {
 	principal, ok := s.authorizeInference(w, r)
 	if !ok {
-		return
-	}
-	if principal.GatewayID != s.gatewayID {
-		if s.manager == nil {
-			writeJSON(w, 503, map[string]string{"error": "This key's gateway is unavailable"})
-			return
-		}
-		target, err := s.manager.engine(principal.GatewayID)
-		if err != nil {
-			writeJSON(w, 500, map[string]string{"error": "This key's gateway is unavailable"})
-			return
-		}
-		target.serveInferenceAuthorized(w, r, principal)
 		return
 	}
 	s.serveInferenceAuthorized(w, r, principal)
@@ -51,17 +36,20 @@ func (s *server) authorizeInference(w http.ResponseWriter, r *http.Request) (inf
 		writeJSON(w, 401, map[string]string{"error": "A valid vrouter client API key is required"})
 		return inferenceKey{}, false
 	}
-	if s.manager != nil {
-		if record, ok := s.manager.keyByHash(key); ok {
-			if record.expired(time.Now()) {
-				writeJSON(w, 401, map[string]string{"error": keyExpiredMessage})
-				return inferenceKey{}, false
-			}
-			return inferenceKey{GatewayID: record.GatewayID, KeyID: record.ID, KeyName: record.Name}, true
+	if record, ok := s.keyByHash(key); ok {
+		if record.expired(time.Now()) {
+			writeJSON(w, 401, map[string]string{"error": keyExpiredMessage})
+			return inferenceKey{}, false
 		}
+		// A disabled user's keys stop with them.
+		if _, active := s.activeUser(record.UserID); record.UserID != "" && !active {
+			writeJSON(w, 401, map[string]string{"error": "This API key's owner is disabled in vrouter"})
+			return inferenceKey{}, false
+		}
+		return inferenceKey{UserID: record.UserID, KeyID: record.ID, KeyName: record.Name}, true
 	}
-	if s.manager == nil || !s.manager.hasAnyKeys() {
-		writeJSON(w, 503, map[string]string{"error": "Create a managed gateway API key to enable client requests"})
+	if !s.hasAnyKeys() {
+		writeJSON(w, 503, map[string]string{"error": "Create a vrouter API key to enable client requests"})
 		return inferenceKey{}, false
 	}
 	writeJSON(w, 401, map[string]string{"error": "A valid vrouter client API key is required"})
@@ -72,7 +60,7 @@ func (s *server) authorizeInference(w http.ResponseWriter, r *http.Request) (inf
 // Each supported POST settles usage aggregates, including failed requests.
 func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request, principal inferenceKey) {
 	if r.Method != http.MethodPost || inferenceProtocol(r.URL.Path) == "" {
-		s.inference(w, r)
+		s.inference(w, r, principal.UserID)
 		return
 	}
 	recorder := &attemptWriter{ResponseWriter: w}
@@ -83,7 +71,7 @@ func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request
 		return
 	}
 	attempt.id = id
-	pending := telemetryRecord{ID: id, GatewayID: s.gatewayID, KeyID: principal.KeyID, KeyName: principal.KeyName, StartedAt: attempt.startedAt}
+	pending := telemetryRecord{ID: id, UserID: principal.UserID, KeyID: principal.KeyID, KeyName: principal.KeyName, StartedAt: attempt.startedAt}
 	if err := s.store.data.usage.begin(r.Context(), pending); err != nil {
 		writeJSON(w, 503, map[string]string{"error": "Usage accounting is unavailable. Try again shortly."})
 		return
@@ -104,14 +92,11 @@ func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request
 		s.finishAttempt(attempt, recorder)
 		return
 	}
-	if s.manager != nil {
-		allowed, status, message := s.manager.reserve(principal)
-		if !allowed {
-			attempt.outcome = outcomeError
-			writeJSON(recorder, status, map[string]string{"error": message})
-			s.finishAttempt(attempt, recorder)
-			return
-		}
+	if allowed, status, message := s.reserve(principal); !allowed {
+		attempt.outcome = outcomeError
+		writeJSON(recorder, status, map[string]string{"error": message})
+		s.finishAttempt(attempt, recorder)
+		return
 	}
 	s.forwardInference(recorder, r, attempt, prepared)
 	s.finishAttempt(attempt, recorder)
@@ -140,9 +125,6 @@ func (s *server) finishAttempt(attempt *inferenceAttempt, recorder *attemptWrite
 	if attempt.usage.providerIncomplete && outcome == outcomeSuccess {
 		outcome = outcomeIncomplete
 	}
-	if s.manager == nil {
-		return
-	}
 	totals := attempt.usage.totals()
 	// Only a forwarded provider success can have consumed tokens.
 	dispatched := attempt.provider != ""
@@ -157,13 +139,14 @@ func (s *server) finishAttempt(attempt *inferenceAttempt, recorder *attemptWrite
 	record := telemetryRecord{
 		ID:               attempt.id,
 		StartedAt:        attempt.startedAt,
-		GatewayID:        s.gatewayID,
+		UserID:           attempt.principal.UserID,
 		KeyID:            attempt.principal.KeyID,
 		KeyName:          boundedField(attempt.principal.KeyName),
 		Model:            boundedField(attempt.model),
 		NativeModel:      boundedField(attempt.native),
 		Provider:         boundedField(attempt.provider),
 		AccountID:        boundedField(attempt.account.ID),
+		AccountScope:     attempt.accountScope(),
 		AccountName:      telemetryAccountName(attempt.account),
 		Status:           status,
 		DurationMs:       attempt.durationMs,
@@ -181,13 +164,14 @@ func (s *server) finishAttempt(attempt *inferenceAttempt, recorder *attemptWrite
 		Reason:           attempt.cutReason(outcome),
 		Failure:          attempt.failureSummary(outcome, recorder.errorBody),
 	}
-	s.manager.settle(record, usageAccepted)
+	s.settle(record, usageAccepted)
 }
 
-// inference answers every /v1 request that is not a supported POST.
-func (s *server) inference(w http.ResponseWriter, r *http.Request) {
+// inference answers every /v1 request that is not a supported POST. The
+// model list is the one the key's owner can use.
+func (s *server) inference(w http.ResponseWriter, r *http.Request, userID string) {
 	if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
-		models, err := s.models(r.Context())
+		models, err := s.models(r.Context(), userID)
 		if err != nil && len(models) == 0 {
 			writeJSON(w, 502, map[string]string{"error": "Provider catalogs unavailable"})
 			return
@@ -235,13 +219,14 @@ func (s *server) forwardInference(w http.ResponseWriter, r *http.Request, attemp
 	}
 }
 
-// forwardRotation tries each candidate once, starting at the next rotation
-// slot. It returns the accounts a usage reset recovered when the request
-// should be retried with them; otherwise the response has been written.
+// forwardRotation tries each candidate once, in routing order: the preferred
+// tier first, each tier starting at its next rotation slot. It returns the
+// accounts a usage reset recovered when the request should be retried with
+// them; otherwise the response has been written.
 func (s *server) forwardRotation(w http.ResponseWriter, r *http.Request, attempt *inferenceAttempt, prepared *preparedInference, candidates []storedAccount, resetTried *bool) []storedAccount {
-	start := int((s.sequence.Add(1) - 1) % uint64(len(candidates))) //nolint:gosec // the remainder is below len(candidates)
+	candidates = routingOrder(candidates, prepared.routing, s.sequence.Add(1)-1)
 	for attemptIndex := range candidates {
-		a, err := s.accessAccount(r.Context(), candidates[(start+attemptIndex)%len(candidates)].ID)
+		a, err := s.accessAccount(r.Context(), candidates[attemptIndex].ID)
 		if err != nil || !routableAuth(a) {
 			continue
 		}

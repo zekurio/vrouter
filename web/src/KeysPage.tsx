@@ -4,8 +4,13 @@ import { errorMessage, isStale, type APIRequest } from "./api";
 import { Modal } from "./Modal";
 import { KeyDialog } from "./KeyDialog";
 import { keyState, stateLabel, type APIKey } from "./keys";
+import { OwnerTabs, ownerQuery, type Owner } from "./OwnerTabs";
+import { Private } from "./Privacy";
 
 type Props = {
+  // Admins can list, revoke and delete everyone's keys.
+  admin: boolean;
+  userId: string;
   request: APIRequest;
   reloadKey: string;
   // The page heading owns the create button.
@@ -33,8 +38,8 @@ const moment = (value: string) =>
     minute: "2-digit",
   });
 
-// Loads the key list again whenever reloadKey changes.
-function useKeys(request: APIRequest, reloadKey: string) {
+// Loads the key list again whenever reloadKey or the owner changes.
+function useKeys(request: APIRequest, reloadKey: string, owner: Owner) {
   const [keys, setKeys] = useState<APIKey[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -44,7 +49,10 @@ function useKeys(request: APIRequest, reloadKey: string) {
     const current = ++sequence.current;
     setLoading(true);
     try {
-      const result = await request<{ keys: APIKey[] | null }>("/api/keys");
+      const query = ownerQuery(owner);
+      const result = await request<{ keys: APIKey[] | null }>(
+        `/api/keys${query ? `?${query}` : ""}`,
+      );
       if (current !== sequence.current) return;
       setKeys(result.keys ?? []);
       setError("");
@@ -54,7 +62,7 @@ function useKeys(request: APIRequest, reloadKey: string) {
     } finally {
       if (current === sequence.current) setLoading(false);
     }
-  }, [request]);
+  }, [request, owner]);
   useEffect(() => {
     void load();
   }, [reloadKey, load]);
@@ -63,6 +71,8 @@ function useKeys(request: APIRequest, reloadKey: string) {
 }
 
 export function KeysPage({
+  admin,
+  userId,
   request,
   reloadKey,
   creating,
@@ -71,16 +81,22 @@ export function KeysPage({
   copy,
   notify,
 }: Props) {
-  const { keys, setKeys, loading, error, load } = useKeys(request, reloadKey);
+  const [owner, setOwner] = useState<Owner>("mine");
+  const { keys, setKeys, loading, error, load } = useKeys(
+    request,
+    reloadKey,
+    owner,
+  );
   const [editing, setEditing] = useState<APIKey | null>(null);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmError, setConfirmError] = useState("");
 
+  // A saved key keeps the owner the list showed for it.
   const put = (key: APIKey) =>
     setKeys((list) =>
       list !== null && list.some((k) => k.id === key.id)
-        ? list.map((k) => (k.id === key.id ? key : k))
+        ? list.map((k) => (k.id === key.id ? { ...key, owner: k.owner } : k))
         : [key, ...(list ?? [])],
     );
 
@@ -126,6 +142,7 @@ export function KeysPage({
 
   return (
     <div className="keys">
+      {admin && <KeysToolbar owner={owner} setOwner={setOwner} />}
       {keys?.length === 0 && <p className="empty">No keys yet</p>}
       {error && (
         <div className="notice error" role="alert">
@@ -138,7 +155,13 @@ export function KeysPage({
         </div>
       )}
       {keys !== null && keys.length > 0 && (
-        <KeyTable keys={keys} onEdit={setEditing} onConfirm={setConfirm} />
+        <KeyTable
+          keys={keys}
+          userId={userId}
+          showOwner={owner === "all"}
+          onEdit={setEditing}
+          onConfirm={setConfirm}
+        />
       )}
       {keys !== null && keys.length > 0 && (
         <p className="keys-footnote">
@@ -174,12 +197,36 @@ export function KeysPage({
   );
 }
 
+function KeysToolbar({
+  owner,
+  setOwner,
+}: {
+  owner: Owner;
+  setOwner: (owner: Owner) => void;
+}) {
+  return (
+    <div className="page-toolbar">
+      <OwnerTabs owner={owner} setOwner={setOwner} label="Show keys of" />
+      {owner === "all" && (
+        <p>
+          You can revoke or delete anyone&apos;s key. Only its owner can edit
+          it.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function KeyTable({
   keys,
+  userId,
+  showOwner,
   onEdit,
   onConfirm,
 }: {
   keys: APIKey[];
+  userId: string;
+  showOwner: boolean;
   onEdit: (key: APIKey) => void;
   onConfirm: (confirm: Confirm) => void;
 }) {
@@ -189,6 +236,7 @@ function KeyTable({
         <thead>
           <tr>
             <th scope="col">Key</th>
+            {showOwner && <th scope="col">Owner</th>}
             <th scope="col">Prefix</th>
             <th scope="col">Status</th>
             <th scope="col" className="numeric">
@@ -208,6 +256,9 @@ function KeyTable({
           <KeyRow
             key={key.id}
             apiKey={key}
+            showOwner={showOwner}
+            // Admins see everyone's keys but edit only their own.
+            editable={!key.owner || key.owner.id === userId}
             onEdit={onEdit}
             onConfirm={onConfirm}
           />
@@ -219,10 +270,14 @@ function KeyTable({
 
 function KeyRow({
   apiKey: key,
+  showOwner,
+  editable,
   onEdit,
   onConfirm,
 }: {
   apiKey: APIKey;
+  showOwner: boolean;
+  editable: boolean;
   onEdit: (key: APIKey) => void;
   onConfirm: (confirm: Confirm) => void;
 }) {
@@ -233,6 +288,11 @@ function KeyRow({
     <tbody className={state === "active" ? "" : "is-off"}>
       <tr>
         <th scope="row">{label}</th>
+        {showOwner && (
+          <td>
+            <Private peek>{key.owner?.name ?? ""}</Private>
+          </td>
+        )}
         <td>
           <code>{key.prefix}…</code>
         </td>
@@ -261,8 +321,12 @@ function KeyRow({
             <button
               className="icon-button"
               aria-label={`Edit ${label}`}
-              title="Edit name and expiry"
-              disabled={dead}
+              title={
+                editable
+                  ? "Edit name and expiry"
+                  : "Only the key's owner can edit it"
+              }
+              disabled={dead || !editable}
               onClick={() => onEdit(key)}
             >
               <Pencil size={14} />

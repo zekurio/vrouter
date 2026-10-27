@@ -18,15 +18,19 @@ import (
 // persisted. A failed request keeps a short error summary that has been
 // through the same redaction as the error sent to the client.
 type telemetryRecord struct {
-	ID          string    `json:"id"`
-	StartedAt   time.Time `json:"startedAt"`
-	GatewayID   string    `json:"gatewayId"`
-	KeyID       string    `json:"keyId"`
-	KeyName     string    `json:"keyName"`
-	Model       string    `json:"model"`
-	NativeModel string    `json:"nativeModel"`
-	Provider    string    `json:"provider"`
-	AccountID   string    `json:"accountId"`
+	ID        string    `json:"id"`
+	StartedAt time.Time `json:"startedAt"`
+	// UserID owns the key. Empty for a key no user owns.
+	UserID      string `json:"userId,omitempty"`
+	KeyID       string `json:"keyId"`
+	KeyName     string `json:"keyName"`
+	Model       string `json:"model"`
+	NativeModel string `json:"nativeModel"`
+	Provider    string `json:"provider"`
+	AccountID   string `json:"accountId"`
+	// AccountScope says whether a shared or a personal account served the
+	// request. Empty when no account did.
+	AccountScope string `json:"accountScope,omitempty"`
 	// AccountName is the account's email or label when the request finished,
 	// so the log still names an account after it is removed.
 	AccountName string `json:"accountName,omitempty"`
@@ -79,7 +83,7 @@ const (
 )
 
 func validateTelemetryRecord(record telemetryRecord) error {
-	if len(record.ID) > 64 || len(record.GatewayID) > 64 || len(record.KeyID) > 64 {
+	if len(record.ID) > 64 || len(record.UserID) > 64 || len(record.KeyID) > 64 {
 		return errors.New("gateway: telemetry record has an oversized identifier")
 	}
 	if err := validateTelemetryText(record); err != nil {
@@ -119,6 +123,11 @@ func validateTelemetryLabels(record telemetryRecord) error {
 	default:
 		return errors.New("gateway: telemetry record has an unknown outcome")
 	}
+	switch record.AccountScope {
+	case "", scopeGlobal, scopePersonal:
+	default:
+		return errors.New("gateway: telemetry record has an unknown account scope")
+	}
 	switch record.Speed {
 	case "", speedFast, speedUltrafast:
 	default:
@@ -140,10 +149,10 @@ const keyExpiredMessage = "This vrouter client API key has expired"
 // inferenceKey is the authenticated request identity carried from key
 // validation to the forwarding engine.
 type inferenceKey struct {
-	Provider  string
-	GatewayID string
-	KeyID     string
-	KeyName   string
+	Provider string
+	UserID   string
+	KeyID    string
+	KeyName  string
 }
 
 // inferenceAttempt accumulates everything the settlement needs for one
@@ -265,11 +274,11 @@ func (a *inferenceAttempt) billedSpeed(forwarded bool) string {
 
 // reserve rechecks a managed key immediately before routing. Usage is written
 // to SQLite, never to the credential/configuration file.
-func (m *manager) reserve(principal inferenceKey) (bool, int, string) {
+func (s *server) reserve(principal inferenceKey) (bool, int, string) {
 	if principal.KeyID == "" {
 		return true, 0, ""
 	}
-	state := m.registry.snapshot()
+	state := s.registry.snapshot()
 	key := findKey(&state, principal.KeyID)
 	if key == nil || key.RevokedAt != nil {
 		return false, http.StatusUnauthorized, "A valid vrouter client API key is required"
@@ -280,13 +289,13 @@ func (m *manager) reserve(principal inferenceKey) (bool, int, string) {
 	return true, 0, ""
 }
 
-func (m *manager) settle(record telemetryRecord, accepted bool) {
+func (s *server) settle(record telemetryRecord, accepted bool) {
 	// The caller's context may be canceled after a disconnect; accounting must
 	// still commit the interrupted outcome.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := m.root.store.data.usage.settle(ctx, record, accepted); err != nil {
-		slog.Error("request usage not saved", "gateway", record.GatewayID, "error", err)
+	if err := s.store.data.usage.settle(ctx, record, accepted); err != nil {
+		slog.Error("request usage not saved", "request", record.ID, "error", err)
 	}
 }
 

@@ -9,14 +9,15 @@ import {
 import { RefreshCw } from "lucide-react";
 import { errorMessage, isStale, type APIRequest } from "./api";
 import { CostChart, series } from "./CostChart";
+import { OwnerTabs, ownerQuery, type Owner } from "./OwnerTabs";
 import { ProviderBrand, providerLabel } from "./ProviderBrand";
 import { RequestLog } from "./RequestLog";
+import { GroupTable, type GroupView } from "./UsageGroupTable";
 import { speedLabel, speeds, type RequestRecord } from "./telemetry";
 import {
   compact,
   costTypeLabel,
   costTypes,
-  dayLabel,
   money,
   share,
   summarize,
@@ -28,10 +29,12 @@ import {
 } from "./usage";
 
 type Props = {
+  // Admins can see everyone's usage.
+  admin: boolean;
   request: APIRequest;
   reloadKey: string;
 };
-type View = "model" | "key" | "day" | "requests";
+type View = GroupView | "requests";
 
 const number = (n: number) => n.toLocaleString();
 const plural = (n: number, noun: string) =>
@@ -39,12 +42,14 @@ const plural = (n: number, noun: string) =>
 const views: { value: View; label: string }[] = [
   { value: "model", label: "Model" },
   { value: "key", label: "Key" },
+  { value: "user", label: "User" },
+  { value: "scope", label: "Account" },
   { value: "day", label: "Day" },
   { value: "requests", label: "Requests" },
 ];
 
-// Loads the usage report again whenever reloadKey changes.
-function useUsage(request: APIRequest, reloadKey: string) {
+// Loads the usage report again whenever reloadKey or the owner changes.
+function useUsage(request: APIRequest, reloadKey: string, owner: Owner) {
   const [data, setData] = useState<UsageReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -55,7 +60,10 @@ function useUsage(request: APIRequest, reloadKey: string) {
     setLoading(true);
     try {
       const zone = encodeURIComponent(timeZone());
-      const result = await request<UsageReport>(`/api/usage?tz=${zone}`);
+      const query = ownerQuery(owner);
+      const result = await request<UsageReport>(
+        `/api/usage?tz=${zone}${query ? `&${query}` : ""}`,
+      );
       if (current !== sequence.current) return;
       setData(result);
       setError("");
@@ -65,7 +73,7 @@ function useUsage(request: APIRequest, reloadKey: string) {
     } finally {
       if (current === sequence.current) setLoading(false);
     }
-  }, [request]);
+  }, [request, owner]);
   useEffect(() => {
     void load();
   }, [reloadKey, load]);
@@ -73,8 +81,9 @@ function useUsage(request: APIRequest, reloadKey: string) {
   return { data, loading, error, load };
 }
 
-export function UsagePage({ request, reloadKey }: Props) {
-  const { data, loading, error, load } = useUsage(request, reloadKey);
+export function UsagePage({ admin, request, reloadKey }: Props) {
+  const [owner, setOwner] = useState<Owner>("mine");
+  const { data, loading, error, load } = useUsage(request, reloadKey, owner);
   const [view, setView] = useState<View>("model");
 
   const usage = useMemo(
@@ -85,6 +94,17 @@ export function UsagePage({ request, reloadKey }: Props) {
 
   return (
     <div className="usage">
+      {admin && (
+        <div className="page-toolbar">
+          <OwnerTabs owner={owner} setOwner={setOwner} label="Show usage of" />
+          {owner === "all" && (
+            <p>
+              Requests other people sent through their personal accounts show no
+              account name.
+            </p>
+          )}
+        </div>
+      )}
       {error && (
         <div className="notice error" role="alert">
           {error} <button onClick={() => void load()}>Try again</button>
@@ -109,6 +129,7 @@ export function UsagePage({ request, reloadKey }: Props) {
             setView={setView}
             usage={usage}
             requests={data.requests}
+            userNames={data.userNames}
           />
         </>
       )}
@@ -117,22 +138,36 @@ export function UsagePage({ request, reloadKey }: Props) {
 }
 
 function Breakdown({
-  view,
+  view: chosen,
   setView,
   usage,
   requests,
+  userNames,
 }: {
   view: View;
   setView: (view: View) => void;
   usage: Usage;
   requests: RequestRecord[];
+  userNames: Record<string, string> | undefined;
 }) {
+  // Only a report of everyone breaks down by user.
+  const shown = views.filter(
+    (v) => v.value !== "user" || usage.users !== undefined,
+  );
+  const view = shown.some((v) => v.value === chosen) ? chosen : "model";
+  const groups: Record<GroupView, Group[]> = {
+    model: usage.models,
+    key: usage.keys,
+    user: usage.users ?? [],
+    scope: usage.scopes,
+    day: usage.days,
+  };
   return (
     <section className="panel usage-breakdown">
       <div className="section-toolbar">
         <h2>Breakdown</h2>
         <div className="tabs" role="group" aria-label="Break down by">
-          {views.map((v) => (
+          {shown.map((v) => (
             <button
               key={v.value}
               aria-pressed={view === v.value}
@@ -146,7 +181,7 @@ function Breakdown({
       </div>
       {view === "requests" ? (
         <>
-          <RequestLog requests={requests} />
+          <RequestLog requests={requests} userNames={userNames} />
           {/* The totals cover every request. The log keeps only the newest. */}
           {usage.total.requests > requests.length && (
             <p className="usage-caption">
@@ -158,13 +193,7 @@ function Breakdown({
       ) : (
         <GroupTable
           view={view}
-          groups={
-            view === "model"
-              ? usage.models
-              : view === "key"
-                ? usage.keys
-                : usage.days
-          }
+          groups={groups[view]}
           total={usage.total.cost}
         />
       )}
@@ -320,76 +349,5 @@ function CostSplit({ title, parts }: { title: string; parts: Part[] }) {
         ))}
       </ul>
     </section>
-  );
-}
-
-function GroupTable({
-  view,
-  groups,
-  total,
-}: {
-  view: Exclude<View, "requests">;
-  groups: Group[];
-  total: number;
-}) {
-  const peak = Math.max(...groups.map((g) => g.cost), 0);
-  return (
-    <div className="table-scroll">
-      <table className="usage-table">
-        <thead>
-          <tr>
-            <th scope="col">
-              {view === "model" ? "Model" : view === "key" ? "Key" : "Day"}
-            </th>
-            <th scope="col" className="numeric">
-              Cost
-            </th>
-            <th scope="col" className="numeric">
-              Share
-            </th>
-            <th scope="col" className="numeric">
-              Requests
-            </th>
-            <th scope="col" className="numeric">
-              Tokens
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {groups.map((g) => (
-            <tr key={`${g.provider}/${g.name}`} style={series(g.provider)}>
-              <th scope="row">
-                <span className="usage-name">
-                  {view === "model" && (
-                    <ProviderBrand provider={g.provider} small />
-                  )}
-                  {view === "day" ? dayLabel(Number(g.name)) : g.name}
-                </span>
-                {peak > 0 && g.cost > 0 && (
-                  <span
-                    className="usage-bar"
-                    style={{ width: `${(g.cost / peak) * 100}%` }}
-                  />
-                )}
-              </th>
-              {g.measured > 0 && g.unpriced === g.measured ? (
-                <td className="numeric unpriced" colSpan={2}>
-                  Unpriced
-                </td>
-              ) : (
-                <>
-                  <td className="numeric cost">
-                    {g.measured > 0 && money(g.cost)}
-                  </td>
-                  <td className="numeric">{share(g.cost, total)}</td>
-                </>
-              )}
-              <td className="numeric">{number(g.requests)}</td>
-              <td className="numeric">{g.measured > 0 && compact(g.tokens)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
   );
 }

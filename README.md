@@ -1,18 +1,30 @@
 # vrouter
 
-A Go model gateway with a React management UI, built into one binary for Linux and macOS. It serves Claude and Codex accounts through OpenAI and Anthropic compatible endpoints, with a separate client key for each person or tool.
+A Go model gateway with a React management UI, built into one binary for Linux and macOS. It serves Claude and Codex accounts through OpenAI and Anthropic compatible endpoints. People sign in through an OpenID Connect provider such as Pocket ID, and each person has their own client keys, usage, and personal accounts.
 
 ## Quick start
 
 Install [Nix and devenv](https://devenv.sh/getting-started/) and run `devenv shell`. Or install Go 1.26+, Node 22.12+ or 24, pnpm, and just yourself. Only the build needs Node.
 
+vrouter needs an OpenID Connect provider for sign-in. In Pocket ID:
+
+1. Create a group for admins, such as `vrouter_admins`, and one for everyone else, such as `vrouter_users`. Add people to them.
+2. Add an OIDC client named vrouter with the callback URL `http://localhost:8080/api/auth/callback`. Use your public URL in place of `http://localhost:8080` when vrouter runs elsewhere.
+3. Copy the client ID and secret.
+
+Then build and start vrouter:
+
 ```sh
 just build
-export VROUTER_ADMIN_TOKEN='replace-with-a-private-admin-token'
+export VROUTER_PUBLIC_URL=http://localhost:8080
+export VROUTER_OIDC_ISSUER=https://id.example.com
+export VROUTER_OIDC_CLIENT_ID=client-id-from-pocket-id
+export VROUTER_OIDC_CLIENT_SECRET_FILE=/run/secrets/vrouter-oidc
+export VROUTER_OIDC_GROUPS='vrouter_admins=admin,vrouter_users=member'
 ./bin/vrouter
 ```
 
-Open http://127.0.0.1:8080, enter the admin token, add provider accounts, and create API keys.
+Open http://localhost:8080 and sign in. Add provider accounts on the Accounts page and create API keys on the Keys page.
 
 ## Configuration
 
@@ -21,19 +33,48 @@ vrouter does not load `.env` files. Export variables or set them in your service
 | Variable | Purpose |
 | --- | --- |
 | `VROUTER_ADDR` | Listen address, default `127.0.0.1:8080` |
-| `VROUTER_PUBLIC_URL` | Public origin, such as `https://vrouter.example.com`. Optional for local development |
+| `VROUTER_PUBLIC_URL` | Required. The origin people open, such as `https://vrouter.example.com`. Sign-in returns here |
 | `VROUTER_DATA_DIR` | Persistent state, default `$XDG_STATE_HOME/vrouter` or `~/.local/state/vrouter` |
-| `VROUTER_ADMIN_TOKEN` | Administrator token. Required for non-loopback listeners unless external authentication is on |
-| `VROUTER_EXTERNAL_AUTH` | Set to `1` when an authentication proxy protects the dashboard and management API |
+| `VROUTER_OIDC_ISSUER` | Required. The identity provider's issuer URL, such as `https://id.example.com`. Plain `http` works only for a provider on the same machine |
+| `VROUTER_OIDC_CLIENT_ID` | Required. The OIDC client's ID |
+| `VROUTER_OIDC_CLIENT_SECRET` | The client secret. Leave it unset for a public client, which relies on PKCE alone |
+| `VROUTER_OIDC_CLIENT_SECRET_FILE` | A file that holds the client secret, in place of `VROUTER_OIDC_CLIENT_SECRET` |
+| `VROUTER_OIDC_GROUPS` | Required. Comma-separated `group=role` pairs, where the role is `admin` or `member`. At least one group must map to `admin` |
 | `VROUTER_WINDOW_SKIP_PLANS` | Plans that never get an automatic 5-hour window trigger, default `codex:pro*` |
+
+`VROUTER_ADMIN_TOKEN` and `VROUTER_EXTERNAL_AUTH` were removed. vrouter refuses to start while either is set, so an old configuration cannot leave the dashboard open by accident.
+
+## Users and roles
+
+Everyone signs in through the identity provider. vrouter asks for the `openid`, `email`, `profile`, and `groups` scopes and reads the groups from the ID token, or from userinfo when the token has none. It verifies the token's signature, audience, and nonce, and uses PKCE.
+
+`VROUTER_OIDC_GROUPS` decides who gets in. A person in an admin group is an admin. A person in a member group and no admin group is a member. Anyone in neither is turned away and never gets a vrouter user. The role follows the groups at every sign-in, so to promote or demote someone, change their groups and have them sign in again.
+
+Members manage their own API keys and personal accounts and see their own usage. Admins also add and manage shared accounts, change model settings and the routing order, see everyone's usage, revoke or delete anyone's key, and disable users. Nobody sees another person's personal accounts, admins included.
+
+A sign-in lasts seven days. Signing out ends it right away. Removing someone from their groups does not end a session they already have, so disable them on the Users page as well. Disabling signs the person out and refuses their API keys. Enabling them restores the keys.
+
+The first admin who signs in adopts every API key from before users existed, along with the keys' usage history.
+
+## Shared and personal accounts
+
+A shared account serves every user's API keys. Only admins add, reconnect, disable, or remove shared accounts. A personal account serves only its owner's keys, and only the owner can see or change it.
+
+The routing order on the Accounts page applies to everyone. With personal accounts first, a request goes to the key owner's personal accounts and falls back to shared accounts when the personal ones lack the model, are over their limits, or return a rate limit error. Shared accounts first works the other way round. Requests rotate across the accounts within each group the way they rotate across a provider pool.
+
+Each provider account connects to vrouter once. Signing in to an account that is already connected under another owner fails, because both records would rotate the same refresh token. Its current owner has to remove it first.
+
+Accounts imported with `vrouter import` are shared. Model settings, such as disabled models and public aliases, apply to everyone.
 
 ## Data
 
-`vrouter.json` in the data directory holds accounts, model settings, and client keys. `usage.sqlite` holds usage totals, in-flight accounting, and the latest requests. Both use restricted file permissions and are unencrypted, so keep backups private.
+`vrouter.json` in the data directory holds users, accounts, model settings, and client keys. `usage.sqlite` holds usage totals, in-flight accounting, the latest requests, and sign-in sessions. Sessions are stored as hashes, so a copy of the database cannot sign anyone in. Both use restricted file permissions and are unencrypted, so keep backups private.
 
 Run one instance per data directory. Stop the server before you restore data or import provider credentials.
 
-The SQLite upgrade preserves current configuration and starts fresh usage history. Older configuration files with the removed `chatgpt_registration`, `client_secret`, or retired model-policy fields are still unsupported; use a fresh data directory for those builds.
+Data written before gateways were removed is upgraded on the first start. `vrouter.json` moves to the new layout, and the old file stays beside it as `vrouter.v1.json` because older builds cannot read the new one. Usage history carries over, and the first admin who signs in adopts the keys and their usage. vrouter refuses to start on data with gateways besides the default one. Delete `vrouter.v1.json` once the upgrade works, since it holds the same unencrypted credentials.
+
+The earlier move of usage accounting to SQLite kept configuration and started fresh usage history. Older configuration files with the removed `chatgpt_registration`, `client_secret`, or retired model-policy fields are still unsupported; use a fresh data directory for those builds.
 
 To import existing provider logins, stop vrouter and pass native Codex or Claude CLI credential files:
 
@@ -49,30 +90,24 @@ Put vrouter behind an HTTPS reverse proxy and set `VROUTER_PUBLIC_URL` to the ad
 
 ### Dashboard access
 
-Management has three modes.
+vrouter handles sign-in itself, so the reverse proxy needs no authentication of its own. Route everything to vrouter. `/v1/*` requests need a vrouter API key, and the dashboard and `/api` routes need a session.
 
-- With neither variable set, management accepts loopback peers and loopback hosts only.
-- With `VROUTER_ADMIN_TOKEN`, every management request needs the bearer token. The dashboard exchanges the token for a sign-in cookie that lasts 30 days, so it stays signed in across reloads. The cookie is HTTP-only and stops working when the token changes.
-- With `VROUTER_EXTERNAL_AUTH=1`, an authentication proxy such as TinyAuth protects the dashboard and every `/api` route. Keep the backend private so clients cannot bypass the proxy.
-
-vrouter does not read identity headers or keep user sessions, so everyone the proxy admits is a full administrator. Restrict its users or groups. If you set both variables, management still requires the token.
-
-Route `/v1/*` straight to vrouter with no browser login. Those endpoints require a vrouter API key instead.
+The session cookie is HTTP-only and `SameSite=Strict`. It is `Secure` when the public URL uses `https`. vrouter refuses management writes whose `Origin` is not the public URL.
 
 ### Public URL
 
-vrouter uses `VROUTER_PUBLIC_URL` for the client endpoints you copy from the UI and for provider sign-in return links. Browser management writes must come from that origin, so the reverse proxy has to preserve the Host header.
+vrouter uses `VROUTER_PUBLIC_URL` for sign-in redirects, the client endpoints you copy from the UI, and provider sign-in return links. Browser management writes must come from that origin, so the reverse proxy has to preserve the Host header.
 
-The value is an origin with an optional trailing slash. Subpaths are unsupported, and forwarded headers do not override it. Without the variable, the UI uses the browser's origin and return links use the request's checked Origin or Host.
+The value is an origin with an optional trailing slash. Subpaths are unsupported, and forwarded headers do not override it. The OIDC client's callback URL is the public URL followed by `/api/auth/callback`.
 
 ### Provider sign-in
 
-Provider accounts connect over OAuth, which is separate from dashboard access. When the app URL is remote, vrouter uses hosted flows and opens no localhost callback ports.
+Provider accounts connect over OAuth, which is separate from dashboard access. When the public URL is not on localhost, vrouter uses hosted flows and opens no localhost callback ports.
 
 - Codex shows a device code. Enter it on the linked OpenAI page and vrouter finishes on its own. Enable device code login in your ChatGPT security settings or workspace permissions first.
 - Claude shows an authorization code on its own website. Paste the complete `code#state` value into vrouter.
 
-Local development keeps the automatic loopback callbacks. Providers fix their registered redirects, so the public URL is where vrouter lives, not a replacement callback.
+With a localhost public URL, vrouter keeps the automatic loopback callbacks. Providers fix their registered redirects, so the public URL is where vrouter lives, not a replacement callback.
 
 ## NixOS
 
@@ -96,14 +131,22 @@ vrouter = {
   services.vrouter = {
     enable = true;
     publicUrl = "https://vrouter.example.com";
-    environmentFile = config.sops.secrets.vrouter_env.path;
+    oidc = {
+      issuer = "https://id.example.com";
+      clientId = "client-id-from-pocket-id";
+      clientSecretFile = config.sops.secrets.vrouter_oidc_secret.path;
+      groups = {
+        vrouter_admins = "admin";
+        vrouter_users = "member";
+      };
+    };
   };
 }
 ```
 
-The environment file must contain `VROUTER_ADMIN_TOKEN=...`. Supply it through SOPS or another secret manager. Never put tokens in Nix expressions or store-backed files. To use an authentication proxy instead, set `externalAuth = true` and follow the rules under [Dashboard access](#dashboard-access).
+The module passes `clientSecretFile` to the service as a systemd credential, so the file can stay readable by root alone. Supply it through SOPS or another secret manager. Never put secrets in Nix expressions or store-backed files. Leave `clientSecretFile` unset for a public client.
 
-The service listens on `127.0.0.1:8080` and opens no firewall ports. It runs as a dynamic systemd user and keeps state in `/var/lib/vrouter` with mode `0700`. The options are `host`, `port`, `package`, `publicUrl`, `externalAuth`, `windowSkipPlans`, and `environmentFile`.
+The service listens on `127.0.0.1:8080` and opens no firewall ports. It runs as a dynamic systemd user and keeps state in `/var/lib/vrouter` with mode `0700`. The options are `host`, `port`, `package`, `publicUrl`, `oidc.issuer`, `oidc.clientId`, `oidc.clientSecretFile`, `oidc.groups`, `windowSkipPlans`, and `environmentFile`. The environment file is optional and can set any other variable from [Configuration](#configuration).
 
 Read logs with `journalctl -u vrouter`. Back up `/var/lib/private/vrouter`, which is systemd's backing directory for the state. Stop the service before you restore it or import credentials.
 
@@ -111,9 +154,11 @@ The frontend dependency hash lives in `nix/package.nix`. After changing `web/pnp
 
 ## API keys
 
-Create a key for each person or tool on the API keys page. vrouter shows the secret once and stores only its hash. You can rename, revoke, or delete a key.
+Each user creates their own keys on the API keys page, one for each tool. vrouter shows the secret once and stores only its hash. You can rename, revoke, or delete your keys. Admins can switch the page to everyone's keys to revoke or delete them, but only a key's owner can rename it or change its expiry.
 
-Client keys cannot open management endpoints, and admin tokens cannot authorize inference.
+A key routes to the shared accounts and its owner's personal accounts. It stops working while its owner is disabled.
+
+Client keys cannot open management endpoints, and dashboard sessions cannot authorize inference.
 
 ### Expiry and history
 
@@ -125,11 +170,13 @@ Keys have no usage limits. vrouter counts each authenticated inference attempt w
 
 Usage lives in `usage.sqlite` in the data directory. Credentials and configuration stay in `vrouter.json`. SQLite uses WAL mode and durable transactions; inference accounting does not rewrite the configuration file. The first run with SQLite starts fresh usage history and discards the old JSON request log and key counters while preserving accounts, keys, and settings.
 
-The Usage page shows what the gateway's requests would cost at public API list prices: the total, the cost over time, and the split by token type, speed tier, model, key, and day. The totals cover every request since the database was created. They survive restarts and never decrease.
+The Usage page shows what your requests would cost at public API list prices: the total, the cost over time, and the split by token type, speed tier, model, key, account type, and day. The totals cover every request since the database was created. They survive restarts and never decrease.
 
-vrouter keeps running totals for each five-minute period by provider, model, key, and speed tier, and retains them permanently. Days and hours on the page follow the browser's time zone.
+Admins can switch the page to everyone's usage, which adds a split by user. Requests that other people sent through their personal accounts show no account name there.
 
-The Requests view lists the latest 1,000 requests per gateway with their timing, model, key, account, outcome, HTTP status, and token counts. Streamed requests show the time to first output. Requests that were cut short say why: the output limit, a content filter, the provider stopping, the client disconnecting, the provider stream dropping, or a process restart. Older requests leave the list but stay in the totals. Prompts, completions, and credentials are never stored. A failed request keeps a short error summary after the same redaction applied to the error the client receives. A request left running after a process restart is recorded as cut short, with unknown token usage. A request without a usage report adds no tokens or cost, and a request on a model without a list price counts as unpriced.
+vrouter keeps running totals for each five-minute period by user, provider, model, key, speed tier, and account type, and retains them permanently. Days and hours on the page follow the browser's time zone.
+
+The Requests view lists each user's latest 1,000 requests with their timing, model, key, account, outcome, HTTP status, and token counts. Streamed requests show the time to first output. Requests that were cut short say why: the output limit, a content filter, the provider stopping, the client disconnecting, the provider stream dropping, or a process restart. Older requests leave the list but stay in the totals. Prompts, completions, and credentials are never stored. A failed request keeps a short error summary after the same redaction applied to the error the client receives. A request left running after a process restart is recorded as cut short, with unknown token usage. A request without a usage report adds no tokens or cost, and a request on a model without a list price counts as unpriced.
 
 Back up the entire data directory with the service stopped, including `usage.sqlite` and any `-wal`/`-shm` files. Copying only the live database file can miss committed WAL data.
 
@@ -194,7 +241,7 @@ Claude OAuth requests need the native Claude Code identity block. vrouter adds i
 
 ### Testing a model
 
-Open a model in the UI to copy a request or run **Test this model** with a client key. The test calls the public inference endpoint and counts against that key. It shows the HTTP status, provider error, and reply, and passes only after a complete response. The key stays in memory until you close the dialog or switch gateways.
+Open a model in the UI to copy a request or run **Test this model** with a client key. The test calls the public inference endpoint and counts against that key. It shows the HTTP status, provider error, and reply, and passes only after a complete response. The key stays in memory until you close the dialog.
 
 **Connected** on an account means vrouter has saved credentials. It does not prove inference works.
 
@@ -212,7 +259,7 @@ The provider decides which windows a reset clears. The weekly-only rule only con
 
 ## Automatic 5-hour windows
 
-Every minute, vrouter checks each enabled subscription account in every gateway for an active 5-hour window and sends a small request to the accounts without one. Accounts that are idle at the same check start together.
+Every minute, vrouter checks each enabled subscription account for an active 5-hour window and sends a small request to the accounts without one. Accounts that are idle at the same check start together.
 
 vrouter picks the smallest advertised model. That means Haiku for Claude, and nano then mini for Codex. It honors model exclusions and never substitutes a larger model. Catalogs do not expose prices, so this is a fixed preference and not a price comparison. Codex uses the lowest reasoning level the model advertises. Claude sends no thinking configuration and caps output at eight tokens.
 
@@ -226,7 +273,9 @@ After a failed check, a rejected trigger, or a trigger whose new reset time vrou
 
 ## Management API
 
-`GET` and `POST /api/keys` list and create keys. `PATCH` and `DELETE /api/keys/{id}` change and remove them. A creation body looks like this:
+Management requests need a dashboard session. Writes must carry an `Origin` header that matches the public URL.
+
+`GET` and `POST /api/keys` list and create your keys. Admins add `?owner=all` to list everyone's. `PATCH` and `DELETE /api/keys/{id}` change and remove them. A creation body looks like this:
 
 ```json
 {
@@ -237,9 +286,11 @@ After a failed check, a rejected trigger, or a trigger whose new reset time vrou
 
 `expiresAt` takes a future RFC 3339 timestamp, or `null` for a key that never expires. Omitting it on an update keeps the current expiry.
 
-`GET /api/usage?tz=<IANA time zone>` returns the all-time totals, the breakdowns by provider, model, and key, usage per day and per recent hour in that time zone, and the latest 1,000 requests. Without a known zone it uses UTC. It replaces `/api/telemetry`.
+`GET /api/usage?tz=<IANA time zone>` returns your all-time totals, the breakdowns by provider, model, key, and account type, usage per day and per recent hour in that time zone, and your latest 1,000 requests. Without a known zone it uses UTC. Admins add `&owner=all` for everyone's usage with a breakdown by user.
 
-Select a gateway with the `X-Vrouter-Gateway` header. Inference always takes its gateway from the client key.
+`GET /api/settings` returns the routing order as `{"routing": "personal-first"}` or `"global-first"`. Admins change it with `PUT`.
+
+`GET /api/users` lists everyone who has signed in, and `PATCH /api/users/{id}` with `{"disabled": true}` or `false` disables or enables one. Both are for admins only.
 
 ## Development
 
@@ -256,6 +307,8 @@ just lint                   # golangci-lint and oxlint
 CI runs the same checks, plus `nix flake check`, on every pull request. The linters are strict, and warnings count as errors.
 
 `just dev` uses the normal persistent data directory. Set `VROUTER_DATA_DIR` to a scratch directory for experiments. The UI reloads as you edit, but Go changes need a restart of `just dev`.
+
+Sign-in works through Vite too. Set `VROUTER_PUBLIC_URL=http://localhost:5173` along with the OIDC variables, and add `http://localhost:5173/api/auth/callback` to the OIDC client's callback URLs.
 
 - `cmd/vrouter` has startup and import commands.
 - `internal/gateway` has routing, provider adapters, authentication, storage, and management handlers.

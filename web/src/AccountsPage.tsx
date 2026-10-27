@@ -1,14 +1,19 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { LogIn, Plus, Trash2 } from "lucide-react";
-import { ConnectDialog, connectable } from "./ConnectDialog";
+import { ConnectDialog, connectable, type Scope } from "./ConnectDialog";
 import { ProviderBrand, providerLabel, providerStyle } from "./ProviderBrand";
 import { Private, usePrivateLabel } from "./Privacy";
 import { QuotaWindows, type QuotaWindow } from "./Quota";
-import { isDialogBackdropClick } from "./dialog";
 import { errorMessage, type APIRequest } from "./api";
+import { RemoveAccountDialog } from "./RemoveAccountDialog";
+import { RoutingPanel } from "./RoutingPanel";
 
 export type Account = {
   id: string;
+  // Shared accounts serve everyone; personal ones only their owner.
+  scope: Scope;
+  // Set when this user may reconnect, disable or remove the account.
+  manageable: boolean;
   name: string;
   provider: string;
   status: string;
@@ -28,6 +33,8 @@ export type Account = {
 };
 type Props = {
   accounts: Account[];
+  // Admins manage shared accounts and the routing order.
+  admin: boolean;
   request: APIRequest;
   // null is closed, "" asks which provider, otherwise the provider to sign in to.
   connect: string | null;
@@ -59,6 +66,7 @@ type RowActions = {
 
 export function AccountsPage({
   accounts,
+  admin,
   request,
   connect,
   setConnect,
@@ -73,9 +81,14 @@ export function AccountsPage({
   const [removeError, setRemoveError] = useState("");
   // Account being reconnected. Cleared whenever the connect dialog closes.
   const [reauth, setReauth] = useState<Account | null>(null);
+  // Who a new account belongs to. Members only add personal accounts.
+  const [scope, setScope] = useState<Scope>("personal");
   useEffect(() => setSaved({}), [accounts]);
   useEffect(() => {
-    if (connect === null) setReauth(null);
+    if (connect === null) {
+      setReauth(null);
+      setScope("personal");
+    }
   }, [connect]);
 
   const providers = [
@@ -139,17 +152,42 @@ export function AccountsPage({
           {error}
         </div>
       )}
-      {providers.map((provider) => (
-        <AccountPool
-          key={provider}
-          provider={provider}
-          pool={accounts.filter((a) => a.provider === provider)}
-          onAdd={() => {
-            setReauth(null);
-            setConnect(provider);
-          }}
-          actions={actions}
-        />
+      <RoutingPanel admin={admin} request={request} notify={notify} />
+      {scopes.map((section) => (
+        <section
+          key={section.scope}
+          className="account-section"
+          aria-labelledby={`section-${section.scope}`}
+        >
+          <div className="section-heading">
+            <h2 id={`section-${section.scope}`}>{section.title}</h2>
+            <p>
+              {section.scope === "global" && !admin
+                ? `${section.lead} Admins manage them.`
+                : section.lead}
+            </p>
+          </div>
+          {providers.map((provider) => (
+            <AccountPool
+              key={provider}
+              provider={provider}
+              scope={section.scope}
+              pool={accounts.filter(
+                (a) => a.provider === provider && a.scope === section.scope,
+              )}
+              onAdd={
+                section.scope === "global" && !admin
+                  ? undefined
+                  : () => {
+                      setReauth(null);
+                      setScope(section.scope);
+                      setConnect(provider);
+                    }
+              }
+              actions={actions}
+            />
+          ))}
+        </section>
       ))}
       <RemoveAccountDialog
         removing={removing}
@@ -163,6 +201,8 @@ export function AccountsPage({
           key={reauth?.id ?? "new"}
           provider={connect}
           accountId={reauth?.id}
+          scope={reauth?.scope ?? scope}
+          setScope={admin ? setScope : undefined}
           request={request}
           choose={(next) => {
             setReauth(null);
@@ -179,27 +219,44 @@ export function AccountsPage({
   );
 }
 
+const scopes: { scope: Scope; title: string; lead: string }[] = [
+  {
+    scope: "personal",
+    title: "Your accounts",
+    lead: "Only your API keys use these. Nobody else sees them, admins included.",
+  },
+  {
+    scope: "global",
+    title: "Shared accounts",
+    lead: "Every user's API keys can use these.",
+  },
+];
+
 function AccountPool({
   provider,
+  scope,
   pool,
   onAdd,
   actions,
 }: {
   provider: string;
+  scope: Scope;
   pool: Account[];
-  onAdd: () => void;
+  // Unset when the user cannot add accounts to this pool.
+  onAdd: (() => void) | undefined;
   actions: RowActions;
 }) {
-  const canConnect = connectable.includes(provider);
+  const canConnect = connectable.includes(provider) && onAdd !== undefined;
+  const id = `pool-${scope}-${provider}`;
   return (
     <section
       className="panel account-pool"
       style={providerStyle(provider)}
-      aria-labelledby={`pool-${provider}`}
+      aria-labelledby={id}
     >
       <div className="model-group-heading">
         <ProviderBrand provider={provider} />
-        <h2 id={`pool-${provider}`}>{providerLabel(provider)}</h2>
+        <h3 id={id}>{providerLabel(provider)}</h3>
         <span>
           {pool.length} {pool.length === 1 ? "account" : "accounts"}
         </span>
@@ -212,7 +269,9 @@ function AccountPool({
         </div>
       </div>
       {pool.length === 0 ? (
-        <p className="empty">No accounts yet</p>
+        <p className="empty">
+          {scope === "personal" ? "No personal accounts" : "No shared accounts"}
+        </p>
       ) : (
         <ul>
           {pool.map((a, i) => (
@@ -251,7 +310,8 @@ function AccountRow({
         role="switch"
         aria-checked={on}
         aria-label={`Route requests through ${name}`}
-        disabled={busy === a.id}
+        title={a.manageable ? undefined : "Admins manage shared accounts"}
+        disabled={busy === a.id || !a.manageable}
         onClick={() => actions.onToggle(a)}
       />
       <div className="account-identity">
@@ -291,13 +351,15 @@ function AccountRow({
             <LogIn size={14} />
           </button>
         )}
-        <button
-          className="icon-button is-danger"
-          aria-label={`Remove ${name}`}
-          onClick={() => actions.onRemove(a)}
-        >
-          <Trash2 size={15} />
-        </button>
+        {a.manageable && (
+          <button
+            className="icon-button is-danger"
+            aria-label={`Remove ${name}`}
+            onClick={() => actions.onRemove(a)}
+          >
+            <Trash2 size={15} />
+          </button>
+        )}
       </div>
     </li>
   );
@@ -321,70 +383,5 @@ function AccountWindows({ account }: { account: Account }) {
         </p>
       )}
     </div>
-  );
-}
-
-function RemoveAccountDialog({
-  removing,
-  busy,
-  error,
-  onClose,
-  onRemove,
-}: {
-  removing: Account | null;
-  busy: string;
-  error: string;
-  onClose: () => void;
-  onRemove: () => void;
-}) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    if (removing) dialog.current?.showModal();
-    else dialog.current?.close();
-  }, [removing]);
-  return (
-    // oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- backdrop click; Escape is handled by onCancel
-    <dialog
-      ref={dialog}
-      className="confirm-dialog"
-      onCancel={(e) => {
-        e.preventDefault();
-        onClose();
-      }}
-      onClick={(e) => {
-        if (isDialogBackdropClick(e)) onClose();
-      }}
-      aria-labelledby="remove-title"
-    >
-      {removing && (
-        <>
-          <h2 id="remove-title">
-            Remove <Private>{accountLabel(removing)}</Private>?
-          </h2>
-          <p>
-            vrouter deletes the stored {providerLabel(removing.provider)}{" "}
-            sign-in and stops routing requests to it. To use the account again,
-            sign in from Add account.
-          </p>
-          {error && (
-            <div className="notice error" role="alert">
-              {error}
-            </div>
-          )}
-          <div className="dialog-actions">
-            <button className="secondary" disabled={!!busy} onClick={onClose}>
-              Keep account
-            </button>
-            <button
-              className="primary danger"
-              disabled={!!busy}
-              onClick={onRemove}
-            >
-              {busy ? "Removing" : "Remove account"}
-            </button>
-          </div>
-        </>
-      )}
-    </dialog>
   );
 }

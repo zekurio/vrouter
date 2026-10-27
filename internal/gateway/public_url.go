@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"errors"
-	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -10,7 +9,7 @@ import (
 
 func parsePublicURL(value string) (string, error) {
 	if value == "" {
-		return "", nil
+		return "", errors.New("VROUTER_PUBLIC_URL is required, because sign-in returns to it")
 	}
 	u, err := url.Parse(value)
 	if err != nil || !publicOrigin(u, value) {
@@ -31,20 +30,4 @@ func publicOrigin(u *url.URL, raw string) bool {
 	}
 	p, err := strconv.Atoi(port)
 	return err == nil && p >= 1 && p <= 65535
-}
-
-func (s *server) appURL(r *http.Request) string {
-	if s.cfg.PublicURL != "" {
-		return s.cfg.PublicURL
-	}
-	// Management authorization has already checked Origin against Host.
-	if origin := r.Header.Get("Origin"); origin != "" {
-		return origin
-	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	// Forwarded headers are not trusted. Hosted deployments set PublicURL.
-	return scheme + "://" + r.Host
 }

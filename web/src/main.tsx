@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Check, RefreshCw, TriangleAlert } from "lucide-react";
+import { Check, LogIn, RefreshCw, TriangleAlert } from "lucide-react";
 import "./style.css";
 import "@fontsource-variable/inter/opsz.css";
 import { createClient, type AuthInfo } from "./api";
@@ -8,8 +8,8 @@ import { HelpDialog } from "./HelpDialog";
 import { PrivacyProvider, storedHideEmails, storeHideEmails } from "./Privacy";
 import { readStored, writeStored } from "./storage";
 import { TopBar, type Theme } from "./TopBar";
-import { gatewayKey, useSession } from "./useSession";
-import { pages, Workspace, type Page } from "./Workspace";
+import { useSession } from "./useSession";
+import { pages, pagesFor, Workspace, type Page } from "./Workspace";
 
 const pageOf = (hash: string) =>
   pages.find((p) => p.toLowerCase() === hash.slice(1)) ?? "Overview";
@@ -54,12 +54,14 @@ function useToast() {
 
 function App() {
   const [page, setPage] = useState<Page>(() => pageOf(location.hash));
-  // Not scoped to a gateway: sign-in and the gateway list work without one.
+  // Sign-in only. The workspace has its own client, which closes on sign-out.
   const [client] = useState(() => createClient({}));
-  // Set by the open gateway while it has unsaved model drafts.
+  // Set by the workspace while it has unsaved model drafts.
   const unsaved = useRef(false);
   const session = useSession(client, unsaved);
-  const { phase, auth, gateways, selected } = session;
+  const { phase, auth, user } = session;
+  // A member who follows a link to an admin page sees the overview.
+  const shown = user && pagesFor(user.role).includes(page) ? page : "Overview";
   const [toast, setToast] = useToast();
   const { theme, setTheme } = useTheme();
   const [hideEmails, setHideEmails] = useState(storedHideEmails);
@@ -72,16 +74,6 @@ function App() {
   }, []);
   useEffect(() => storeHideEmails(hideEmails), [hideEmails]);
 
-  const select = (id: string) => {
-    if (id === selected) return;
-    if (
-      unsaved.current &&
-      !confirm("Discard unsaved model changes and switch gateways?")
-    )
-      return;
-    writeStored(gatewayKey, id);
-    session.setSelected(id);
-  };
   const navigate = (next: Page) => {
     setPage(next);
     location.hash = next.toLowerCase();
@@ -99,26 +91,20 @@ function App() {
       return false;
     }
   };
-  const gateway = gateways.find((g) => g.id === selected);
 
   return (
     <PrivacyProvider value={hideEmails}>
       <TopBar
-        gateway={gateway}
-        gateways={gateways}
-        ready={phase === "ready"}
-        page={page}
+        user={phase === "ready" ? user : null}
+        page={shown}
         navigate={navigate}
-        onSelect={select}
         actions={{
           hideEmails,
           setHideEmails,
           theme,
           setTheme,
           onHelp: () => setHelp(true),
-          onSignOut: session.canSignOut
-            ? () => void session.signOut()
-            : undefined,
+          onSignOut: () => void session.signOut(),
         }}
       />
       <main>
@@ -137,24 +123,16 @@ function App() {
           <LoginPanel
             auth={auth}
             error={session.loginError}
-            token={session.token}
-            setToken={session.setToken}
-            onRetry={() => void session.load()}
-            onSignIn={() => void session.signIn()}
+            onSignIn={session.signIn}
           />
         )}
-        {phase === "ready" && !gateway && (
-          <NoGateway others={gateways.length > 0} />
-        )}
-        {phase === "ready" && gateway && auth && (
+        {phase === "ready" && auth && user && (
           <Workspace
-            key={gateway.id}
-            gateway={gateway}
-            page={page}
+            page={shown}
+            user={user}
             navigate={navigate}
             publicUrl={auth.publicUrl}
             onUnauthorized={session.sessionEnded}
-            onGone={() => void session.reloadGateways()}
             copy={copy}
             notify={(text) => setToast({ text })}
             onDirty={(dirty) => {
@@ -175,18 +153,6 @@ function App() {
   );
 }
 
-function NoGateway({ others }: { others: boolean }) {
-  return (
-    <div className="empty">
-      <p>
-        {others
-          ? "That gateway is no longer available. Choose another."
-          : "No gateway is available."}
-      </p>
-    </div>
-  );
-}
-
 function Toast({ toast }: { toast: ToastMessage }) {
   return (
     <div className="toast" role={toast.failed === true ? "alert" : "status"}>
@@ -203,16 +169,10 @@ function Toast({ toast }: { toast: ToastMessage }) {
 function LoginPanel({
   auth,
   error,
-  token,
-  setToken,
-  onRetry,
   onSignIn,
 }: {
   auth: AuthInfo;
   error: string;
-  token: string;
-  setToken: (token: string) => void;
-  onRetry: () => void;
   onSignIn: () => void;
 }) {
   return (
@@ -223,45 +183,14 @@ function LoginPanel({
           {error}
         </div>
       )}
-      {auth.mode === "local" ? (
-        <>
-          <p className="login-note">
-            This vrouter has no sign-in configured. It only answers a browser
-            running on the same machine, at a loopback address.
-          </p>
-          <button className="primary" onClick={onRetry}>
-            Try again
-          </button>
-        </>
-      ) : auth.mode === "external" ? (
-        <>
-          <p className="login-note">
-            Your sign-in proxy did not accept this session.
-          </p>
-          {/* A document navigation lets the proxy start login again. */}
-          <button className="primary" onClick={() => location.reload()}>
-            Sign in again
-          </button>
-        </>
-      ) : (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            onSignIn();
-          }}
-        >
-          <label htmlFor="admin-token">Admin token</label>
-          <input
-            id="admin-token"
-            type="password"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            required
-            autoComplete="current-password"
-          />
-          <button className="primary">Sign in with token</button>
-        </form>
-      )}
+      <p className="login-note">
+        vrouter signs you in through{" "}
+        <strong className="login-issuer">{auth.issuer}</strong>. Your API keys
+        and usage are your own; admins also manage shared accounts and users.
+      </p>
+      <button className="primary login-button" onClick={onSignIn}>
+        <LogIn size={15} /> Sign in with {auth.issuer}
+      </button>
     </section>
   );
 }

@@ -1,10 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type RefObject,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Plus, RefreshCw } from "lucide-react";
 import { AccountsPage, type Account } from "./AccountsPage";
 import {
@@ -12,13 +6,15 @@ import {
   errorMessage,
   isStale,
   statusOf,
-  type Gateway,
+  type Role,
+  type SessionUser,
 } from "./api";
 import { KeysPage } from "./KeysPage";
 import { ModelsPage } from "./ModelsPage";
 import type { Model } from "./models";
 import { Overview } from "./Overview";
 import { UsagePage } from "./UsagePage";
+import { UsersPage } from "./UsersPage";
 
 type State = {
   observedAt: string;
@@ -32,33 +28,33 @@ export const pages = [
   "Accounts",
   "Keys",
   "Usage",
+  "Users",
 ] as const;
 export type Page = (typeof pages)[number];
+// Pages only admins open.
+const adminPages: ReadonlySet<Page> = new Set(["Users"]);
+export const pagesFor = (role: Role) =>
+  pages.filter((p) => role === "admin" || !adminPages.has(p));
 const titles: Partial<Record<Page, string>> = {
   Overview: "Account pools",
   Keys: "API keys",
 };
 
 type Props = {
-  gateway: Gateway;
   page: Page;
+  user: SessionUser;
   navigate: (page: Page) => void;
   publicUrl: string;
   onUnauthorized: () => void;
-  // The server no longer has this gateway, or no longer lets this user open it.
-  onGone: () => void;
   copy: (value: string) => Promise<boolean>;
   notify: (text: string) => void;
-  // True while this gateway has unsaved model drafts.
+  // True while there are unsaved model drafts.
   onDirty: (dirty: boolean) => void;
 };
 
-// Loads the gateway state, polls it while the page is visible, and retries
-// with a growing delay while the gateway cannot be reached.
-function useGatewayState(
-  client: ReturnType<typeof createClient>,
-  handlers: RefObject<{ onGone: () => void }>,
-) {
+// Loads the models and accounts, polls them while the page is visible, and
+// retries with a growing delay while vrouter cannot be reached.
+function useWorkspaceState(client: ReturnType<typeof createClient>) {
   const [state, setState] = useState<State | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -84,17 +80,10 @@ function useGatewayState(
         setState(next);
       } catch (err) {
         if (sequence !== refreshSequence.current || isStale(err)) return;
-        const status = statusOf(err);
-        if (status === 401) return;
-        if (status === 404) {
-          setState(null);
-          setError("This gateway no longer exists, or you can't open it.");
-          handlers.current.onGone();
-          return;
-        }
-        setError(errorMessage(err, "Could not load gateway data."));
+        if (statusOf(err) === 401) return;
+        setError(errorMessage(err, "Could not load models and accounts."));
         // Try again soon instead of waiting for the next poll, backing off while
-        // the gateway stays unreachable.
+        // vrouter stays unreachable.
         const delay = Math.min(retry.current.delay * 2 || 3000, 60000);
         retry.current = {
           delay,
@@ -107,7 +96,7 @@ function useGatewayState(
         }
       }
     },
-    [client, handlers],
+    [client],
   );
   useEffect(() => {
     void refresh();
@@ -127,28 +116,23 @@ function useGatewayState(
   return { state, loading, error, refresh };
 }
 
-// Everything that belongs to one gateway. The app mounts it with the gateway ID
-// as its key, so switching gateways throws this state away and starts clean.
+// Every page behind sign-in. Signing out unmounts it, which closes its client.
 export function Workspace({
-  gateway,
   page,
+  user,
   navigate,
   publicUrl,
   onUnauthorized,
-  onGone,
   copy,
   notify,
   onDirty,
 }: Props) {
-  const handlers = useRef({ onUnauthorized, onGone });
-  handlers.current = { onUnauthorized, onGone };
+  const unauthorized = useRef(onUnauthorized);
+  unauthorized.current = onUnauthorized;
   const [client] = useState(() =>
-    createClient({
-      gateway: gateway.id,
-      onUnauthorized: () => handlers.current.onUnauthorized(),
-    }),
+    createClient({ onUnauthorized: () => unauthorized.current() }),
   );
-  const { state, loading, error, refresh } = useGatewayState(client, handlers);
+  const { state, loading, error, refresh } = useWorkspaceState(client);
   const [pool, setPool] = useState("");
   const [connect, setConnect] = useState<string | null>(null);
   const [creatingKey, setCreatingKey] = useState(false);
@@ -157,8 +141,8 @@ export function Workspace({
     navigate("Accounts");
     setConnect("");
   };
-  // One address for every gateway. The API key picks the gateway.
   const endpoint = `${publicUrl || location.origin}/v1`;
+  const admin = user.role === "admin";
 
   return (
     <>
@@ -170,21 +154,12 @@ export function Workspace({
         onCreateKey={() => setCreatingKey(true)}
         onRefresh={() => void refresh()}
       />
-      {error && (
-        <div className="notice error" role="alert">
-          {error} <button onClick={() => void refresh()}>Try again</button>
-        </div>
-      )}
-      {state?.warnings.map((w) => (
-        <div className="notice" key={w}>
-          {w}
-        </div>
-      ))}
-      {loading && !state && (
-        <div className="loading" role="status" aria-label="Loading">
-          <RefreshCw size={22} className="spinning" />
-        </div>
-      )}
+      <WorkspaceNotices
+        state={state}
+        loading={loading}
+        error={error}
+        onRetry={() => void refresh()}
+      />
       {page === "Overview" && state && (
         <Overview accounts={state.accounts} pool={pool} setPool={setPool} />
       )}
@@ -200,6 +175,7 @@ export function Workspace({
             notify={notify}
             onSaved={() => void refresh()}
             onDirty={onDirty}
+            editable={admin}
             onAddAccount={addAccount}
           />
         </div>
@@ -207,6 +183,7 @@ export function Workspace({
       {page === "Accounts" && state && (
         <AccountsPage
           accounts={state.accounts}
+          admin={admin}
           request={client.request}
           connect={connect}
           setConnect={setConnect}
@@ -216,6 +193,8 @@ export function Workspace({
       )}
       {page === "Keys" && state && (
         <KeysPage
+          admin={admin}
+          userId={user.id}
           request={client.request}
           reloadKey={state.observedAt}
           creating={creatingKey}
@@ -226,7 +205,47 @@ export function Workspace({
         />
       )}
       {page === "Usage" && state && (
-        <UsagePage request={client.request} reloadKey={state.observedAt} />
+        <UsagePage
+          admin={admin}
+          request={client.request}
+          reloadKey={state.observedAt}
+        />
+      )}
+      {page === "Users" && admin && (
+        <UsersPage user={user} request={client.request} notify={notify} />
+      )}
+    </>
+  );
+}
+
+// Load errors, provider warnings, and the first load's spinner.
+function WorkspaceNotices({
+  state,
+  loading,
+  error,
+  onRetry,
+}: {
+  state: State | null;
+  loading: boolean;
+  error: string;
+  onRetry: () => void;
+}) {
+  return (
+    <>
+      {error && (
+        <div className="notice error" role="alert">
+          {error} <button onClick={onRetry}>Try again</button>
+        </div>
+      )}
+      {state?.warnings.map((w) => (
+        <div className="notice" key={w}>
+          {w}
+        </div>
+      ))}
+      {loading && !state && (
+        <div className="loading" role="status" aria-label="Loading">
+          <RefreshCw size={22} className="spinning" />
+        </div>
       )}
     </>
   );
@@ -272,7 +291,7 @@ function PageHeading({
         <button
           className="icon-button refresh"
           disabled={loading}
-          aria-label="Refresh gateway data"
+          aria-label="Refresh"
           title={
             state
               ? `Last refreshed ${new Date(state.observedAt).toLocaleTimeString()}`

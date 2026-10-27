@@ -86,6 +86,8 @@ type preparedInference struct {
 	session  string
 	payload  map[string]json.RawMessage
 	accounts []storedAccount
+	// routing names the account tier tried first.
+	routing string
 }
 
 // Select the model before quota admission. The endpoint only selects the
@@ -96,13 +98,16 @@ func (s *server) prepareInference(w http.ResponseWriter, r *http.Request, attemp
 		return nil, ierr
 	}
 	attempt.model, attempt.stream = model, stream
-	channel, native, accounts, ierr := s.inferenceAccountPool(r.Context(), model)
+	routing := s.store.snapshot().Routing
+	channel, native, accounts, ierr := s.inferenceAccountPool(r.Context(), attempt.principal.UserID, model)
 	if ierr != nil {
 		return nil, ierr
 	}
-	p := &preparedInference{client: inferenceProtocol(r.URL.Path), provider: channel, native: native, stream: stream, upstreamStream: stream}
+	p := &preparedInference{client: inferenceProtocol(r.URL.Path), provider: channel, native: native, stream: stream, upstreamStream: stream, routing: routing}
 	p.includeUsage = object(payload["stream_options"])["include_usage"] == true
-	// Keep each pool within one billing mode.
+	// Keep each pool within one billing mode, the one of the first account
+	// in routing order.
+	accounts = routingOrder(accounts, routing, 0)
 	for _, a := range accounts {
 		if a.AuthMode == accounts[0].AuthMode {
 			p.accounts = append(p.accounts, a)
@@ -142,15 +147,16 @@ func readInferencePayload(w http.ResponseWriter, r *http.Request) (map[string]an
 }
 
 // inferenceAccountPool returns the one provider channel that advertises the
-// public model, its native model ID and the accounts that serve it.
-func (s *server) inferenceAccountPool(ctx context.Context, model string) (string, string, []storedAccount, *inferenceError) {
+// public model to the user, its native model ID and the accounts that serve
+// it: the shared accounts and the user's own.
+func (s *server) inferenceAccountPool(ctx context.Context, userID, model string) (string, string, []storedAccount, *inferenceError) {
 	state := s.store.snapshot()
 	byProvider := map[string][]storedAccount{}
 	natives := map[string]string{}
 	failed := false
 	for _, a := range state.Accounts {
 		channel := a.Provider
-		if a.Disabled || !routableAuth(a) || (channel != "claude" && channel != "codex") {
+		if a.Disabled || !routableAuth(a) || !accountVisible(a, userID) || (channel != "claude" && channel != "codex") {
 			continue
 		}
 		native, ok := inferenceNativeModel(state.Policy, channel, model)

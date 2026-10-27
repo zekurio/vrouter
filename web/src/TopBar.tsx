@@ -1,20 +1,17 @@
 import {
   Boxes,
   ChartColumn,
-  CircleHelp,
-  Eye,
-  EyeOff,
   KeyRound,
   LayoutGrid,
-  LogOut,
-  Monitor,
-  Moon,
-  Sun,
+  UserCog,
   Users,
 } from "lucide-react";
-import type { Gateway } from "./api";
-import { GatewaySwitcher } from "./GatewaySwitcher";
-import { pages, type Page } from "./Workspace";
+import type { SessionUser } from "./api";
+import { nextThemes, themeIcons } from "./theme";
+import { UserMenu, type UserMenuProps } from "./UserMenu";
+import { pagesFor, type Page } from "./Workspace";
+
+export type { Theme } from "./theme";
 
 const pageIcons = {
   Overview: LayoutGrid,
@@ -22,15 +19,8 @@ const pageIcons = {
   Accounts: Users,
   Keys: KeyRound,
   Usage: ChartColumn,
+  Users: UserCog,
 } satisfies Record<Page, unknown>;
-const themes = ["system", "dark", "light"] as const;
-export type Theme = (typeof themes)[number];
-const themeIcons = { system: Monitor, dark: Moon, light: Sun };
-const nextThemes: Record<Theme, Theme> = {
-  system: "dark",
-  dark: "light",
-  light: "system",
-};
 
 function RouterLogo() {
   return (
@@ -50,26 +40,19 @@ function RouterLogo() {
 }
 
 export function TopBar({
-  gateway,
-  gateways,
-  ready,
+  user,
   page,
   navigate,
-  onSelect,
   actions,
 }: {
-  // The open gateway, if any.
-  gateway: Gateway | undefined;
-  gateways: Gateway[];
-  // Signed in, with the gateway list loaded.
-  ready: boolean;
+  // Set once signed in, so the pages can open.
+  user: SessionUser | null;
   page: Page;
   navigate: (page: Page) => void;
-  onSelect: (id: string) => void;
-  actions: HeaderActionProps;
+  actions: Omit<HeaderActionProps, "user">;
 }) {
   return (
-    <header className={`topbar ${gateway ? "" : "is-bare"}`}>
+    <header className={`topbar ${user ? "" : "is-bare"}`}>
       <a
         className="wordmark"
         href="#overview"
@@ -80,16 +63,9 @@ export function TopBar({
           <strong>vrouter</strong>
         </span>
       </a>
-      {ready && gateways.length > (gateway ? 1 : 0) && (
-        <GatewaySwitcher
-          gateways={gateways}
-          selected={gateway ? gateway.id : null}
-          onSelect={onSelect}
-        />
-      )}
-      {gateway && (
+      {user && (
         <nav aria-label="Main navigation">
-          {pages.map((item) => {
+          {pagesFor(user.role).map((item) => {
             const Icon = pageIcons[item];
             return (
               <a
@@ -106,43 +82,30 @@ export function TopBar({
           })}
         </nav>
       )}
-      <HeaderActions {...actions} />
+      <HeaderActions {...actions} user={user} />
     </header>
   );
 }
 
-type HeaderActionProps = {
-  hideEmails: boolean;
-  setHideEmails: (hidden: boolean) => void;
-  theme: Theme;
-  setTheme: (theme: Theme) => void;
-  onHelp: () => void;
-  // Unset when there is no session this page can end.
-  onSignOut: (() => void) | undefined;
+type HeaderActionProps = Omit<UserMenuProps, "user"> & {
+  user: SessionUser | null;
 };
 
-function HeaderActions({
-  hideEmails,
-  setHideEmails,
-  theme,
-  setTheme,
-  onHelp,
-  onSignOut,
-}: HeaderActionProps) {
+// Signed in, every action lives in the user menu. The sign-in screen keeps
+// only the theme.
+function HeaderActions({ user, ...actions }: HeaderActionProps) {
+  if (user) {
+    return (
+      <div className="header-actions">
+        <UserMenu user={user} {...actions} />
+      </div>
+    );
+  }
+  const { theme, setTheme } = actions;
   const nextTheme = nextThemes[theme];
   const ThemeIcon = themeIcons[theme];
   return (
     <div className="header-actions">
-      <button
-        className="icon-button"
-        aria-label={
-          hideEmails ? "Show email addresses" : "Hide email addresses"
-        }
-        title={hideEmails ? "Show email addresses" : "Hide email addresses"}
-        onClick={() => setHideEmails(!hideEmails)}
-      >
-        {hideEmails ? <EyeOff size={16} /> : <Eye size={16} />}
-      </button>
       <button
         className="icon-button"
         aria-label={`Theme: ${theme}. Switch to ${nextTheme}`}
@@ -151,24 +114,6 @@ function HeaderActions({
       >
         <ThemeIcon size={16} />
       </button>
-      <button
-        className="icon-button"
-        aria-label="Show API endpoints"
-        title="API endpoints"
-        onClick={onHelp}
-      >
-        <CircleHelp size={16} />
-      </button>
-      {onSignOut && (
-        <button
-          className="icon-button"
-          aria-label="Sign out"
-          title="Sign out"
-          onClick={onSignOut}
-        >
-          <LogOut size={16} />
-        </button>
-      )}
     </div>
   );
 }

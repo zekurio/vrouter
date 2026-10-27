@@ -27,6 +27,7 @@ export function ModelsPage({
   onSaved,
   onDirty,
   onAddAccount,
+  editable,
 }: {
   models: Model[];
   request: APIRequest;
@@ -40,6 +41,8 @@ export function ModelsPage({
   // Reports unsaved drafts, and clears the report when the page unmounts.
   onDirty: (dirty: boolean) => void;
   onAddAccount: () => void;
+  // Model settings apply to everyone, so only admins change them.
+  editable: boolean;
 }) {
   const data = useModelSettings({
     models,
@@ -78,7 +81,7 @@ export function ModelsPage({
   const detail = rows.find((m) => keyOf(m) === selected) ?? null;
   const rowContext: RowContext = {
     view,
-    editable: data.editable,
+    editable: data.editable && editable,
     saving: data.saving,
     copied,
     onCopyID: (id) => void copyID(id),
@@ -95,6 +98,11 @@ export function ModelsPage({
           <button disabled={loading} onClick={() => void data.load()}>
             Try again
           </button>
+        </div>
+      )}
+      {!editable && (
+        <div className="notice">
+          Model settings apply to everyone. Only admins can change them.
         </div>
       )}
       <ModelsToolbar

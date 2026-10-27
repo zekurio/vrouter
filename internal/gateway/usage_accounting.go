@@ -28,14 +28,19 @@ func usageCounts(r telemetryRecord) []any {
 	return []any{1, 1, unpriced, r.InputTokens, r.OutputTokens, min(r.CachedTokens, r.InputTokens), cost.input, cost.read, cost.write, cost.output, cost.saved}
 }
 
-// The key's name follows its latest request, so a rename shows up.
 func usageUpsert() string {
+	return `INSERT INTO usage_buckets VALUES (?,?,?,?,?,?,?,?` + strings.Repeat(",?", len(usageColumns())) + `) ` + usageMerge()
+}
+
+// usageMerge adds a row to the bucket it lands in. The key's name follows its
+// latest request, so a rename shows up.
+func usageMerge() string {
 	updates := make([]string, 0, len(usageColumns())+1)
 	updates = append(updates, "key_name=excluded.key_name")
 	for _, column := range usageColumns() {
 		updates = append(updates, column+"=MIN("+column+"+excluded."+column+","+usageCounterCap+")")
 	}
-	return `INSERT INTO usage_buckets VALUES (?,?,?,?,?,?,?` + strings.Repeat(",?", len(usageColumns())) + `) ON CONFLICT(gateway,bucket,provider,model,key_id,speed) DO UPDATE SET ` + strings.Join(updates, ",")
+	return `ON CONFLICT(user_id,bucket,provider,model,key_id,speed,scope) DO UPDATE SET ` + strings.Join(updates, ",")
 }
 
 // Delete the pending row in the same transaction as adding the totals. A
@@ -49,7 +54,7 @@ func (s *usageStore) settle(ctx context.Context, r telemetryRecord, accepted boo
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck // rollback after commit is harmless
-	result, err := tx.ExecContext(ctx, `DELETE FROM usage_pending WHERE id=? AND gateway=?`, r.ID, r.GatewayID)
+	result, err := tx.ExecContext(ctx, `DELETE FROM usage_pending WHERE id=?`, r.ID)
 	if err != nil {
 		return err
 	}
@@ -61,12 +66,12 @@ func (s *usageStore) settle(ctx context.Context, r telemetryRecord, accepted boo
 		return nil
 	}
 	now := time.Now().UTC()
-	bucket := []any{r.GatewayID, now.Unix() / usageBucketSeconds * usageBucketSeconds, r.Provider, r.Model, r.KeyID, r.Speed, r.KeyName}
+	bucket := []any{r.UserID, now.Unix() / usageBucketSeconds * usageBucketSeconds, r.Provider, r.Model, r.KeyID, r.Speed, r.AccountScope, r.KeyName}
 	if _, err := tx.ExecContext(ctx, usageUpsert(), append(bucket, usageCounts(r)...)...); err != nil {
 		return err
 	}
 	if accepted && r.KeyID != "" {
-		if _, err := tx.ExecContext(ctx, `UPDATE usage_keys SET tokens=MIN(tokens+?,`+usageCounterCap+`) WHERE gateway=? AND key_id=?`, r.TotalTokens, r.GatewayID, r.KeyID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE usage_keys SET tokens=MIN(tokens+?,`+usageCounterCap+`) WHERE key_id=?`, r.TotalTokens, r.KeyID); err != nil {
 			return err
 		}
 	}
@@ -76,24 +81,25 @@ func (s *usageStore) settle(ctx context.Context, r telemetryRecord, accepted boo
 	return tx.Commit()
 }
 
-// logRequest keeps the request for the Requests view and drops the oldest
-// beyond the retention limit. The totals already hold what it added.
+// logRequest keeps the request for the Requests view and drops the user's
+// oldest beyond the retention limit, so one busy user cannot push everyone
+// else's requests out. The totals already hold what it added.
 func logRequest(ctx context.Context, tx *sql.Tx, r telemetryRecord, now time.Time) error {
 	raw, err := json.Marshal(r)
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO usage_requests VALUES (?,?,?,?)`, r.ID, r.GatewayID, now.UnixMilli(), string(raw)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO usage_requests VALUES (?,?,?,?)`, r.ID, r.UserID, now.UnixMilli(), string(raw)); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `DELETE FROM usage_requests WHERE gateway=? AND id NOT IN (SELECT id FROM usage_requests WHERE gateway=? ORDER BY finished DESC,id DESC LIMIT ?)`, r.GatewayID, r.GatewayID, usageRequestRetention)
+	_, err = tx.ExecContext(ctx, `DELETE FROM usage_requests WHERE user_id=? AND id NOT IN (SELECT id FROM usage_requests WHERE user_id=? ORDER BY finished DESC,id DESC LIMIT ?)`, r.UserID, r.UserID, usageRequestRetention)
 	return err
 }
 
 type keyUsage struct{ requests, tokens int64 }
 
-func (s *usageStore) keys(ctx context.Context, gateway string) (map[string]keyUsage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT key_id,requests,tokens FROM usage_keys WHERE gateway=?`, gateway)
+func (s *usageStore) keys(ctx context.Context) (map[string]keyUsage, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT key_id,requests,tokens FROM usage_keys`)
 	if err != nil {
 		return nil, err
 	}

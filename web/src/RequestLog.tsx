@@ -31,7 +31,14 @@ function when(value: string) {
   return `${dayLabel(date.getTime())}, ${time}`;
 }
 
-export function RequestLog({ requests }: { requests: RequestRecord[] }) {
+export function RequestLog({
+  requests,
+  userNames,
+}: {
+  requests: RequestRecord[];
+  // Names each request's user in a report of everyone.
+  userNames?: Record<string, string> | undefined;
+}) {
   const [outcome, setOutcome] = useState<OutcomeFilter>("all");
   const [key, setKey] = useState("");
   const keyNames = [...new Set(requests.map((r) => keyLabel(r)))].toSorted();
@@ -94,7 +101,11 @@ export function RequestLog({ requests }: { requests: RequestRecord[] }) {
             </thead>
             <tbody>
               {rows.map((r) => (
-                <Row key={r.id} record={r} />
+                <Row
+                  key={r.id}
+                  record={r}
+                  user={userNames?.[r.userId ?? ""] ?? ""}
+                />
               ))}
             </tbody>
           </table>
@@ -104,7 +115,7 @@ export function RequestLog({ requests }: { requests: RequestRecord[] }) {
   );
 }
 
-function Row({ record: r }: { record: RequestRecord }) {
+function Row({ record: r, user }: { record: RequestRecord; user: string }) {
   return (
     <tr>
       <td title={new Date(r.startedAt).toLocaleString()}>
@@ -117,7 +128,14 @@ function Row({ record: r }: { record: RequestRecord }) {
         )}
         {r.speed && <span className="cell-sub">{speedLabel[r.speed]}</span>}
       </td>
-      <td>{keyLabel(r)}</td>
+      <td>
+        {keyLabel(r)}
+        {user && (
+          <span className="cell-sub">
+            <Private peek>{user}</Private>
+          </span>
+        )}
+      </td>
       <AccountCell record={r} />
       <ResultCell record={r} />
       <DurationCell record={r} />
@@ -155,6 +173,11 @@ function AccountCell({ record: r }: { record: RequestRecord }) {
   return (
     <td>
       {r.provider ? providerLabel(r.provider) : "Not routed"}
+      {r.accountScope && (
+        <span className={`scope-badge ${r.accountScope}`}>
+          {r.accountScope === "global" ? "Shared" : "Personal"}
+        </span>
+      )}
       {r.accountName !== undefined && r.accountName !== "" && (
         <span className="cell-sub">
           <Private peek>{r.accountName}</Private>

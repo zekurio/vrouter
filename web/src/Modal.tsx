@@ -18,7 +18,15 @@ export function Modal({
   children: ReactNode;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  useEffect(() => dialog.current?.showModal(), []);
+  useEffect(() => {
+    const opener = document.activeElement;
+    dialog.current?.showModal();
+    // Unmounting skips the browser's own focus restore, so return focus to
+    // whatever opened the dialog while it is still on the page.
+    return () => {
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
+  }, []);
   return (
     // oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- backdrop click; Escape is handled by onCancel
     <dialog

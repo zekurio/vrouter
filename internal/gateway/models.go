@@ -121,10 +121,12 @@ func (m providerModel) gatewayModel(a storedAccount, id string) Model {
 	return Model{Reasoning: reasoning, ReasoningSupported: len(reasoning) > 0, ID: id, Name: m.Name, Provider: provider(a.Provider), Context: m.Context, MaxOutput: m.MaxOutput, Inputs: m.Inputs}
 }
 
-func (s *server) rawModels(ctx context.Context) ([]Model, error) {
+// rawModels lists the native models of the accounts a user's requests can
+// use, before model settings apply.
+func (s *server) rawModels(ctx context.Context, userID string) ([]Model, error) {
 	var pool []storedAccount
 	for _, a := range s.store.snapshot().Accounts {
-		if !a.Disabled && routableAuth(a) {
+		if !a.Disabled && routableAuth(a) && accountVisible(a, userID) {
 			pool = append(pool, a)
 		}
 	}
@@ -168,8 +170,9 @@ func (s *server) rawModels(ctx context.Context) ([]Model, error) {
 	return result, errors.Join(failures...)
 }
 
-func (s *server) models(ctx context.Context) ([]Model, error) {
-	models, err := s.rawModels(ctx)
+// models lists the public models a user's requests can use.
+func (s *server) models(ctx context.Context, userID string) ([]Model, error) {
+	models, err := s.rawModels(ctx, userID)
 	p := s.store.snapshot().Policy
 	result := []Model{}
 	for _, m := range models {

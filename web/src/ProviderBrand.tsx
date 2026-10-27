@@ -7,7 +7,7 @@ declare module "react" {
   }
 }
 
-// Providers are identified by the lower-case ids the gateway stores.
+// Providers are identified by the lower-case ids vrouter stores.
 const labels: Record<string, string> = {
   codex: "Codex",
   claude: "Claude",
