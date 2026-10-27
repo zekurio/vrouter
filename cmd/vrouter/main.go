@@ -27,6 +27,7 @@ func main() {
 		OIDC: gateway.OIDCConfig{
 			Issuer:   os.Getenv("VROUTER_OIDC_ISSUER"),
 			ClientID: os.Getenv("VROUTER_OIDC_CLIENT_ID"),
+			Name:     os.Getenv("VROUTER_OIDC_NAME"),
 		},
 		StartWindows:    true,
 		WindowSkipPlans: os.Getenv("VROUTER_WINDOW_SKIP_PLANS"),

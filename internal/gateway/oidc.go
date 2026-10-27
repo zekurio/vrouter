@@ -25,6 +25,9 @@ type OIDCConfig struct {
 	ClientID string
 	// ClientSecret is empty for a public client, which relies on PKCE alone.
 	ClientSecret string
+	// Name labels the provider on the sign-in page. Empty uses the issuer's
+	// host.
+	Name string
 }
 
 const (
@@ -115,7 +118,13 @@ func claimMissing(raw json.RawMessage) bool {
 	return len(raw) == 0 || string(raw) == "null"
 }
 
-func (c *oidcClient) issuerHost() string { return c.issuer.Host }
+// name labels the provider on the sign-in page.
+func (c *oidcClient) name() string {
+	if name := strings.TrimSpace(c.cfg.Name); name != "" {
+		return name
+	}
+	return c.issuer.Host
+}
 
 func (c *oidcClient) discover(ctx context.Context) (*oidc.Provider, oauth2.Config, error) {
 	c.mu.Lock()

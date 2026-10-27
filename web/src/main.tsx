@@ -41,12 +41,16 @@ function useTheme() {
 
 type ToastMessage = { text: string; failed?: boolean };
 
-// A short message that hides itself after a moment.
+// A short message that hides itself after a moment. Failures stay longer, so
+// there is time to read them.
 function useToast() {
   const [toast, setToast] = useState<ToastMessage | null>(null);
   useEffect(() => {
     if (!toast) return undefined;
-    const id = setTimeout(() => setToast(null), 2500);
+    const id = setTimeout(
+      () => setToast(null),
+      toast.failed === true ? 6000 : 2500,
+    );
     return () => clearTimeout(id);
   }, [toast]);
   return [toast, setToast] as const;
@@ -59,7 +63,7 @@ function App() {
   // Set by the workspace while it has unsaved model drafts.
   const unsaved = useRef(false);
   const session = useSession(client, unsaved);
-  const { phase, auth, user } = session;
+  const { phase, auth, user, loginError } = session;
   // A member who follows a link to an admin page sees the overview.
   const shown = user && pagesFor(user.role).includes(page) ? page : "Overview";
   const [toast, setToast] = useToast();
@@ -73,6 +77,9 @@ function App() {
     return () => window.removeEventListener("hashchange", change);
   }, []);
   useEffect(() => storeHideEmails(hideEmails), [hideEmails]);
+  useEffect(() => {
+    if (loginError) setToast({ text: loginError, failed: true });
+  }, [loginError, setToast]);
 
   const navigate = (next: Page) => {
     setPage(next);
@@ -120,11 +127,7 @@ function App() {
           </div>
         )}
         {phase === "login" && auth && (
-          <LoginPanel
-            auth={auth}
-            error={session.loginError}
-            onSignIn={session.signIn}
-          />
+          <LoginPanel auth={auth} onSignIn={session.signIn} />
         )}
         {phase === "ready" && auth && user && (
           <Workspace
@@ -168,28 +171,21 @@ function Toast({ toast }: { toast: ToastMessage }) {
 
 function LoginPanel({
   auth,
-  error,
   onSignIn,
 }: {
   auth: AuthInfo;
-  error: string;
   onSignIn: () => void;
 }) {
   return (
     <section className="login-panel">
       <h1>Sign in</h1>
-      {error && (
-        <div className="notice error" role="alert">
-          {error}
-        </div>
-      )}
       <p className="login-note">
         vrouter signs you in through{" "}
-        <strong className="login-issuer">{auth.issuer}</strong>. Your API keys
+        <strong className="login-issuer">{auth.provider}</strong>. Your API keys
         and usage are your own; admins also manage shared accounts and users.
       </p>
       <button className="primary login-button" onClick={onSignIn}>
-        <LogIn size={15} /> Sign in with {auth.issuer}
+        <LogIn size={15} /> Sign in with {auth.provider}
       </button>
     </section>
   );

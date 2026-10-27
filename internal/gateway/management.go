@@ -33,5 +33,5 @@ func staticHandler(assets fs.FS) http.HandlerFunc {
 // authStatus tells the signed-out dashboard where sign-in leads.
 func (s *server) authStatus(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, 200, map[string]string{"publicUrl": s.cfg.PublicURL, "issuer": s.oidc.issuerHost()})
+	writeJSON(w, 200, map[string]string{"publicUrl": s.cfg.PublicURL, "provider": s.oidc.name()})
 }
