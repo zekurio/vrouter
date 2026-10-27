@@ -39,7 +39,7 @@ function pace(window: QuotaWindow, now: number) {
 }
 
 // The two largest units, rounded up to the minute: "6d 6h", "4h 29m" or "12m".
-function span(ms: number) {
+export function span(ms: number) {
   const minutes = Math.max(1, Math.ceil(ms / 60000));
   const parts: [number, string][] = [
     [Math.floor(minutes / 1440), "d"],

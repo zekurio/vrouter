@@ -109,19 +109,19 @@ var callbackTemplate = template.Must(template.New("callback").Parse(`<!doctype h
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}} · vrouter</title>
 <style>
-:root { color-scheme: dark light; --bg: #191a19; --border: #2b2d2b; --muted: #92958f; --text: #e7e7e5; --solid: #e7e7e5; --solid-text: #202220; --accent: #79bce9; --state: #d4b57a; }
+:root { color-scheme: dark light; --bg: #000; --muted: #8c8c8c; --text: #f2f2f2; --solid: #f2f2f2; --solid-text: #0a0a0a; --accent: #79bce9; --state: #d4b57a; }
 @media (prefers-color-scheme: light) {
-  :root { --bg: #f7f8f6; --border: #dde1d9; --muted: #666b61; --text: #252a22; --solid: #252a22; --solid-text: #fff; --accent: #2b7cb3; --state: #a57a22; }
+  :root { --bg: #f1f1f1; --muted: #6b6b6b; --text: #0d0d0d; --solid: #0d0d0d; --solid-text: #fff; --accent: #2b7cb3; --state: #a57a22; }
 }
 * { box-sizing: border-box; }
-body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); font: 13px/1.6 "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif; }
-header { display: flex; align-items: center; gap: 13px; padding: 28px 42px; font-size: 17px; font-weight: 650; letter-spacing: -0.5px; }
+body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); font: 13px/1.6 "Inter", system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+header { display: flex; align-items: center; gap: 10px; padding: 21px 30px; font-size: 16px; font-weight: 650; letter-spacing: -0.3px; }
 main { flex: 1; display: flex; flex-direction: column; justify-content: center; width: 100%; max-width: 420px; margin: 0 auto; padding: 0 24px 140px; }
 .state { display: flex; align-items: center; gap: 9px; margin-bottom: 14px; color: var(--muted); font-size: 12px; }
 .state::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--state); }
-h1 { margin: 0; font-size: 30px; line-height: 1.25; font-weight: 550; letter-spacing: -1.1px; }
-p { margin: 12px 0 0; color: var(--muted); }
-a { display: inline-flex; align-items: center; height: 32px; margin-top: 26px; padding: 0 12px; border-radius: 6px; background: var(--solid); color: var(--solid-text); font-size: 12px; font-weight: 500; text-decoration: none; align-self: flex-start; }
+h1 { margin: 0; font-size: 26px; line-height: 1.2; font-weight: 600; letter-spacing: -0.6px; }
+p { margin: 12px 0 0; color: var(--muted); font-size: 14px; }
+a { display: inline-flex; align-items: center; height: 36px; margin-top: 26px; padding: 0 14px; border-radius: 8px; background: var(--solid); color: var(--solid-text); font-size: 13px; font-weight: 550; text-decoration: none; align-self: flex-start; }
 a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 </style>
 </head>

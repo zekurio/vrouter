@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Check, RefreshCw, TriangleAlert } from "lucide-react";
 import "./style.css";
-import "@fontsource-variable/dm-sans";
+import "@fontsource-variable/inter/opsz.css";
 import { createClient, type AuthInfo } from "./api";
 import { HelpDialog } from "./HelpDialog";
 import { PrivacyProvider, storedHideEmails, storeHideEmails } from "./Privacy";
