@@ -193,7 +193,7 @@ function AccountPool({
   const canConnect = connectable.includes(provider);
   return (
     <section
-      className="account-pool"
+      className="panel account-pool"
       style={providerStyle(provider)}
       aria-labelledby={`pool-${provider}`}
     >

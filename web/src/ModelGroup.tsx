@@ -41,7 +41,7 @@ export function ModelGroup({
   const open = group.filter((m) => (m.readOnly ?? "") === "");
   const allOn = open.every((m) => value(m).enabled);
   return (
-    <section className="model-group" style={providerStyle(p)}>
+    <section className="panel model-group" style={providerStyle(p)}>
       <div className="model-group-heading">
         <ProviderBrand provider={p} />
         <h2>{providerName(p)}</h2>

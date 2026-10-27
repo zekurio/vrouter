@@ -184,7 +184,7 @@ function KeyTable({
   onConfirm: (confirm: Confirm) => void;
 }) {
   return (
-    <div className="table-scroll">
+    <div className="panel table-scroll">
       <table className="key-table">
         <thead>
           <tr>

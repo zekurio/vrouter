@@ -247,23 +247,25 @@ function PageHeading({
   onCreateKey: () => void;
   onRefresh: () => void;
 }) {
+  const accounts = state?.accounts.length ?? 0;
   return (
     <section className="page-heading">
       <div>
         <h1>{titles[page] ?? page}</h1>
+        {(page === "Overview" || page === "Accounts") && state && (
+          <span className="page-meta">
+            {accounts} {accounts === 1 ? "account" : "accounts"}
+          </span>
+        )}
       </div>
       <div className="heading-actions">
         {page === "Overview" && (
-          <button
-            className="secondary"
-            disabled={!state}
-            onClick={onAddAccount}
-          >
+          <button className="primary" disabled={!state} onClick={onAddAccount}>
             <Plus size={14} /> Add account
           </button>
         )}
         {page === "Keys" && (
-          <button className="secondary" disabled={!state} onClick={onCreateKey}>
+          <button className="primary" disabled={!state} onClick={onCreateKey}>
             <Plus size={14} /> Create key
           </button>
         )}

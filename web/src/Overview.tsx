@@ -1,6 +1,6 @@
 import { accountLabel, accountState, type Account } from "./AccountsPage";
 import { Private } from "./Privacy";
-import { QuotaWindows } from "./Quota";
+import { QuotaWindows, span } from "./Quota";
 import {
   ProviderBrand as Brand,
   providerLabel,
@@ -70,9 +70,10 @@ function PoolColumn({
 }) {
   const known = accounts.filter((a) => a.remaining !== null);
   const remaining = known.reduce((sum, a) => sum + (a.remaining ?? 0), 0);
+  const stats = poolStats(accounts);
   return (
     <article
-      className={`provider-column ${filter && filter !== p ? "dimmed" : ""}`}
+      className={`panel provider-column ${filter && filter !== p ? "dimmed" : ""}`}
       style={providerStyle(p)}
     >
       <div className="provider-title">
@@ -99,26 +100,42 @@ function PoolColumn({
           {accounts.length} {accounts.length === 1 ? "account" : "accounts"}
         </span>
       </div>
-      <div className="allowance">
-        {known.length === accounts.length ? (
-          <>
-            <span>
-              {Math.round(remaining)}
-              <small>%</small>
-            </span>
-            {accounts.length > 1 && (
-              <span className="allowance-of">of {accounts.length * 100}%</span>
+      <div className="pool-body">
+        <div>
+          <div className="allowance">
+            {known.length === accounts.length ? (
+              <>
+                <span>
+                  {Math.round(remaining)}
+                  <small>%</small>
+                </span>
+                {accounts.length > 1 && (
+                  <span className="allowance-of">
+                    of {accounts.length * 100}%
+                  </span>
+                )}
+              </>
+            ) : (
+              <span className="unknown-allowance">Not reported</span>
             )}
-          </>
-        ) : (
-          <span className="unknown-allowance">Not reported</span>
+          </div>
+          <p className="window-label">
+            {accounts.every((a) => a.window === "Weekly window")
+              ? "Weekly remaining"
+              : "Allowance remaining"}
+          </p>
+        </div>
+        {stats.length > 0 && (
+          <dl className="pool-stats">
+            {stats.map((s) => (
+              <div key={s.label}>
+                <dt>{s.label}</dt>
+                <dd>{s.value}</dd>
+              </div>
+            ))}
+          </dl>
         )}
       </div>
-      <p className="window-label">
-        {accounts.every((a) => a.window === "Weekly window")
-          ? "Weekly remaining"
-          : "Allowance remaining"}
-      </p>
       <div className="segmented-progress">
         {accounts.map((a) => (
           <div key={a.id}>
@@ -132,9 +149,39 @@ function PoolColumn({
   );
 }
 
+// The pool's other quota windows, summed like the headline figure, and when
+// the headline window next resets.
+function poolStats(accounts: Account[]) {
+  const windows = new Map<string, { label: string; left: number }>();
+  let reset = Infinity;
+  for (const a of accounts) {
+    for (const w of a.windows ?? []) {
+      if (w.label === a.window) {
+        const at = new Date(w.resetAt ?? "").getTime();
+        if (at < reset) reset = at;
+        continue;
+      }
+      const pooled = windows.get(w.id) ?? { label: w.label, left: 0 };
+      pooled.left += w.remaining;
+      windows.set(w.id, pooled);
+    }
+  }
+  const stats = [...windows.values()].map((w) => ({
+    label: w.label,
+    value: `${Math.round(w.left)}% left`,
+  }));
+  const until = reset - Date.now();
+  if (Number.isFinite(until))
+    stats.push({
+      label: "Next reset",
+      value: until > 0 ? `In ${span(until)}` : "Due",
+    });
+  return stats;
+}
+
 function AccountCard({ account: a }: { account: Account }) {
   return (
-    <article className="account-card" style={providerStyle(a.provider)}>
+    <article className="panel account-card" style={providerStyle(a.provider)}>
       <div className="account-heading">
         <div>
           <h3>

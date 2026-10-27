@@ -37,7 +37,7 @@ let
       prePnpmInstall = ''
         export pnpm_config_force_ignores_platform=true
       '';
-      hash = "sha256-a0QzvX1hLIXjS0B58gLtHIbcV/tt/aPuURRdLWVYOLE=";
+      hash = "sha256-WCNFYxwr7Js6lhnF0WhsdJjIta/dzMPonVSKm84yuRY=";
     };
     buildPhase = ''
       runHook preBuild

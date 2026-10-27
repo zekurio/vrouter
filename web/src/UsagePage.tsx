@@ -128,7 +128,7 @@ function Breakdown({
   requests: RequestRecord[];
 }) {
   return (
-    <section className="usage-breakdown">
+    <section className="panel usage-breakdown">
       <div className="section-toolbar">
         <h2>Breakdown</h2>
         <div className="tabs" role="group" aria-label="Break down by">
@@ -174,7 +174,7 @@ function Breakdown({
 
 function UsageSummary({ usage, total }: { usage: Usage; total: Tally }) {
   return (
-    <section className="usage-summary">
+    <section className="panel usage-summary">
       <div>
         <p className="usage-total">{money(total.cost)}</p>
         <p className="usage-caption">
@@ -209,7 +209,7 @@ function UsageSummary({ usage, total }: { usage: Usage; total: Tally }) {
 
 function UsageTotals({ total }: { total: Tally }) {
   return (
-    <dl className="usage-totals">
+    <dl className="panel usage-totals">
       <div>
         <dt>Tokens</dt>
         <dd>{compact(total.tokens)}</dd>
@@ -262,7 +262,7 @@ function CostSplits({ usage, total }: { usage: Usage; total: Tally }) {
     }),
   );
   return (
-    <div className="usage-costs">
+    <div className="panel usage-costs">
       <CostSplit
         title="Cost by type"
         parts={costTypes
