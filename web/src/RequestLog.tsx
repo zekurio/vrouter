@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { badgeRow, ScopeBadge } from "./Badge";
+import { sectionToolbar } from "./pageStyles";
 import { Private } from "./Privacy";
 import { providerLabel } from "./ProviderBrand";
 import { Select } from "./Select";
@@ -11,9 +13,25 @@ import {
   type OutcomeFilter,
   type RequestRecord,
 } from "./telemetry";
+import { cx, empty, tab, tableScroll, tabs } from "./ui";
 import { dayLabel } from "./usage";
 
 const number = (n: number) => n.toLocaleString();
+
+const head = (numeric = false) =>
+  cx(
+    "border-b border-border pr-4.5 pb-2.75 text-[12px] font-[450] whitespace-nowrap text-muted last:pr-0",
+    numeric ? "text-right tabular-nums" : "text-left",
+  );
+// Cells align to the top, so rows with a second line stay level. The time in
+// the first column stays on one line.
+const cell = (numeric = false, muted = false) =>
+  cx(
+    "border-b border-border pt-2.75 pr-4.5 pb-2.75 align-top leading-[1.5] wrap-anywhere group-last:border-b-0 first:whitespace-nowrap first:text-muted last:pr-0",
+    numeric && "text-right whitespace-nowrap tabular-nums",
+    muted ? "text-muted" : "text-subtle",
+  );
+const subLine = "block text-[11.5px] text-muted";
 const outcomes: { value: OutcomeFilter; label: string }[] = [
   { value: "all", label: "All" },
   { value: "error", label: "Errors" },
@@ -46,13 +64,13 @@ export function RequestLog({
   const rows = filterRequests(requests, outcome, selectedKey);
   return (
     <>
-      <div className="section-toolbar">
-        <div className="tabs" role="group" aria-label="Filter by result">
+      <div className={cx(sectionToolbar, "mb-4")}>
+        <div className={tabs(true)} role="group" aria-label="Filter by result">
           {outcomes.map((o) => (
             <button
               key={o.value}
               aria-pressed={outcome === o.value}
-              className={outcome === o.value ? "selected" : ""}
+              className={tab(outcome === o.value)}
               onClick={() => setOutcome(o.value)}
             >
               {o.label}
@@ -61,6 +79,7 @@ export function RequestLog({
         </div>
         {keyNames.length > 1 && (
           <Select
+            inset
             label="Filter by key"
             value={selectedKey}
             options={[
@@ -72,29 +91,39 @@ export function RequestLog({
         )}
       </div>
       {rows.length === 0 ? (
-        <p className="empty">No matching requests</p>
+        <p className={cx(empty, "mt-6 mb-1")}>No matching requests</p>
       ) : (
-        <div className="table-scroll">
-          <table className="request-table">
+        <div className={tableScroll}>
+          <table className="w-full min-w-[880px] border-collapse text-[12px]">
             <thead>
               <tr>
-                <th scope="col">Time</th>
-                <th scope="col">Model</th>
-                <th scope="col">Key</th>
-                <th scope="col" className="request-account">
+                <th scope="col" className={head()}>
+                  Time
+                </th>
+                <th scope="col" className={head()}>
+                  Model
+                </th>
+                <th scope="col" className={head()}>
+                  Key
+                </th>
+                {/* A set width, so hiding or showing addresses does not resize
+                    the columns. Longer addresses wrap instead. */}
+                <th scope="col" className={cx(head(), "w-[190px]")}>
                   Account
                 </th>
-                <th scope="col">Result</th>
-                <th scope="col" className="numeric">
+                <th scope="col" className={head()}>
+                  Result
+                </th>
+                <th scope="col" className={head(true)}>
                   Duration
                 </th>
-                <th scope="col" className="numeric">
+                <th scope="col" className={head(true)}>
                   Input
                 </th>
-                <th scope="col" className="numeric">
+                <th scope="col" className={head(true)}>
                   Output
                 </th>
-                <th scope="col" className="numeric">
+                <th scope="col" className={head(true)}>
                   Total
                 </th>
               </tr>
@@ -117,21 +146,23 @@ export function RequestLog({
 
 function Row({ record: r, user }: { record: RequestRecord; user: string }) {
   return (
-    <tr>
-      <td title={new Date(r.startedAt).toLocaleString()}>
+    <tr className="group">
+      <td className={cell()} title={new Date(r.startedAt).toLocaleString()}>
         {when(r.startedAt)}
       </td>
-      <td>
-        <span className="cell-main">{r.model || "Unknown model"}</span>
+      <td className={cell()}>
+        <span className="font-medium text-text">
+          {r.model || "Unknown model"}
+        </span>
         {r.nativeModel && r.nativeModel !== r.model && (
-          <code>{r.nativeModel}</code>
+          <code className={subLine}>{r.nativeModel}</code>
         )}
-        {r.speed && <span className="cell-sub">{speedLabel[r.speed]}</span>}
+        {r.speed && <span className={subLine}>{speedLabel[r.speed]}</span>}
       </td>
-      <td>
+      <td className={cell()}>
         {keyLabel(r)}
         {user && (
-          <span className="cell-sub">
+          <span className={subLine}>
             <Private peek>{user}</Private>
           </span>
         )}
@@ -141,18 +172,18 @@ function Row({ record: r, user }: { record: RequestRecord; user: string }) {
       <DurationCell record={r} />
       {r.usageKnown ? (
         <>
-          <td className="numeric">
+          <td className={cell(true)}>
             {number(r.inputTokens)}
             {r.cachedTokens > 0 && (
-              <span className="cell-sub">{number(r.cachedTokens)} cached</span>
+              <span className={subLine}>{number(r.cachedTokens)} cached</span>
             )}
           </td>
-          <td className="numeric">{number(r.outputTokens)}</td>
-          <td className="numeric">{number(r.totalTokens)}</td>
+          <td className={cell(true)}>{number(r.outputTokens)}</td>
+          <td className={cell(true)}>{number(r.totalTokens)}</td>
         </>
       ) : (
         <td
-          className="numeric usage-unknown"
+          className={cell(true, true)}
           colSpan={3}
           title={
             r.usagePartial === true
@@ -171,15 +202,13 @@ function Row({ record: r, user }: { record: RequestRecord; user: string }) {
 
 function AccountCell({ record: r }: { record: RequestRecord }) {
   return (
-    <td>
-      {r.provider ? providerLabel(r.provider) : "Not routed"}
-      {r.accountScope && (
-        <span className={`scope-badge ${r.accountScope}`}>
-          {r.accountScope === "global" ? "Shared" : "Personal"}
-        </span>
-      )}
+    <td className={cell()}>
+      <span className={badgeRow}>
+        {r.provider ? providerLabel(r.provider) : "Not routed"}
+        {r.accountScope && <ScopeBadge scope={r.accountScope} />}
+      </span>
       {r.accountName !== undefined && r.accountName !== "" && (
-        <span className="cell-sub">
+        <span className={subLine}>
           <Private peek>{r.accountName}</Private>
         </span>
       )}
@@ -187,17 +216,26 @@ function AccountCell({ record: r }: { record: RequestRecord }) {
   );
 }
 
+const resultTone: Record<RequestRecord["outcome"], string> = {
+  success: "",
+  error: "text-danger",
+  incomplete: "text-amber",
+};
+
 function ResultCell({ record: r }: { record: RequestRecord }) {
   return (
-    <td>
+    <td className={cell()}>
       <span
-        className={`request-result ${r.outcome}`}
+        className={cx("whitespace-nowrap", resultTone[r.outcome])}
         title={r.status ? `HTTP ${r.status}` : undefined}
       >
         {resultLabel(r)}
       </span>
       {r.failure !== undefined && r.failure !== "" && (
-        <span className="cell-sub request-failure" title={r.failure}>
+        <span
+          className="line-clamp-2 max-w-[260px] text-[11.5px] text-muted"
+          title={r.failure}
+        >
           {r.failure}
         </span>
       )}
@@ -208,16 +246,16 @@ function ResultCell({ record: r }: { record: RequestRecord }) {
 // Streaming is the usual case, so only a buffered response is labelled.
 function DurationCell({ record: r }: { record: RequestRecord }) {
   return (
-    <td className="numeric">
+    <td className={cell(true)}>
       {formatDuration(r.durationMs)}
       {r.stream ? (
         r.firstOutputMs !== undefined && (
-          <span className="cell-sub" title="Time to first output">
+          <span className={subLine} title="Time to first output">
             First output {formatDuration(r.firstOutputMs)}
           </span>
         )
       ) : (
-        <span className="cell-sub">Not streamed</span>
+        <span className={subLine}>Not streamed</span>
       )}
     </td>
   );

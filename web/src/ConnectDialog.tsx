@@ -1,8 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, X } from "lucide-react";
+import { X } from "lucide-react";
 import { errorMessage, isStale, statusOf, type APIRequest } from "./api";
 import { ProviderBrand, providerLabel, providerStyle } from "./ProviderBrand";
-import { ConnectSteps } from "./ConnectSteps";
+import { ConnectDone, ConnectFailed, ConnectSteps } from "./ConnectSteps";
+import {
+  cx,
+  dialog as dialogClass,
+  dialogHeading,
+  dialogLead,
+  dialogTitle as titleClass,
+  iconButton,
+  tab,
+  tabs,
+} from "./ui";
 
 // Providers vrouter can sign in to. Codex is the pool for OpenAI sign-in.
 export const connectable = ["codex", "claude"];
@@ -251,7 +261,7 @@ export function ConnectDialog({
   return (
     <dialog
       ref={dialog}
-      className="connect-dialog"
+      className={dialogClass("sm")}
       style={providerStyle(id)}
       onCancel={(e) => {
         e.preventDefault();
@@ -259,11 +269,13 @@ export function ConnectDialog({
       }}
       aria-labelledby="connect-title"
     >
-      <div className="dialog-heading">
-        <h2 id="connect-title">{dialogTitle(phase, name, target, scope)}</h2>
+      <div className={dialogHeading}>
+        <h2 id="connect-title" className={titleClass}>
+          {dialogTitle(phase, name, target, scope)}
+        </h2>
         {phase !== "connected" && phase !== "error" && (
           <button
-            className="icon-button"
+            className={iconButton()}
             aria-label={name ? "Cancel sign-in" : "Close dialog"}
             onClick={onClose}
           >
@@ -326,19 +338,23 @@ function ProviderChoice({
 }) {
   return (
     <>
-      <p className="dialog-lead">
+      <p className={dialogLead}>
         Tokens stay on the server and never pass through this browser.{" "}
         {scope === "global"
           ? "Every user's API keys can use a shared account."
           : "Only your API keys use a personal account."}
       </p>
       {setScope && (
-        <div className="tabs scope-choice" role="group" aria-label="Owner">
+        <div
+          className={cx(tabs(true), "mt-4.5 w-fit")}
+          role="group"
+          aria-label="Owner"
+        >
           {scopeChoices.map((c) => (
             <button
               key={c.value}
               aria-pressed={scope === c.value}
-              className={scope === c.value ? "selected" : ""}
+              className={tab(scope === c.value)}
               onClick={() => setScope(c.value)}
             >
               {c.label}
@@ -346,72 +362,23 @@ function ProviderChoice({
           ))}
         </div>
       )}
-      <div className="provider-choice">
+      <div className="mt-5 grid grid-cols-2 gap-2.5 max-sm:grid-cols-1">
         {connectable.map((p) => (
-          <button key={p} style={providerStyle(p)} onClick={() => choose(p)}>
+          <button
+            key={p}
+            className="flex items-center gap-3.25 rounded-xl border border-line bg-well p-4 text-left hover:border-provider hover:bg-chip"
+            style={providerStyle(p)}
+            onClick={() => choose(p)}
+          >
             <ProviderBrand provider={p} />
-            <span>
-              <strong>Sign in with {providerLabel(p)}</strong>
+            <span className="flex flex-col gap-0.75 text-[11px] text-muted">
+              <strong className="text-[13px] font-[550] text-text">
+                Sign in with {providerLabel(p)}
+              </strong>
               {p === "codex" ? "ChatGPT subscription" : "Claude subscription"}
             </span>
           </button>
         ))}
-      </div>
-    </>
-  );
-}
-
-function ConnectDone({
-  name,
-  scope,
-  onAnother,
-  onClose,
-}: {
-  name: string;
-  scope: Scope;
-  onAnother: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <>
-      <p className="dialog-lead connect-done">
-        <Check size={16} /> Added to{" "}
-        {scope === "global" ? `the shared ${name}` : `your ${name}`} accounts.
-        vrouter hasn&apos;t sent a test request, so confirm with a client call.
-      </p>
-      <div className="dialog-actions">
-        <button className="secondary" onClick={onAnother}>
-          Add another
-        </button>
-        <button className="primary" onClick={onClose}>
-          Done
-        </button>
-      </div>
-    </>
-  );
-}
-
-function ConnectFailed({
-  error,
-  onClose,
-  onRetry,
-}: {
-  error: string;
-  onClose: () => void;
-  onRetry: () => void;
-}) {
-  return (
-    <>
-      <div className="notice error" role="alert">
-        {error}
-      </div>
-      <div className="dialog-actions">
-        <button className="secondary" onClick={onClose}>
-          Close
-        </button>
-        <button className="primary" onClick={onRetry}>
-          Start again
-        </button>
       </div>
     </>
   );

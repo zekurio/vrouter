@@ -5,6 +5,14 @@ import {
   type Protocol,
   type TestOutcome,
 } from "./protocols";
+import { button, cx } from "./ui";
+
+const stateColors: Record<string, string> = {
+  passed: "text-green",
+  incomplete: "text-amber",
+  failed: "text-danger",
+};
+const note = "mt-1.5 text-[11.5px] leading-[1.6] wrap-anywhere";
 
 const labels: Record<TestOutcome["state"], string> = {
   passed: "Passed",
@@ -69,15 +77,18 @@ export function ConnectionTest({
   }
 
   return (
-    <section className="connection-test" aria-labelledby="connection-test">
-      <h3 id="connection-test">Test this model</h3>
-      <p>
+    <section className="mt-5.5" aria-labelledby="connection-test">
+      <h3 id="connection-test" className="text-[13px] font-[550]">
+        Test this model
+      </h3>
+      <p className={cx(note, "text-muted")}>
         Sends &quot;Reply with OK.&quot; to {base}
         {protocolPath(protocol)} with your API key. The request counts against
         that key like any other. The key is not saved.
       </p>
-      <div className="connection-test-form">
+      <div className="mt-3 flex gap-2">
         <input
+          className="h-8 min-w-0 flex-1 rounded-lg border border-line bg-well px-2.5 text-[13px] text-text placeholder:text-muted focus:border-accent focus:outline-none"
           type="password"
           aria-label="API key for the test"
           placeholder="API key"
@@ -91,12 +102,15 @@ export function ConnectionTest({
           }}
         />
         {running ? (
-          <button className="secondary" onClick={() => abort.current?.abort()}>
+          <button
+            className={button("secondary")}
+            onClick={() => abort.current?.abort()}
+          >
             Cancel
           </button>
         ) : (
           <button
-            className="primary"
+            className={button("primary")}
             disabled={!key.trim() || isBlocked}
             onClick={() => void run()}
           >
@@ -104,7 +118,7 @@ export function ConnectionTest({
           </button>
         )}
       </div>
-      {isBlocked && <p>{blocked}</p>}
+      {isBlocked && <p className={cx(note, "text-muted")}>{blocked}</p>}
       {(running || outcome !== null) && (
         <TestResult outcome={outcome} path={path} reply={reply} />
       )}
@@ -128,19 +142,42 @@ function TestResult({
     outcome.requestId ? `request ${outcome.requestId}` : "",
   ];
   return (
-    <div className="connection-test-result" role="status">
-      <div className="connection-test-status">
-        <strong className={outcome?.state ?? "pending"}>
+    <div
+      className="mt-3 rounded-lg border border-line bg-well px-3 py-2.5"
+      role="status"
+    >
+      <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 text-[12px]">
+        <strong
+          className={cx(
+            "font-[550]",
+            stateColors[outcome?.state ?? ""] ?? "text-subtle",
+          )}
+        >
           {outcome ? labels[outcome.state] : "Waiting for the response"}
         </strong>
-        <code>POST {path}</code>
-        {facts && <span>{facts.filter(Boolean).join(" · ")}</span>}
+        <code className="text-subtle">POST {path}</code>
+        {facts && (
+          <span className="ml-auto text-[11px] text-muted">
+            {facts.filter(Boolean).join(" · ")}
+          </span>
+        )}
       </div>
-      {outcome !== null && outcome.detail !== "" && <p>{outcome.detail}</p>}
-      {outcome && outcome.ignored.length > 0 && (
-        <p>Provider does not use: {outcome.ignored.join(", ")}.</p>
+      {outcome !== null && outcome.detail !== "" && (
+        <p className={cx(note, "text-subtle")}>{outcome.detail}</p>
       )}
-      {reply && <pre tabIndex={0}>{reply}</pre>}
+      {outcome && outcome.ignored.length > 0 && (
+        <p className={cx(note, "text-subtle")}>
+          Provider does not use: {outcome.ignored.join(", ")}.
+        </p>
+      )}
+      {reply && (
+        <pre
+          className="mt-2 max-h-30 overflow-auto text-[12px] leading-[1.6] whitespace-pre-wrap text-text wrap-anywhere"
+          tabIndex={0}
+        >
+          {reply}
+        </pre>
+      )}
     </div>
   );
 }

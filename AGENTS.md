@@ -15,4 +15,5 @@ vrouter is a Go model gateway (`internal/gateway`) with a React UI (`web`) embed
 - Go embeds `web/dist`, so build the UI before building a binary you want to run.
 - `vrouter.json` in the data directory stores provider credentials in plain text. Set `VROUTER_DATA_DIR` to a scratch directory when you experiment, and keep secrets out of responses and logs.
 - Go JSON types and the TypeScript types in `web/src` are kept in sync by hand. Change both.
+- The UI uses Tailwind v4. `web/src/style.css` holds the theme: colours such as `bg-surface` and `text-muted`, the `light:` variant, and custom breakpoints (`max-sm:` is 600px). `web/src/ui.ts` holds class helpers that several components share. The project has no tailwind-merge, so never put two utilities for one property on an element. The one later in the stylesheet wins, not the one later in the class list.
 - Don't mix subscription accounts and API-key accounts in one inference pool. Falling back from one to the other crosses a billing boundary.

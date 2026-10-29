@@ -3,10 +3,22 @@ import { LogIn, Plus, Trash2 } from "lucide-react";
 import { ConnectDialog, connectable, type Scope } from "./ConnectDialog";
 import { ProviderBrand, providerLabel, providerStyle } from "./ProviderBrand";
 import { Private, usePrivateLabel } from "./Privacy";
-import { QuotaWindows, type QuotaWindow } from "./Quota";
+import { AccountWindows, type QuotaWindow } from "./Quota";
 import { errorMessage, type APIRequest } from "./api";
 import { RemoveAccountDialog } from "./RemoveAccountDialog";
 import { RoutingPanel } from "./RoutingPanel";
+import {
+  button,
+  cx,
+  empty,
+  groupCount,
+  groupHeading,
+  groupTitle,
+  iconButton,
+  notice,
+  panelFrame,
+  toggle as switchClass,
+} from "./ui";
 
 export type Account = {
   id: string;
@@ -148,7 +160,7 @@ export function AccountsPage({
   return (
     <>
       {error && (
-        <div className="notice error" role="alert">
+        <div className={cx(notice({ error: true }), "my-3.75")} role="alert">
           {error}
         </div>
       )}
@@ -156,17 +168,18 @@ export function AccountsPage({
       {scopes.map((section) => (
         <section
           key={section.scope}
-          className="account-section"
+          className="mt-7.5"
           aria-labelledby={`section-${section.scope}`}
         >
-          <div className="section-heading">
-            <h2 id={`section-${section.scope}`}>{section.title}</h2>
-            <p>
-              {section.scope === "global" && !admin
+          <SectionHeading
+            id={`section-${section.scope}`}
+            title={section.title}
+            lead={
+              section.scope === "global" && !admin
                 ? `${section.lead} Admins manage them.`
-                : section.lead}
-            </p>
-          </div>
+                : section.lead
+            }
+          />
           {providers.map((provider) => (
             <AccountPool
               key={provider}
@@ -219,6 +232,25 @@ export function AccountsPage({
   );
 }
 
+function SectionHeading({
+  id,
+  title,
+  lead,
+}: {
+  id: string;
+  title: string;
+  lead: string;
+}) {
+  return (
+    <div className="mb-3.5 flex flex-wrap items-baseline gap-x-3.5 gap-y-1">
+      <h2 id={id} className="text-[18px] font-semibold tracking-[-0.3px]">
+        {title}
+      </h2>
+      <p className="text-muted">{lead}</p>
+    </div>
+  );
+}
+
 const scopes: { scope: Scope; title: string; lead: string }[] = [
   {
     scope: "personal",
@@ -248,28 +280,36 @@ function AccountPool({
 }) {
   const canConnect = connectable.includes(provider) && onAdd !== undefined;
   const id = `pool-${scope}-${provider}`;
+  // Pools after the first in a section stand apart from the one above.
   return (
     <section
-      className="panel account-pool"
+      className={cx(
+        panelFrame,
+        "px-5.5 pt-5 pb-1.5 not-first-of-type:mt-3 max-sm:p-4.5",
+      )}
       style={providerStyle(provider)}
       aria-labelledby={id}
     >
-      <div className="model-group-heading">
+      <div
+        className={cx(groupHeading, "flex-wrap border-b border-border pb-3.5")}
+      >
         <ProviderBrand provider={provider} />
-        <h3 id={id}>{providerLabel(provider)}</h3>
-        <span>
+        <h3 id={id} className={groupTitle}>
+          {providerLabel(provider)}
+        </h3>
+        <span className={cx(groupCount, "whitespace-nowrap")}>
           {pool.length} {pool.length === 1 ? "account" : "accounts"}
         </span>
-        <div className="pool-actions">
+        <div className="ml-auto flex gap-2">
           {canConnect && (
-            <button className="secondary" onClick={onAdd}>
+            <button className={button("secondary")} onClick={onAdd}>
               <Plus size={14} /> Add account
             </button>
           )}
         </div>
       </div>
       {pool.length === 0 ? (
-        <p className="empty">
+        <p className={cx(empty, "mt-3 mb-2")}>
           {scope === "personal" ? "No personal accounts" : "No shared accounts"}
         </p>
       ) : (
@@ -304,9 +344,13 @@ function AccountRow({
   const statusMessage = a.statusMessage ?? "";
   const name = label(accountLabel(a), fallback);
   return (
-    <li className={`account-row ${on ? "" : "is-off"}`}>
+    // Switch, identity, plan, usage, actions. Identity and plan have fixed
+    // widths so the usage windows start at the same x on every row and
+    // provider. Below 800px the fixed columns would squeeze the usage
+    // windows, so the row stacks: name and actions on top, plan, then usage.
+    <li className="grid min-h-16.5 grid-cols-[30px_minmax(0,208px)_88px_minmax(0,1fr)_70px] items-center gap-x-5 border-b border-border py-4 last:border-b-0 max-[1120px]:grid-cols-[30px_minmax(0,143px)_72px_minmax(0,1fr)_64px] max-[1120px]:gap-x-3.5 max-lg:grid-cols-[30px_minmax(0,1fr)_70px] max-lg:items-start max-lg:gap-y-3.5">
       <button
-        className="switch"
+        className={cx(switchClass, "max-lg:mt-px")}
         role="switch"
         aria-checked={on}
         aria-label={`Route requests through ${name}`}
@@ -314,19 +358,21 @@ function AccountRow({
         disabled={busy === a.id || !a.manageable}
         onClick={() => actions.onToggle(a)}
       />
-      <div className="account-identity">
-        <h3>
+      {/* The name plus one secondary line, matching the quota block, centred
+          as a block so a name-only account sits on the row's midline. */}
+      <div className="flex min-h-11.5 flex-col justify-center max-lg:min-h-0">
+        <h3 className={cx(accountName, !on && "opacity-50")}>
           <Private peek>{accountLabel(a)}</Private>
         </h3>
         {a.availableResets !== undefined && (
-          <p>
+          <p className={cx(rowNote, "text-muted")}>
             {a.availableResets} usage{" "}
             {a.availableResets === 1 ? "reset" : "resets"} available
           </p>
         )}
         {on ? (
           accountState(a) && (
-            <p className="account-warning">
+            <p className={cx(rowNote, "text-amber")}>
               <Private>
                 {statusMessage ||
                   "Unavailable. vrouter is not routing to it right now."}
@@ -334,15 +380,21 @@ function AccountRow({
             </p>
           )
         ) : (
-          <p>Disabled. Requests skip this account.</p>
+          <p className={cx(rowNote, "text-muted")}>
+            Disabled. Requests skip this account.
+          </p>
         )}
       </div>
-      <span className="plan account-plan">{a.plan}</span>
-      <AccountWindows account={a} />
-      <div className="account-row-actions">
+      <span className={cx(plan, !on && "opacity-50")}>{a.plan}</span>
+      <AccountWindows
+        windows={a.windows ?? []}
+        quotaError={a.quotaError ?? ""}
+        off={!on}
+      />
+      <div className="flex justify-end gap-1.5 max-lg:col-start-3 max-lg:row-start-1 max-lg:-mt-1.75">
         {a.reconnectable === true && (
           <button
-            className="icon-button"
+            className={iconButton()}
             aria-label={`Reconnect ${name}`}
             title={`Reconnect ${name}`}
             disabled={busy === a.id}
@@ -353,7 +405,7 @@ function AccountRow({
         )}
         {a.manageable && (
           <button
-            className="icon-button is-danger"
+            className={iconButton("md", { danger: true })}
             aria-label={`Remove ${name}`}
             onClick={() => actions.onRemove(a)}
           >
@@ -365,23 +417,11 @@ function AccountRow({
   );
 }
 
-function AccountWindows({ account }: { account: Account }) {
-  const windows = account.windows ?? [];
-  const quotaError = account.quotaError ?? "";
-  return (
-    <div className="account-windows">
-      {windows.length > 0 ? (
-        <QuotaWindows windows={windows} />
-      ) : (
-        <p className={quotaError ? "quota-error" : ""}>
-          <Private>{quotaError || "Allowance not reported"}</Private>
-        </p>
-      )}
-      {windows.length > 0 && quotaError && (
-        <p className="quota-error">
-          <Private>{quotaError}</Private>
-        </p>
-      )}
-    </div>
-  );
-}
+const accountName =
+  "flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5 text-[14px] leading-5 font-[550] wrap-anywhere";
+// The secondary lines under an account's name.
+const rowNote = "mt-1 text-[12px] leading-normal wrap-anywhere";
+// An empty plan keeps rows lined up in the wide layout. The stacked layout
+// drops it, so no blank line is left behind.
+const plan =
+  "inline-block text-[13px] leading-[1.4] font-medium text-provider wrap-anywhere max-lg:col-[2/4] max-lg:-mt-2 max-lg:empty:hidden";

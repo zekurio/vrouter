@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Plus, RefreshCw } from "lucide-react";
 import { AccountsPage, type Account } from "./AccountsPage";
 import {
   createClient,
@@ -13,10 +12,11 @@ import { KeysPage } from "./KeysPage";
 import { ModelsPage } from "./ModelsPage";
 import type { Model } from "./models";
 import { Overview } from "./Overview";
+import { PageHeading, WorkspaceNotices } from "./PageHeading";
 import { UsagePage } from "./UsagePage";
 import { UsersPage } from "./UsersPage";
 
-type State = {
+export type State = {
   observedAt: string;
   models: Model[];
   accounts: Account[];
@@ -35,10 +35,6 @@ export type Page = (typeof pages)[number];
 const adminPages: ReadonlySet<Page> = new Set(["Users"]);
 export const pagesFor = (role: Role) =>
   pages.filter((p) => role === "admin" || !adminPages.has(p));
-const titles: Partial<Record<Page, string>> = {
-  Overview: "Account pools",
-  Keys: "API keys",
-};
 
 type Props = {
   page: Page;
@@ -215,93 +211,5 @@ export function Workspace({
         <UsersPage user={user} request={client.request} notify={notify} />
       )}
     </>
-  );
-}
-
-// Load errors, provider warnings, and the first load's spinner.
-function WorkspaceNotices({
-  state,
-  loading,
-  error,
-  onRetry,
-}: {
-  state: State | null;
-  loading: boolean;
-  error: string;
-  onRetry: () => void;
-}) {
-  return (
-    <>
-      {error && (
-        <div className="notice error" role="alert">
-          {error} <button onClick={onRetry}>Try again</button>
-        </div>
-      )}
-      {state?.warnings.map((w) => (
-        <div className="notice" key={w}>
-          {w}
-        </div>
-      ))}
-      {loading && !state && (
-        <div className="loading" role="status" aria-label="Loading">
-          <RefreshCw size={22} className="spinning" />
-        </div>
-      )}
-    </>
-  );
-}
-
-function PageHeading({
-  page,
-  state,
-  loading,
-  onAddAccount,
-  onCreateKey,
-  onRefresh,
-}: {
-  page: Page;
-  state: State | null;
-  loading: boolean;
-  onAddAccount: () => void;
-  onCreateKey: () => void;
-  onRefresh: () => void;
-}) {
-  const accounts = state?.accounts.length ?? 0;
-  return (
-    <section className="page-heading">
-      <div>
-        <h1>{titles[page] ?? page}</h1>
-        {(page === "Overview" || page === "Accounts") && state && (
-          <span className="page-meta">
-            {accounts} {accounts === 1 ? "account" : "accounts"}
-          </span>
-        )}
-      </div>
-      <div className="heading-actions">
-        {page === "Overview" && (
-          <button className="primary" disabled={!state} onClick={onAddAccount}>
-            <Plus size={14} /> Add account
-          </button>
-        )}
-        {page === "Keys" && (
-          <button className="primary" disabled={!state} onClick={onCreateKey}>
-            <Plus size={14} /> Create key
-          </button>
-        )}
-        <button
-          className="icon-button refresh"
-          disabled={loading}
-          aria-label="Refresh"
-          title={
-            state
-              ? `Last refreshed ${new Date(state.observedAt).toLocaleTimeString()}`
-              : "Refresh"
-          }
-          onClick={onRefresh}
-        >
-          <RefreshCw size={16} className={loading ? "spinning" : ""} />
-        </button>
-      </div>
-    </section>
   );
 }

@@ -1,15 +1,16 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { isDialogBackdropClick } from "./dialog";
+import { dialog as dialogClass } from "./ui";
 
 // A native modal dialog that is open for as long as it is mounted.
 export function Modal({
-  className = "",
+  width = "md",
   labelledBy,
   onClose,
   locked = false,
   children,
 }: {
-  className?: string;
+  width?: "md" | "sm" | "xs";
   labelledBy: string;
   onClose: () => void;
   // Ignore Escape and backdrop clicks, for work in flight or content that
@@ -31,7 +32,7 @@ export function Modal({
     // oxlint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- backdrop click; Escape is handled by onCancel
     <dialog
       ref={dialog}
-      className={className}
+      className={dialogClass(width)}
       aria-labelledby={labelledBy}
       onCancel={(e) => {
         e.preventDefault();

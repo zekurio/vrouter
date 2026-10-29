@@ -1,5 +1,6 @@
 import { createContext, useContext, useState } from "react";
 import { readStored, writeStored } from "./storage";
+import { cx } from "./ui";
 
 const storageKey = "vrouter-hide-emails";
 const email = /[^\s@<>()]+@[^\s@<>()]+\.[^\s@<>()]+/gu;
@@ -11,6 +12,12 @@ const standIn = "hidden@email.address";
 export const storedHideEmails = () => readStored(storageKey) !== "visible";
 export const storeHideEmails = (hidden: boolean) =>
   writeStored(storageKey, hidden ? "hidden" : "visible");
+
+// The revealed address floats over the stand-in, so nothing around it moves.
+// It wraps at its max width even inside a line that does not. Its container
+// can narrow it with [--reveal-max:…].
+const reveal =
+  "absolute -top-0.75 -left-1.5 z-5 w-max min-w-[calc(100%+12px)] max-w-[var(--reveal-max,min(286px,calc(100vw-52px)))] rounded-[5px] bg-hover px-1.5 py-0.5 whitespace-normal text-text ring-1 ring-border wrap-anywhere select-text";
 
 const HideEmails = createContext(false);
 export const PrivacyProvider = HideEmails.Provider;
@@ -29,20 +36,27 @@ export function usePrivateLabel() {
 function Masked({ address, peek }: { address: string; peek: boolean }) {
   const [hover, setHover] = useState(false);
   const [focus, setFocus] = useState(false);
+  const shown = hover || focus;
   const stand = (
     <>
-      <span className="private-text" aria-hidden="true">
+      <span
+        className={cx(
+          "pointer-events-none inline-block blur-[5px] select-none",
+          // Hidden under the reveal, which floats over it.
+          peek && shown ? "opacity-0" : "opacity-70",
+        )}
+        aria-hidden="true"
+      >
         {standIn}
       </span>
       <span className="sr-only">hidden email</span>
     </>
   );
   if (!peek) return stand;
-  const shown = hover || focus;
   return (
     <button
       type="button"
-      className={`private-peek ${shown ? "is-shown" : ""}`}
+      className="relative inline cursor-default [text-align:inherit]"
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       onFocus={() => setFocus(true)}
@@ -51,7 +65,7 @@ function Masked({ address, peek }: { address: string; peek: boolean }) {
       onClick={(e) => e.currentTarget.focus()}
     >
       {stand}
-      {shown && <span className="private-reveal">{address}</span>}
+      {shown && <span className={reveal}>{address}</span>}
     </button>
   );
 }

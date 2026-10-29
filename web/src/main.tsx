@@ -6,38 +6,20 @@ import "@fontsource-variable/inter/opsz.css";
 import { createClient, type AuthInfo } from "./api";
 import { HelpDialog } from "./HelpDialog";
 import { PrivacyProvider, storedHideEmails, storeHideEmails } from "./Privacy";
-import { readStored, writeStored } from "./storage";
-import { TopBar, type Theme } from "./TopBar";
+import { TopBar } from "./TopBar";
+import { button, cx, loading, notice, noticeAction } from "./ui";
 import { useSession } from "./useSession";
 import { pages, pagesFor, Workspace, type Page } from "./Workspace";
 
 const pageOf = (hash: string) =>
   pages.find((p) => p.toLowerCase() === hash.slice(1)) ?? "Overview";
-const themeKey = "vrouter-theme";
-const storedTheme = (): Theme => {
-  const value = readStored(themeKey);
-  return value === "system" || value === "light" ? value : "dark";
-};
-
-// The chosen theme, following the system setting when it is "system".
-function useTheme() {
-  const [theme, setTheme] = useState<Theme>(storedTheme);
-  const [systemLight, setSystemLight] = useState(
-    () => matchMedia("(prefers-color-scheme: light)").matches,
+// The page column. Signed in, a phone pins the navigation to the bottom
+// edge, so the column leaves room for it.
+const mainClass = (nav: boolean) =>
+  cx(
+    "mx-auto mt-5.5 max-w-[1440px] px-7.5 pb-16.25 max-xl:px-6 max-xl:pb-15 max-sm:mt-3 max-sm:px-4 max-sm:pb-12.5",
+    nav && "max-sm:pb-[113px]",
   );
-  const light = theme === "system" ? systemLight : theme === "light";
-  useEffect(() => {
-    const system = matchMedia("(prefers-color-scheme: light)");
-    const scheme = () => setSystemLight(system.matches);
-    system.addEventListener("change", scheme);
-    return () => system.removeEventListener("change", scheme);
-  }, []);
-  useEffect(() => {
-    document.documentElement.dataset["theme"] = light ? "light" : "dark";
-    writeStored(themeKey, theme);
-  }, [light, theme]);
-  return { theme, setTheme };
-}
 
 type ToastMessage = { text: string; failed?: boolean };
 
@@ -67,7 +49,6 @@ function App() {
   // A member who follows a link to an admin page sees the overview.
   const shown = user && pagesFor(user.role).includes(page) ? page : "Overview";
   const [toast, setToast] = useToast();
-  const { theme, setTheme } = useTheme();
   const [hideEmails, setHideEmails] = useState(storedHideEmails);
   const [help, setHelp] = useState(false);
 
@@ -108,22 +89,25 @@ function App() {
         actions={{
           hideEmails,
           setHideEmails,
-          theme,
-          setTheme,
           onHelp: () => setHelp(true),
           onSignOut: () => void session.signOut(),
         }}
       />
-      <main>
+      <main className={mainClass(phase === "ready")}>
         {phase === "loading" && (
-          <div className="loading" role="status" aria-label="Loading">
-            <RefreshCw size={22} className="spinning" />
+          <div className={loading} role="status" aria-label="Loading">
+            <RefreshCw size={22} className="animate-spin" />
           </div>
         )}
         {phase === "error" && (
-          <div className="notice error" role="alert">
+          <div className={cx(notice({ error: true }), "my-3.75")} role="alert">
             {session.error}{" "}
-            <button onClick={() => void session.load()}>Try again</button>
+            <button
+              className={noticeAction}
+              onClick={() => void session.load()}
+            >
+              Try again
+            </button>
           </div>
         )}
         {phase === "login" && auth && (
@@ -151,18 +135,31 @@ function App() {
           onClose={() => setHelp(false)}
         />
       )}
-      {toast && <Toast toast={toast} />}
+      {toast && <Toast toast={toast} aboveNav={phase === "ready"} />}
     </PrivacyProvider>
   );
 }
 
-function Toast({ toast }: { toast: ToastMessage }) {
+function Toast({
+  toast,
+  aboveNav,
+}: {
+  toast: ToastMessage;
+  // Lifts it over the navigation bar pinned to the bottom of a phone.
+  aboveNav: boolean;
+}) {
   return (
-    <div className="toast" role={toast.failed === true ? "alert" : "status"}>
+    <div
+      className={cx(
+        "fixed bottom-6.25 left-1/2 z-30 flex w-max max-w-[90vw] -translate-x-1/2 items-center gap-2.25 rounded-[10px] bg-ink px-4 py-2.75 text-[13px] font-medium text-on-ink shadow-[0_6px_30px_#0003]",
+        aboveNav && "max-sm:bottom-19",
+      )}
+      role={toast.failed === true ? "alert" : "status"}
+    >
       {toast.failed === true ? (
-        <TriangleAlert size={15} />
+        <TriangleAlert size={15} className="shrink-0" />
       ) : (
-        <Check size={15} />
+        <Check size={15} className="shrink-0" />
       )}
       {toast.text}
     </div>
@@ -177,14 +174,22 @@ function LoginPanel({
   onSignIn: () => void;
 }) {
   return (
-    <section className="login-panel">
-      <h1>Sign in</h1>
-      <p className="login-note">
+    <section className="mx-auto mt-20 mb-37.5 max-w-[380px] rounded-2xl bg-surface p-7.5 light:ring-1 light:ring-border max-sm:mt-12.5 max-sm:mb-22.5">
+      <h1 className="text-[26px] leading-[1.2] font-semibold tracking-[-0.6px]">
+        Sign in
+      </h1>
+      <p className="my-4.5 text-[13px] leading-[1.6] text-subtle">
         vrouter signs you in through{" "}
-        <strong className="login-issuer">{auth.provider}</strong>. Your API keys
-        and usage are your own; admins also manage shared accounts and users.
+        <strong className="font-semibold text-text wrap-anywhere">
+          {auth.provider}
+        </strong>
+        . Your API keys and usage are your own; admins also manage shared
+        accounts and users.
       </p>
-      <button className="primary login-button" onClick={onSignIn}>
+      <button
+        className={cx(button("primary", "wide"), "mt-1.5")}
+        onClick={onSignIn}
+      >
         <LogIn size={15} /> Sign in with {auth.provider}
       </button>
     </section>

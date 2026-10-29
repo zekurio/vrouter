@@ -1,5 +1,7 @@
+import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 export default defineConfig({
+  plugins: [tailwindcss()],
   server: {
     proxy: {
       // Keep the browser's Host so management requests pass same-origin checks.

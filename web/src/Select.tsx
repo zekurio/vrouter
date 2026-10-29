@@ -7,6 +7,7 @@ import {
   type RefObject,
 } from "react";
 import { Check, ChevronDown } from "lucide-react";
+import { cx } from "./ui";
 
 export type SelectOption<T extends string> = { value: T; label: string };
 
@@ -17,11 +18,14 @@ export function Select<T extends string>({
   value,
   options,
   onChange,
+  inset = false,
 }: {
   label: string;
   value: T;
   options: SelectOption<T>[];
   onChange: (value: T) => void;
+  // Set inside a panel or a dialog, where the trigger sits in the well.
+  inset?: boolean;
 }) {
   const id = useId();
   const root = useRef<HTMLDivElement>(null);
@@ -106,7 +110,7 @@ export function Select<T extends string>({
 
   return (
     <div
-      className="select"
+      className="relative shrink-0"
       ref={root}
       onBlur={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false);
@@ -115,7 +119,10 @@ export function Select<T extends string>({
       <button
         type="button"
         role="combobox"
-        className="select-trigger"
+        className={cx(
+          "group flex h-9 items-center gap-2 rounded-[10px] border pr-2.5 pl-3.25 text-[13px] font-medium whitespace-nowrap text-text aria-expanded:border-accent light:border-line",
+          inset ? "border-line bg-well" : "border-transparent bg-surface",
+        )}
         aria-label={label}
         aria-haspopup="listbox"
         aria-expanded={open}
@@ -130,10 +137,11 @@ export function Select<T extends string>({
         onKeyDown={onKeyDown}
       >
         {/* Every label shares one grid cell so the width fits the longest. */}
-        <span className="select-value">
+        <span className="grid text-left">
           {options.map((o) => (
             <span
               key={o.value}
+              className="invisible [grid-area:1/1] data-current:visible"
               aria-hidden={o.value !== value}
               data-current={o.value === value || undefined}
             >
@@ -141,7 +149,11 @@ export function Select<T extends string>({
             </span>
           ))}
         </span>
-        <ChevronDown size={14} aria-hidden />
+        <ChevronDown
+          size={14}
+          className="text-muted transition-transform duration-150 ease-[ease] group-aria-expanded:rotate-180"
+          aria-hidden
+        />
       </button>
       {open && (
         <SelectMenu
@@ -180,7 +192,7 @@ function SelectMenu<T extends string>({
 }) {
   return (
     <ul
-      className="select-menu"
+      className="absolute top-[calc(100%+6px)] right-0 z-20 max-h-66 min-w-full animate-select-in overflow-y-auto rounded-[10px] border border-line bg-surface p-1 shadow-[0_12px_40px_#0008]"
       id={`${id}-list`}
       role="listbox"
       aria-label={label}
@@ -195,12 +207,19 @@ function SelectMenu<T extends string>({
           id={`${id}-${i}`}
           role="option"
           aria-selected={o.value === value}
-          className={i === active ? "active" : ""}
+          className={cx(
+            "flex h-8 cursor-pointer items-center justify-between gap-3.5 rounded-[7px] pr-2 pl-2.5 text-[13px] whitespace-nowrap",
+            i === active
+              ? "bg-chip text-text"
+              : "text-subtle aria-selected:text-text",
+          )}
           onMouseMove={() => onActive(i)}
           onClick={() => onChoose(i)}
         >
           {o.label}
-          {o.value === value && <Check size={13} aria-hidden />}
+          {o.value === value && (
+            <Check size={13} className="text-accent" aria-hidden />
+          )}
         </li>
       ))}
     </ul>

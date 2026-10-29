@@ -12,10 +12,14 @@ import {
   type Interval,
   type Usage,
 } from "./usage";
+import { cx, tab, tabs } from "./ui";
 
 // Chart series follow the provider, so a provider keeps its color in every
 // view.
 export const series = providerStyle;
+// The dot that names a series, in its provider's colour.
+export const seriesKey = "size-2 rounded-full bg-provider";
+const axisText = "fill-muted text-[11px]";
 
 const SIZE = { height: 210, left: 46, right: 10, top: 10, bottom: 24 };
 
@@ -127,15 +131,15 @@ export function CostChart({ usage }: { usage: Usage }) {
   const at: Bucket | null = hover === null ? null : (buckets[hover] ?? null);
 
   return (
-    <figure className="usage-chart">
-      <figcaption>
+    <figure className="min-w-0">
+      <figcaption className="mb-3.5 flex items-center justify-between gap-3 text-[15px] font-semibold">
         Cost
-        <div className="tabs" role="group" aria-label="Chart interval">
+        <div className={tabs(true)} role="group" aria-label="Chart interval">
           {intervals.map((value) => (
             <button
               key={value}
               aria-pressed={interval === value}
-              className={interval === value ? "selected" : ""}
+              className={tab(interval === value)}
               onClick={() => {
                 setHover(null);
                 setChosen(value);
@@ -146,9 +150,10 @@ export function CostChart({ usage }: { usage: Usage }) {
           ))}
         </div>
       </figcaption>
-      <div ref={frame}>
+      <div ref={frame} className="relative">
         {width > 0 && (
           <svg
+            className="touch-pan-y"
             width={width}
             height={SIZE.height}
             role="img"
@@ -158,7 +163,7 @@ export function CostChart({ usage }: { usage: Usage }) {
           >
             {at && hover !== null && (
               <rect
-                className="band"
+                className="fill-hover"
                 x={SIZE.left + band * hover}
                 y={SIZE.top}
                 width={band}
@@ -220,13 +225,18 @@ function ChartAxes({
       {scale.ticks.map((tick) => (
         <g key={tick}>
           <line
-            className="grid"
+            className="stroke-border"
             x1={SIZE.left}
             x2={width - SIZE.right}
             y1={y(tick)}
             y2={y(tick)}
           />
-          <text x={SIZE.left - 10} y={y(tick) + 3.5} textAnchor="end">
+          <text
+            className={axisText}
+            x={SIZE.left - 10}
+            y={y(tick) + 3.5}
+            textAnchor="end"
+          >
             {axisMoney(tick)}
           </text>
         </g>
@@ -234,6 +244,7 @@ function ChartAxes({
       {marks.map(({ i, start }) => (
         <text
           key={i}
+          className={axisText}
           x={markX(i, buckets.length, scale)}
           y={SIZE.height - 5}
           textAnchor={markAnchor(i, buckets.length)}
@@ -268,7 +279,7 @@ function ChartBars({
       return (
         <path
           key={`${b.start}/${p.name}`}
-          className="bar"
+          className="fill-provider"
           style={series(p.provider)}
           d={segment(
             { x: x(i) - bar / 2, y: floor, width: bar, height: height - gap },
@@ -279,6 +290,9 @@ function ChartBars({
     });
   });
 }
+
+const tipRow = "flex items-center gap-1.75";
+const tipValue = "font-[550] text-text tabular-nums";
 
 function ChartTip({
   scale,
@@ -296,21 +310,29 @@ function ChartTip({
   const { x } = scale;
   return (
     <div
-      className={`chart-tip ${x(hover) > scale.width / 2 ? "left" : ""}`}
+      className={cx(
+        "pointer-events-none absolute top-1.5 z-2 grid gap-1.5 rounded-[10px] border border-line bg-control px-3 py-2.5 text-[12px] whitespace-nowrap text-muted shadow-[0_10px_30px_#0006]",
+        // Beside the hovered bar, on the side with more room.
+        x(hover) > scale.width / 2
+          ? "-translate-x-[calc(100%+12px)]"
+          : "translate-x-3",
+      )}
       style={{ left: x(hover) }}
       role="status"
     >
       <p>{tipLabel[interval](at.start)}</p>
       {providers.map((p) => (
-        <div key={p.name} style={series(p.provider)}>
-          <span className="series-key" aria-hidden="true" />
-          <strong>{money(at.byProvider[p.name] ?? 0)}</strong>
+        <div key={p.name} className={tipRow} style={series(p.provider)}>
+          <span className={seriesKey} aria-hidden="true" />
+          <strong className={tipValue}>
+            {money(at.byProvider[p.name] ?? 0)}
+          </strong>
           {providerLabel(p.provider)}
         </div>
       ))}
       {providers.length > 1 && (
-        <div>
-          <strong>{money(scale.sum(at))}</strong>
+        <div className={tipRow}>
+          <strong className={tipValue}>{money(scale.sum(at))}</strong>
           Total
         </div>
       )}
