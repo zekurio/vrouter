@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Copy, X } from "lucide-react";
-import { CodeBlock } from "./CodeBlock";
+import { CodeBlock, endpointMethod, protocolChoice } from "./CodeBlock";
 import { Modal } from "./Modal";
 import {
   curlExample,
@@ -9,6 +9,7 @@ import {
   type Protocol,
 } from "./protocols";
 import { Select } from "./Select";
+import { copyField, dialogHeading, dialogTitle, iconButton } from "./ui";
 
 const endpoints = [
   { method: "GET", path: "/models", note: "List the models a key can use" },
@@ -38,24 +39,26 @@ export function HelpDialog({
     { label: "Anthropic clients", value: origin },
   ];
   return (
-    <Modal className="help-dialog" labelledBy="help-title" onClose={onClose}>
-      <div className="dialog-heading">
-        <h2 id="help-title">Client API</h2>
+    <Modal labelledBy="help-title" onClose={onClose}>
+      <div className={`${dialogHeading} mb-5`}>
+        <h2 id="help-title" className={dialogTitle}>
+          Client API
+        </h2>
         <button
-          className="icon-button"
+          className={iconButton()}
           aria-label="Close help"
           onClick={onClose}
         >
           <X size={18} />
         </button>
       </div>
-      {addresses.map((a) => (
-        <div className="address-field" key={a.label}>
-          <span>{a.label}</span>
-          <div className="copy-field">
-            <code>{a.value}</code>
+      {addresses.map((a, i) => (
+        <div className={i > 0 ? "mt-2.5" : ""} key={a.label}>
+          <span className="mb-1.5 block text-[11px] text-muted">{a.label}</span>
+          <div className={copyField}>
+            <code className="min-w-0 wrap-anywhere">{a.value}</code>
             <button
-              className="icon-button"
+              className={iconButton()}
               aria-label={`Copy base URL for ${a.label}`}
               onClick={() => void copy(a.value)}
             >
@@ -64,14 +67,19 @@ export function HelpDialog({
           </div>
         </div>
       ))}
-      <ul className="endpoint-list">
+      <ul className="my-3.5">
         {endpoints.map((e) => (
-          <li key={e.path}>
-            <span className="endpoint-method">{e.method}</span>
+          <li
+            key={e.path}
+            className="flex items-center gap-2.5 py-0.5 pl-3 text-[12px]"
+          >
+            <span className={`w-8.5 ${endpointMethod}`}>{e.method}</span>
             <code>/v1{e.path}</code>
-            <span className="endpoint-note">{e.note}</span>
+            <span className="min-w-0 flex-1 text-right text-subtle">
+              {e.note}
+            </span>
             <button
-              className="icon-button"
+              className={iconButton()}
               aria-label={`Copy ${e.path.slice(1)} URL`}
               onClick={() => void copy(base + e.path)}
             >
@@ -80,9 +88,10 @@ export function HelpDialog({
           </li>
         ))}
       </ul>
-      <div className="protocol-choice">
+      <div className={protocolChoice}>
         <span>Example request</span>
         <Select
+          inset
           label="Client protocol"
           value={protocol}
           options={protocols}

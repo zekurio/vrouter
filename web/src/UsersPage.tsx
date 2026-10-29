@@ -7,8 +7,30 @@ import {
   type Role,
   type SessionUser,
 } from "./api";
+import { Badge, badgeRow, RoleBadge } from "./Badge";
 import { Modal } from "./Modal";
+import {
+  keyBody,
+  keyCell,
+  keyHead,
+  keyRowHead,
+  keyStatus,
+  keyTable,
+  pageNote,
+} from "./pageStyles";
 import { Private } from "./Privacy";
+import {
+  button,
+  confirmTitle,
+  cx,
+  dialogActions,
+  dialogLead,
+  loading as loadingClass,
+  notice,
+  noticeAction,
+  panel,
+  tableScroll,
+} from "./ui";
 
 // A person who has signed in, as the Users page lists them.
 type User = {
@@ -100,19 +122,22 @@ export function UsersPage({
   }
 
   return (
-    <div className="users">
-      <p className="page-lead">
+    <div>
+      <p className={cx(pageNote, "mb-4.5")}>
         People appear here after their first sign-in. Roles come from the
         identity provider&apos;s vrouter_role claim and update at every sign-in.
       </p>
       {error && (
-        <div className="notice error" role="alert">
-          {error} <button onClick={() => void load()}>Try again</button>
+        <div className={cx(notice({ error: true }), "my-3.75")} role="alert">
+          {error}{" "}
+          <button className={noticeAction} onClick={() => void load()}>
+            Try again
+          </button>
         </div>
       )}
       {loading && !users && !error && (
-        <div className="loading" role="status" aria-label="Loading">
-          <RefreshCw size={22} className="spinning" />
+        <div className={loadingClass} role="status" aria-label="Loading">
+          <RefreshCw size={22} className="animate-spin" />
         </div>
       )}
       {users && users.length > 0 && (
@@ -156,65 +181,74 @@ function UserTable({
   onDisable: (user: User) => void;
 }) {
   return (
-    <div className="panel table-scroll">
-      <table className="key-table user-table">
+    <div className={cx(panel, tableScroll)}>
+      <table className={keyTable}>
         <thead>
           <tr>
-            <th scope="col">User</th>
-            <th scope="col">Role</th>
-            <th scope="col">Status</th>
-            <th scope="col" className="numeric">
+            <th scope="col" className={keyHead()}>
+              User
+            </th>
+            <th scope="col" className={keyHead()}>
+              Role
+            </th>
+            <th scope="col" className={keyHead()}>
+              Status
+            </th>
+            <th scope="col" className={keyHead("numeric")}>
               Active keys
             </th>
-            <th scope="col">First sign-in</th>
-            <th scope="col">Last sign-in</th>
-            <th scope="col">
+            <th scope="col" className={keyHead()}>
+              First sign-in
+            </th>
+            <th scope="col" className={keyHead()}>
+              Last sign-in
+            </th>
+            <th scope="col" className={keyHead()}>
               <span className="sr-only">Actions</span>
             </th>
           </tr>
         </thead>
-        <tbody>
-          {users.map((u) => (
-            <tr key={u.id} className={disabled(u) ? "is-off" : ""}>
-              <th scope="row">
-                <span className="cell-main">
-                  <Private peek>{userLabel(u)}</Private>
-                  {u.id === me && <span className="you-badge">You</span>}
-                </span>
-                {u.name !== "" && u.email !== "" && (
-                  <span className="cell-sub">
-                    <Private peek>{u.email}</Private>
+        <tbody className={keyBody}>
+          {users.map((u) => {
+            const off = disabled(u);
+            return (
+              <tr key={u.id}>
+                <th scope="row" className={keyRowHead(off)}>
+                  <span className={badgeRow}>
+                    <Private peek>{userLabel(u)}</Private>
+                    {u.id === me && <Badge>You</Badge>}
                   </span>
-                )}
-              </th>
-              <td>
-                <span className={`role-badge ${u.role}`}>
-                  {u.role === "admin" ? "Admin" : "Member"}
-                </span>
-              </td>
-              <td
-                className={`key-status ${disabled(u) ? "revoked" : "active"}`}
-              >
-                {disabled(u) ? "Disabled" : "Active"}
-              </td>
-              <td className="numeric">{u.keys.toLocaleString()}</td>
-              <td>{day(u.createdAt)}</td>
-              <td>{day(u.signedInAt)}</td>
-              <td>
-                {u.id !== me && (
-                  <button
-                    className={
-                      disabled(u) ? "secondary" : "secondary danger-text"
-                    }
-                    disabled={busy}
-                    onClick={() => (disabled(u) ? onEnable(u) : onDisable(u))}
-                  >
-                    {disabled(u) ? "Enable" : "Disable"}
-                  </button>
-                )}
-              </td>
-            </tr>
-          ))}
+                  {u.name !== "" && u.email !== "" && (
+                    <span className="mt-0.5 block text-[11.5px] font-normal text-muted">
+                      <Private peek>{u.email}</Private>
+                    </span>
+                  )}
+                </th>
+                <td className={keyCell("left", off)}>
+                  <RoleBadge role={u.role} />
+                </td>
+                <td className={keyStatus(off ? "revoked" : "active")}>
+                  {off ? "Disabled" : "Active"}
+                </td>
+                <td className={keyCell("numeric", off)}>
+                  {u.keys.toLocaleString()}
+                </td>
+                <td className={keyCell("left", off)}>{day(u.createdAt)}</td>
+                <td className={keyCell("left", off)}>{day(u.signedInAt)}</td>
+                <td className={keyCell("right")}>
+                  {u.id !== me && (
+                    <button
+                      className={button(off ? "secondary" : "danger-text")}
+                      disabled={busy}
+                      onClick={() => (off ? onEnable(u) : onDisable(u))}
+                    >
+                      {off ? "Enable" : "Disable"}
+                    </button>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -236,29 +270,40 @@ function DisableDialog({
 }) {
   return (
     <Modal
-      className="confirm-dialog"
+      width="xs"
       labelledBy="user-confirm-title"
       locked={busy}
       onClose={onClose}
     >
-      <h2 id="user-confirm-title">
+      <h2 id="user-confirm-title" className={confirmTitle}>
         Disable <Private>{userLabel(user)}</Private>?
       </h2>
-      <p>
+      <p className={dialogLead}>
         vrouter signs them out, refuses their API keys, and stops using their
         personal accounts. Their keys, accounts and usage stay, and enabling
         them again restores access.
       </p>
       {error && (
-        <div className="notice error" role="alert">
+        <div
+          className={cx(notice({ error: true, inset: true }), "mt-4.5")}
+          role="alert"
+        >
           {error}
         </div>
       )}
-      <div className="dialog-actions">
-        <button className="secondary" disabled={busy} onClick={onClose}>
+      <div className={cx(dialogActions, "mt-6")}>
+        <button
+          className={button("secondary")}
+          disabled={busy}
+          onClick={onClose}
+        >
           Keep access
         </button>
-        <button className="primary danger" disabled={busy} onClick={onDisable}>
+        <button
+          className={button("danger")}
+          disabled={busy}
+          onClick={onDisable}
+        >
           {busy ? "Disabling" : "Disable user"}
         </button>
       </div>

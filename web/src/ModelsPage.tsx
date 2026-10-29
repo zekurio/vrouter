@@ -2,11 +2,21 @@ import { useEffect, useState } from "react";
 import { RefreshCw, Search, X } from "lucide-react";
 import { providerName } from "./ProviderBrand";
 import type { APIRequest } from "./api";
-import { ModelDialog } from "./ModelDialog";
+import { ModelDialog, type Protocol } from "./ModelDialog";
 import { ModelGroup, type RowContext } from "./ModelGroup";
 import { filterModels, keyOf, type Model, type Status } from "./models";
-import type { Protocol } from "./protocols";
 import { Select, type SelectOption } from "./Select";
+import {
+  button,
+  cx,
+  empty,
+  iconButton,
+  loading as loadingClass,
+  notice,
+  noticeAction,
+  tab,
+  tabs,
+} from "./ui";
 import { useDirtyReport, useModelSettings } from "./useModelSettings";
 
 const statuses: SelectOption<Status>[] = [
@@ -92,19 +102,12 @@ export function ModelsPage({
 
   return (
     <>
-      {data.loadError && (
-        <div className="notice error" role="alert">
-          {data.loadError}
-          <button disabled={loading} onClick={() => void data.load()}>
-            Try again
-          </button>
-        </div>
-      )}
-      {!editable && (
-        <div className="notice">
-          Model settings apply to everyone. Only admins can change them.
-        </div>
-      )}
+      <ModelsNotices
+        loadError={data.loadError}
+        loading={loading}
+        editable={editable}
+        onRetry={() => void data.load()}
+      />
       <ModelsToolbar
         search={search}
         setSearch={setSearch}
@@ -114,24 +117,26 @@ export function ModelsPage({
         status={status}
         setStatus={setStatus}
       />
-      {providers.map((p) => {
-        const group = filtered.filter((m) => m.provider === p);
-        if (group.length === 0) return null;
-        return (
-          <ModelGroup
-            key={p}
-            provider={p}
-            group={group}
-            all={rows.filter((m) => m.provider === p)}
-            rows={rowContext}
-            onSetEnabled={data.setEnabled}
-          />
-        );
-      })}
+      {providers
+        .filter((p) => filtered.some((m) => m.provider === p))
+        .map((p, i) => {
+          const group = filtered.filter((m) => m.provider === p);
+          return (
+            <ModelGroup
+              key={p}
+              first={i === 0}
+              provider={p}
+              group={group}
+              all={rows.filter((m) => m.provider === p)}
+              rows={rowContext}
+              onSetEnabled={data.setEnabled}
+            />
+          );
+        })}
       {filtered.length === 0 &&
         (loading && rows.length === 0 ? (
-          <div className="loading" role="status" aria-label="Loading">
-            <RefreshCw size={22} className="spinning" />
+          <div className={loadingClass} role="status" aria-label="Loading">
+            <RefreshCw size={22} className="animate-spin" />
           </div>
         ) : (
           <NoModels
@@ -173,6 +178,36 @@ export function ModelsPage({
   );
 }
 
+function ModelsNotices({
+  loadError,
+  loading,
+  editable,
+  onRetry,
+}: {
+  loadError: string;
+  loading: boolean;
+  editable: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <>
+      {loadError && (
+        <div className={cx(notice({ error: true }), "my-3.75")} role="alert">
+          {loadError}
+          <button className={noticeAction} disabled={loading} onClick={onRetry}>
+            Try again
+          </button>
+        </div>
+      )}
+      {!editable && (
+        <div className={cx(notice(), "my-3.75")}>
+          Model settings apply to everyone. Only admins can change them.
+        </div>
+      )}
+    </>
+  );
+}
+
 function ModelsToolbar({
   search,
   setSearch,
@@ -191,10 +226,13 @@ function ModelsToolbar({
   setStatus: (status: Status) => void;
 }) {
   return (
-    <div className="models-toolbar">
-      <label className="search">
+    // Below 720px the search takes its own row.
+    <div className="mb-3 flex items-center gap-2 max-md:flex-wrap">
+      {/* In the light theme the border stays even while typing. */}
+      <label className="flex h-9 min-w-0 flex-1 items-center gap-2.25 rounded-[10px] border border-transparent bg-surface pr-1 pl-2.75 text-muted focus-within:border-accent light:border-line max-md:basis-full">
         <Search size={15} />
         <input
+          className="h-full w-full min-w-0 px-0.5 py-px text-[13px] text-text outline-none placeholder:text-muted"
           aria-label="Search models"
           placeholder="Search models"
           value={search}
@@ -202,7 +240,7 @@ function ModelsToolbar({
         />
         {search && (
           <button
-            className="icon-button"
+            className={iconButton("sm")}
             aria-label="Clear search"
             onClick={() => setSearch("")}
           >
@@ -211,12 +249,15 @@ function ModelsToolbar({
         )}
       </label>
       {providers.length > 1 && (
-        <div className="tabs" aria-label="Filter by provider">
+        <div
+          className={cx(tabs(), "max-md:flex-1 max-md:overflow-x-auto")}
+          aria-label="Filter by provider"
+        >
           {["all", ...providers].map((p) => (
             <button
               key={p}
               aria-pressed={provider === p}
-              className={provider === p ? "selected" : ""}
+              className={tab(provider === p)}
               onClick={() => setProvider(p)}
             >
               {p === "all" ? "All" : providerName(p)}
@@ -245,20 +286,22 @@ function NoModels({
   onAddAccount: () => void;
 }) {
   return (
-    <div className="empty">
+    <div className={cx(empty, "mt-6 mb-1")}>
       <p>{filtered ? "No matching models" : "No models yet"}</p>
       {filtered ? (
-        <button className="secondary" onClick={onClearFilters}>
+        <button className={button("secondary")} onClick={onClearFilters}>
           Clear filters
         </button>
       ) : (
-        <button className="secondary" onClick={onAddAccount}>
+        <button className={button("secondary")} onClick={onAddAccount}>
           Add account
         </button>
       )}
     </div>
   );
 }
+
+const saveErrorClass = "text-danger wrap-anywhere";
 
 function SaveBar({
   changed,
@@ -283,31 +326,44 @@ function SaveBar({
   onSave: () => void;
 }) {
   return (
-    <div className="save-bar" role="region" aria-label="Unsaved changes">
-      <p>
-        <strong>
+    // Phones lift it over the navigation bar pinned to the bottom edge.
+    <div
+      className="sticky bottom-4.5 z-10 mt-7 flex items-center gap-2 rounded-[14px] border border-line bg-surface py-2.5 pr-2.5 pl-4.5 shadow-[0_12px_40px_#0008] max-sm:bottom-19 max-sm:flex-wrap max-sm:p-3"
+      role="region"
+      aria-label="Unsaved changes"
+    >
+      <p className="flex min-w-0 flex-1 flex-wrap gap-x-3 gap-y-0.5 text-[13px] max-sm:mb-1 max-sm:basis-full">
+        <strong className="font-medium whitespace-nowrap">
           {changed} unsaved {changed === 1 ? "change" : "changes"}
         </strong>
         {saveError ? (
-          <span className="save-error" role="alert">
+          <span className={saveErrorClass} role="alert">
             {saveError}
           </span>
         ) : (
           blocked && (
-            <span className="save-error">Resolve duplicate IDs first.</span>
+            <span className={saveErrorClass}>Resolve duplicate IDs first.</span>
           )
         )}
       </p>
       {conflict && (
-        <button className="secondary" disabled={loading} onClick={onReload}>
+        <button
+          className={cx(button("secondary"), "max-sm:flex-1")}
+          disabled={loading}
+          onClick={onReload}
+        >
           Reload settings
         </button>
       )}
-      <button className="secondary" disabled={saving} onClick={onRevert}>
+      <button
+        className={cx(button("secondary"), "max-sm:flex-1")}
+        disabled={saving}
+        onClick={onRevert}
+      >
         Revert
       </button>
       <button
-        className="primary"
+        className={cx(button("primary"), "max-sm:flex-1")}
         disabled={saving || blocked || conflict}
         onClick={onSave}
       >

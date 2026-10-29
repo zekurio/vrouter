@@ -1,9 +1,10 @@
 import type { CSSProperties } from "react";
+import { cx } from "./ui";
 
 declare module "react" {
   interface CSSProperties {
-    // Brand colour read by the provider-tinted rules in style.css.
-    "--provider"?: string;
+    // Brand colour behind the provider utilities, such as bg-provider.
+    "--color-provider"?: string;
   }
 }
 
@@ -25,9 +26,9 @@ const brands: Record<string, string> = {
   gemini: "gemini",
 };
 export const providerColor = (provider: string) =>
-  `var(--brand-${brands[provider] ?? "other"})`;
+  `var(--color-brand-${brands[provider] ?? "other"})`;
 export const providerStyle = (provider: string): CSSProperties => ({
-  "--provider": providerColor(provider),
+  "--color-provider": providerColor(provider),
 });
 export function ProviderBrand({
   provider,
@@ -40,7 +41,10 @@ export function ProviderBrand({
   if (asset === undefined || asset === "gemini") return null;
   return (
     <span
-      className={`provider-mark ${small ? "small" : ""}`}
+      className={cx(
+        "inline-block shrink-0 bg-provider mask-contain mask-center mask-no-repeat",
+        small ? "size-4.75" : "size-5.5",
+      )}
       style={{
         maskImage: `url(/brands/${asset}.svg)`,
         WebkitMaskImage: `url(/brands/${asset}.svg)`,

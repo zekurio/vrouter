@@ -1,5 +1,24 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Check, Copy } from "lucide-react";
+import { iconButton } from "./ui";
+
+// The HTTP method beside a path.
+export const endpointMethod =
+  "text-[10px] font-semibold tracking-[0.4px] text-muted";
+// The label and protocol switch above an example request.
+export const protocolChoice =
+  "mb-2 flex items-center justify-between gap-2.5 text-[11px] text-muted";
+
+const tokenColors: Record<string, string> = {
+  command: "font-semibold text-text",
+  url: "text-text",
+  key: "text-text",
+  flag: "text-accent",
+  string: "text-green",
+  var: "text-amber",
+  literal: "text-amber",
+  escape: "text-muted",
+};
 
 // Enough of shell and JSON to colour the curl examples; anything else stays plain.
 const token =
@@ -13,7 +32,7 @@ function withVariables(text: string) {
   for (const m of text.matchAll(variable)) {
     out.push(
       text.slice(last, m.index),
-      <span key={m.index} className="tok-var">
+      <span key={m.index} className={tokenColors["var"]}>
         {m[0]}
       </span>,
     );
@@ -28,7 +47,7 @@ function highlight(code: string) {
   let last = 0;
   const push = (kind: string, text: ReactNode) =>
     out.push(
-      <span key={out.length} className={`tok-${kind}`}>
+      <span key={out.length} className={tokenColors[kind]}>
         {text}
       </span>,
     );
@@ -74,19 +93,24 @@ export function CodeBlock({
   };
 
   return (
-    <div className="code-block">
-      <div className="code-block-bar">
-        <span className="endpoint-method">{method}</span>
-        <code>{path}</code>
+    <div className="overflow-hidden rounded-lg border border-line bg-well">
+      <div className="flex items-center gap-2.5 border-b border-border py-0.75 pr-0.75 pl-3.5">
+        <span className={endpointMethod}>{method}</span>
+        <code className="min-w-0 flex-1 truncate text-subtle">{path}</code>
         <button
-          className="icon-button"
+          className={iconButton()}
           aria-label="Copy request"
           onClick={() => void copyCode()}
         >
           {copied ? <Check size={14} /> : <Copy size={14} />}
         </button>
       </div>
-      <pre tabIndex={0}>{highlight(code)}</pre>
+      <pre
+        className="overflow-x-auto px-4 pt-3.5 pb-4 text-[12px] leading-[1.7] text-subtle [scrollbar-color:var(--color-border)_transparent] [scrollbar-width:thin] [tab-size:2] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+        tabIndex={0}
+      >
+        {highlight(code)}
+      </pre>
     </div>
   );
 }

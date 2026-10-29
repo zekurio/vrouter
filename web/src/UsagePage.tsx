@@ -1,32 +1,29 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { errorMessage, isStale, type APIRequest } from "./api";
-import { CostChart, series } from "./CostChart";
+import { CostChart, series, seriesKey } from "./CostChart";
 import { OwnerTabs, ownerQuery, type Owner } from "./OwnerTabs";
+import { caption, nextPanel, pageNote, pageToolbar } from "./pageStyles";
 import { ProviderBrand, providerLabel } from "./ProviderBrand";
-import { RequestLog } from "./RequestLog";
-import { GroupTable, type GroupView } from "./UsageGroupTable";
-import { speedLabel, speeds, type RequestRecord } from "./telemetry";
+import { Breakdown, CostSplits, type View } from "./UsageGroupTable";
 import {
   compact,
-  costTypeLabel,
-  costTypes,
   money,
   share,
   summarize,
   timeZone,
-  type Group,
   type Tally,
   type Usage,
   type UsageReport,
 } from "./usage";
+import {
+  cx,
+  empty,
+  loading as loadingClass,
+  notice,
+  noticeAction,
+  panelFrame,
+} from "./ui";
 
 type Props = {
   // Admins can see everyone's usage.
@@ -34,20 +31,10 @@ type Props = {
   request: APIRequest;
   reloadKey: string;
 };
-type View = GroupView | "requests";
 
 const number = (n: number) => n.toLocaleString();
 const plural = (n: number, noun: string) =>
   `${number(n)} ${noun}${n === 1 ? "" : "s"}`;
-const views: { value: View; label: string }[] = [
-  { value: "model", label: "Model" },
-  { value: "key", label: "Key" },
-  { value: "user", label: "User" },
-  { value: "scope", label: "Account" },
-  { value: "day", label: "Day" },
-  { value: "requests", label: "Requests" },
-];
-
 // Loads the usage report again whenever reloadKey or the owner changes.
 function useUsage(request: APIRequest, reloadKey: string, owner: Owner) {
   const [data, setData] = useState<UsageReport | null>(null);
@@ -93,12 +80,12 @@ export function UsagePage({ admin, request, reloadKey }: Props) {
   const total = usage?.total;
 
   return (
-    <div className="usage">
+    <div>
       {admin && (
-        <div className="page-toolbar">
+        <div className={pageToolbar}>
           <OwnerTabs owner={owner} setOwner={setOwner} label="Show usage of" />
           {owner === "all" && (
-            <p>
+            <p className={pageNote}>
               Requests other people sent through their personal accounts show no
               account name.
             </p>
@@ -106,16 +93,19 @@ export function UsagePage({ admin, request, reloadKey }: Props) {
         </div>
       )}
       {error && (
-        <div className="notice error" role="alert">
-          {error} <button onClick={() => void load()}>Try again</button>
+        <div className={cx(notice({ error: true }), "my-3.75")} role="alert">
+          {error}{" "}
+          <button className={noticeAction} onClick={() => void load()}>
+            Try again
+          </button>
         </div>
       )}
       {loading && !data && !error && (
-        <div className="loading" role="status" aria-label="Loading">
-          <RefreshCw size={22} className="spinning" />
+        <div className={loadingClass} role="status" aria-label="Loading">
+          <RefreshCw size={22} className="animate-spin" />
         </div>
       )}
-      {data && !usage && <p className="empty">No usage yet</p>}
+      {data && !usage && <p className={cx(empty, "mt-6 mb-1")}>No usage yet</p>}
       {data && usage && total && (
         <>
           <UsageSummary usage={usage} total={total} />
@@ -137,88 +127,42 @@ export function UsagePage({ admin, request, reloadKey }: Props) {
   );
 }
 
-function Breakdown({
-  view: chosen,
-  setView,
-  usage,
-  requests,
-  userNames,
-}: {
-  view: View;
-  setView: (view: View) => void;
-  usage: Usage;
-  requests: RequestRecord[];
-  userNames: Record<string, string> | undefined;
-}) {
-  // Only a report of everyone breaks down by user.
-  const shown = views.filter(
-    (v) => v.value !== "user" || usage.users !== undefined,
-  );
-  const view = shown.some((v) => v.value === chosen) ? chosen : "model";
-  const groups: Record<GroupView, Group[]> = {
-    model: usage.models,
-    key: usage.keys,
-    user: usage.users ?? [],
-    scope: usage.scopes,
-    day: usage.days,
-  };
-  return (
-    <section className="panel usage-breakdown">
-      <div className="section-toolbar">
-        <h2>Breakdown</h2>
-        <div className="tabs" role="group" aria-label="Break down by">
-          {shown.map((v) => (
-            <button
-              key={v.value}
-              aria-pressed={view === v.value}
-              className={view === v.value ? "selected" : ""}
-              onClick={() => setView(v.value)}
-            >
-              {v.label}
-            </button>
-          ))}
-        </div>
-      </div>
-      {view === "requests" ? (
-        <>
-          <RequestLog requests={requests} userNames={userNames} />
-          {/* The totals cover every request. The log keeps only the newest. */}
-          {usage.total.requests > requests.length && (
-            <p className="usage-caption">
-              The latest {number(requests.length)} of{" "}
-              {plural(usage.total.requests, "request")}
-            </p>
-          )}
-        </>
-      ) : (
-        <GroupTable
-          view={view}
-          groups={groups[view]}
-          total={usage.total.cost}
-        />
-      )}
-    </section>
-  );
-}
-
 function UsageSummary({ usage, total }: { usage: Usage; total: Tally }) {
   return (
-    <section className="panel usage-summary">
+    // Keeps its padding on phones.
+    <section
+      className={cx(
+        panelFrame,
+        "grid grid-cols-[minmax(0,320px)_minmax(0,1fr)] gap-x-14 gap-y-7 px-6 pt-6 pb-5.5 max-lg:grid-cols-[1fr]",
+      )}
+    >
       <div>
-        <p className="usage-total">{money(total.cost)}</p>
-        <p className="usage-caption">
-          {plural(total.requests, "request")} at API list price
-          {total.unpriced > 0 && <span>{number(total.unpriced)} unpriced</span>}
+        <p className="text-[52px] leading-[1.05] font-semibold tracking-[-1.8px]">
+          {money(total.cost)}
         </p>
-        <ul className="usage-providers">
+        <p className={cx(caption, "mt-2.5")}>
+          {plural(total.requests, "request")} at API list price
+          {total.unpriced > 0 && (
+            <span className="block">{number(total.unpriced)} unpriced</span>
+          )}
+        </p>
+        <ul className="mt-7 grid gap-4.5 border-t border-border pt-5.5">
           {usage.providers.map((p) => (
-            <li key={p.name} style={series(p.provider)}>
-              <span className="series-key" aria-hidden="true" />
+            <li
+              key={p.name}
+              className="grid grid-cols-[auto_auto_auto_1fr_auto] items-center gap-x-2.25 text-[14px]"
+              style={series(p.provider)}
+            >
+              <span className={seriesKey} aria-hidden="true" />
               <ProviderBrand provider={p.provider} small />
-              <strong>{providerLabel(p.provider)}</strong>
-              <span>{plural(p.requests, "request")}</span>
-              <b>{money(p.cost)}</b>
-              <p>
+              <strong className="font-[550]">
+                {providerLabel(p.provider)}
+              </strong>
+              <span className="text-[12px] text-muted">
+                {plural(p.requests, "request")}
+              </span>
+              <b className="font-[550]">{money(p.cost)}</b>
+              <p className="col-span-full mt-1.25 text-[12px] text-muted">
                 {[
                   share(p.cost, total.cost) &&
                     `${share(p.cost, total.cost)} of cost`,
@@ -237,117 +181,37 @@ function UsageSummary({ usage, total }: { usage: Usage; total: Tally }) {
 }
 
 function UsageTotals({ total }: { total: Tally }) {
+  const totals = [
+    ["Tokens", compact(total.tokens)],
+    ["Cached input", compact(total.cached)],
+    ["Uncached input", compact(total.uncached)],
+    ["Output", compact(total.output)],
+    ["Cache savings", money(total.saved)],
+  ];
   return (
-    <dl className="panel usage-totals">
-      <div>
-        <dt>Tokens</dt>
-        <dd>{compact(total.tokens)}</dd>
-      </div>
-      <div>
-        <dt>Cached input</dt>
-        <dd>{compact(total.cached)}</dd>
-      </div>
-      <div>
-        <dt>Uncached input</dt>
-        <dd>{compact(total.uncached)}</dd>
-      </div>
-      <div>
-        <dt>Output</dt>
-        <dd>{compact(total.output)}</dd>
-      </div>
-      <div>
-        <dt>Cache savings</dt>
-        <dd>{money(total.saved)}</dd>
-      </div>
+    // Five columns divided by rules, keeping their padding on phones, where
+    // they pair up and only the second of each pair is ruled.
+    <dl
+      className={cx(
+        nextPanel,
+        "grid grid-cols-5 gap-5 px-6 py-5.5 max-sm:grid-cols-[1fr_1fr]",
+      )}
+    >
+      {totals.map(([label, value], i) => (
+        <div
+          key={label}
+          className={cx(
+            i > 0 && "border-l border-border pl-5",
+            i > 0 &&
+              (i % 2 === 1 ? "max-sm:pl-4" : "max-sm:border-l-0 max-sm:pl-0"),
+          )}
+        >
+          <dt className="text-[13px] text-muted">{label}</dt>
+          <dd className="mt-2 text-[24px] font-semibold tracking-[-0.6px]">
+            {value}
+          </dd>
+        </div>
+      ))}
     </dl>
-  );
-}
-
-type Part = {
-  key: string;
-  label: string;
-  cost: number;
-  // Colours the segment and its legend key.
-  className: string;
-  style?: CSSProperties;
-};
-
-const sum = (costs: Record<string, number>) =>
-  Object.values(costs).reduce((a, b) => a + b, 0);
-
-function CostSplits({ usage, total }: { usage: Usage; total: Tally }) {
-  // Premium spend splits by provider, in the chart's order and colours.
-  const premium: Part[] = speeds.flatMap((speed) =>
-    usage.providers.flatMap((p) => {
-      const cost = total.byTier[speed][p.name] ?? 0;
-      if (cost <= 0) return [];
-      return {
-        key: `${speed}/${p.name}`,
-        label: `${providerLabel(p.provider)} ${speedLabel[speed].toLowerCase()}`,
-        cost,
-        className: `premium ${speed}`,
-        style: series(p.provider),
-      };
-    }),
-  );
-  return (
-    <div className="panel usage-costs">
-      <CostSplit
-        title="Cost by type"
-        parts={costTypes
-          .filter((type) => total.byType[type] > 0)
-          .map((type) => ({
-            key: type,
-            label: costTypeLabel[type],
-            cost: total.byType[type],
-            className: type,
-          }))}
-      />
-      <CostSplit
-        title="Cost by tier"
-        parts={[
-          {
-            key: "standard",
-            label: "Standard",
-            cost: sum(total.byTier.standard),
-            className: "standard",
-          },
-          // Listed at zero, so no premium spend reads as checked.
-          ...(premium.length > 0
-            ? premium
-            : [{ key: "fast", label: "Fast", cost: 0, className: "premium" }]),
-        ]}
-      />
-    </div>
-  );
-}
-
-function CostSplit({ title, parts }: { title: string; parts: Part[] }) {
-  return (
-    <section className="usage-types" aria-label={title}>
-      <h2>{title}</h2>
-      <div className="type-bar" aria-hidden="true">
-        {parts.map(
-          (p) =>
-            p.cost > 0 && (
-              <span
-                key={p.key}
-                className={p.className}
-                style={{ ...p.style, flexGrow: p.cost }}
-                title={`${p.label} ${money(p.cost)}`}
-              />
-            ),
-        )}
-      </div>
-      <ul>
-        {parts.map((p) => (
-          <li key={p.key}>
-            <span className={`type-key ${p.className}`} style={p.style} />
-            {p.label}
-            <strong>{money(p.cost)}</strong>
-          </li>
-        ))}
-      </ul>
-    </section>
   );
 }

@@ -1,11 +1,31 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Ban, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { errorMessage, isStale, type APIRequest } from "./api";
-import { Modal } from "./Modal";
-import { KeyDialog } from "./KeyDialog";
+import { ConfirmKeyDialog, KeyDialog, type Confirm } from "./KeyDialog";
 import { keyState, stateLabel, type APIKey } from "./keys";
 import { OwnerTabs, ownerQuery, type Owner } from "./OwnerTabs";
+import {
+  keyBody,
+  keyCell,
+  keyHead,
+  keyRowHead,
+  keyStatus,
+  keyTable,
+  pageNote,
+  pageToolbar,
+  rowActions,
+} from "./pageStyles";
 import { Private } from "./Privacy";
+import {
+  cx,
+  empty,
+  iconButton,
+  loading as loadingClass,
+  notice,
+  noticeAction,
+  panelFrame,
+  tableScroll,
+} from "./ui";
 
 type Props = {
   // Admins can list, revoke and delete everyone's keys.
@@ -20,7 +40,6 @@ type Props = {
   copy: (value: string) => Promise<boolean>;
   notify: (text: string) => void;
 };
-type Confirm = { action: "revoke" | "delete"; key: APIKey };
 
 const number = (n: number) => n.toLocaleString();
 const day = (value: string) =>
@@ -141,17 +160,22 @@ export function KeysPage({
   };
 
   return (
-    <div className="keys">
+    <div>
       {admin && <KeysToolbar owner={owner} setOwner={setOwner} />}
-      {keys?.length === 0 && <p className="empty">No keys yet</p>}
+      {keys?.length === 0 && (
+        <p className={cx(empty, "mt-6 mb-1")}>No keys yet</p>
+      )}
       {error && (
-        <div className="notice error" role="alert">
-          {error} <button onClick={() => void load()}>Try again</button>
+        <div className={cx(notice({ error: true }), "my-3.75")} role="alert">
+          {error}{" "}
+          <button className={noticeAction} onClick={() => void load()}>
+            Try again
+          </button>
         </div>
       )}
       {loading && !keys && !error && (
-        <div className="loading" role="status" aria-label="Loading">
-          <RefreshCw size={22} className="spinning" />
+        <div className={loadingClass} role="status" aria-label="Loading">
+          <RefreshCw size={22} className="animate-spin" />
         </div>
       )}
       {keys !== null && keys.length > 0 && (
@@ -164,7 +188,7 @@ export function KeysPage({
         />
       )}
       {keys !== null && keys.length > 0 && (
-        <p className="keys-footnote">
+        <p className="mt-3.5 max-w-[68ch] text-[13px] leading-[1.6] text-muted">
           Request and token counts are totals since the key was created.
         </p>
       )}
@@ -205,10 +229,10 @@ function KeysToolbar({
   setOwner: (owner: Owner) => void;
 }) {
   return (
-    <div className="page-toolbar">
+    <div className={pageToolbar}>
       <OwnerTabs owner={owner} setOwner={setOwner} label="Show keys of" />
       {owner === "all" && (
-        <p>
+        <p className={pageNote}>
           You can revoke or delete anyone&apos;s key. Only its owner can edit
           it.
         </p>
@@ -216,6 +240,18 @@ function KeysToolbar({
     </div>
   );
 }
+
+const columns = [
+  "Key",
+  "Owner",
+  "Prefix",
+  "Status",
+  "Requests",
+  "Tokens",
+  "Created",
+  "Expires",
+];
+const numeric = new Set(["Requests", "Tokens"]);
 
 function KeyTable({
   keys,
@@ -231,23 +267,28 @@ function KeyTable({
   onConfirm: (confirm: Confirm) => void;
 }) {
   return (
-    <div className="panel table-scroll">
-      <table className="key-table">
+    <div
+      className={cx(
+        panelFrame,
+        tableScroll,
+        "px-5.5 pt-4 pb-1.5 max-sm:px-4.5",
+      )}
+    >
+      <table className={keyTable}>
         <thead>
           <tr>
-            <th scope="col">Key</th>
-            {showOwner && <th scope="col">Owner</th>}
-            <th scope="col">Prefix</th>
-            <th scope="col">Status</th>
-            <th scope="col" className="numeric">
-              Requests
-            </th>
-            <th scope="col" className="numeric">
-              Tokens
-            </th>
-            <th scope="col">Created</th>
-            <th scope="col">Expires</th>
-            <th scope="col">
+            {columns
+              .filter((c) => showOwner || c !== "Owner")
+              .map((c) => (
+                <th
+                  key={c}
+                  scope="col"
+                  className={keyHead(numeric.has(c) ? "numeric" : "left")}
+                >
+                  {c}
+                </th>
+              ))}
+            <th scope="col" className={keyHead()}>
               <span className="sr-only">Actions</span>
             </th>
           </tr>
@@ -284,20 +325,23 @@ function KeyRow({
   const state = keyState(key);
   const dead = state === "revoked";
   const label = key.name || "Unnamed key";
+  const off = state !== "active";
   return (
-    <tbody className={state === "active" ? "" : "is-off"}>
+    <tbody className={keyBody}>
       <tr>
-        <th scope="row">{label}</th>
+        <th scope="row" className={keyRowHead(off)}>
+          {label}
+        </th>
         {showOwner && (
-          <td>
+          <td className={keyCell("left", off)}>
             <Private peek>{key.owner?.name ?? ""}</Private>
           </td>
         )}
-        <td>
-          <code>{key.prefix}…</code>
+        <td className={keyCell("left", off)}>
+          <code className="text-muted">{key.prefix}…</code>
         </td>
         <td
-          className={`key-status ${state}`}
+          className={keyStatus(state)}
           title={
             state === "revoked"
               ? `Revoked ${day(key.revokedAt!)}. Delete it to remove it from this list.`
@@ -308,18 +352,18 @@ function KeyRow({
         >
           {stateLabel[state]}
         </td>
-        <td className="numeric">{number(key.usedRequests)}</td>
-        <td className="numeric">{number(key.usedTokens)}</td>
-        <td>{day(key.createdAt)}</td>
-        <td>
+        <td className={keyCell("numeric", off)}>{number(key.usedRequests)}</td>
+        <td className={keyCell("numeric", off)}>{number(key.usedTokens)}</td>
+        <td className={keyCell("left", off)}>{day(key.createdAt)}</td>
+        <td className={keyCell("left", off)}>
           {key.expiresAt === undefined || key.expiresAt === ""
             ? "No expiry"
             : moment(key.expiresAt)}
         </td>
-        <td>
-          <div className="account-row-actions">
+        <td className={keyCell()}>
+          <div className={rowActions}>
             <button
-              className="icon-button"
+              className={iconButton()}
               aria-label={`Edit ${label}`}
               title={
                 editable
@@ -332,7 +376,7 @@ function KeyRow({
               <Pencil size={14} />
             </button>
             <button
-              className="icon-button is-danger"
+              className={iconButton("md", { danger: true })}
               aria-label={`Revoke ${label}`}
               title="Revoke"
               disabled={dead}
@@ -341,7 +385,7 @@ function KeyRow({
               <Ban size={14} />
             </button>
             <button
-              className="icon-button is-danger"
+              className={iconButton("md", { danger: true })}
               aria-label={`Delete ${label}`}
               title="Delete"
               onClick={() => onConfirm({ action: "delete", key })}
@@ -352,57 +396,5 @@ function KeyRow({
         </td>
       </tr>
     </tbody>
-  );
-}
-
-function ConfirmKeyDialog({
-  confirm,
-  busy,
-  error,
-  onClose,
-  onConfirm,
-}: {
-  confirm: Confirm;
-  busy: boolean;
-  error: string;
-  onClose: () => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <Modal
-      className="confirm-dialog"
-      labelledBy="key-confirm-title"
-      locked={busy}
-      onClose={onClose}
-    >
-      <h2 id="key-confirm-title">
-        {confirm.action === "revoke" ? "Revoke" : "Delete"}{" "}
-        {confirm.key.name || "this key"}?
-      </h2>
-      <p>
-        {confirm.action === "revoke"
-          ? "vrouter refuses new calls made with this key. Running responses finish. You can't undo this."
-          : "vrouter refuses new calls made with this key. Running responses finish, and its past requests stay in the log. You can't undo this."}
-      </p>
-      {error && (
-        <div className="notice error" role="alert">
-          {error}
-        </div>
-      )}
-      <div className="dialog-actions">
-        <button className="secondary" disabled={busy} onClick={onClose}>
-          Keep key
-        </button>
-        <button className="primary danger" disabled={busy} onClick={onConfirm}>
-          {confirm.action === "revoke"
-            ? busy
-              ? "Revoking"
-              : "Revoke key"
-            : busy
-              ? "Deleting"
-              : "Delete key"}
-        </button>
-      </div>
-    </Modal>
   );
 }
