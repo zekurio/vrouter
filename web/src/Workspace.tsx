@@ -157,7 +157,13 @@ export function Workspace({
         onRetry={() => void refresh()}
       />
       {page === "Overview" && state && (
-        <Overview accounts={state.accounts} pool={pool} setPool={setPool} />
+        <Overview
+          accounts={state.accounts}
+          pool={pool}
+          setPool={setPool}
+          request={client.request}
+          reloadKey={state.observedAt}
+        />
       )}
       {state && (
         <div hidden={page !== "Models"}>

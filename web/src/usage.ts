@@ -37,7 +37,11 @@ export type Tally = Counts & {
 };
 
 export type Group = Counts & { name: string; provider: string };
-export type Bucket = { start: number; byProvider: Record<string, number> };
+export type Bucket = {
+  start: number;
+  requests: number;
+  byProvider: Record<string, number>;
+};
 // A local day or hour that saw requests.
 export type Period = Counts & Bucket;
 export type UsageReport = {
@@ -107,7 +111,7 @@ export function summarize(report: UsageReport, now = Date.now()): Usage {
     // The hourly series covers the last two days at most.
     const from = interval === "hour" ? Math.max(first, now - 48 * HOUR) : first;
     for (let t = floor(from, interval); t <= now; t = next(t, interval))
-      buckets.set(t, { start: t, byProvider: {} });
+      buckets.set(t, { start: t, requests: 0, byProvider: {} });
     return buckets;
   };
   const series = {
@@ -119,6 +123,7 @@ export function summarize(report: UsageReport, now = Date.now()): Usage {
   const fill = (interval: Interval, period: Period) => {
     const bucket = series[interval].get(floor(period.start, interval));
     if (!bucket) return;
+    bucket.requests += period.requests;
     for (const [provider, cost] of Object.entries(period.byProvider))
       bucket.byProvider[provider] = (bucket.byProvider[provider] ?? 0) + cost;
   };

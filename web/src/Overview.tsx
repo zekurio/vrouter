@@ -1,18 +1,20 @@
 import { accountLabel, accountState, type Account } from "./AccountsPage";
+import type { APIRequest } from "./api";
 import { badgeRow, ScopeBadge } from "./Badge";
+import { card, PoolCard, ProjectionBasis } from "./PoolCard";
 import { Private } from "./Privacy";
-import { fill, QuotaWindows, span, track } from "./Quota";
+import { QuotaWindows } from "./Quota";
 import {
   ProviderBrand as Brand,
   providerLabel,
   providerStyle,
 } from "./ProviderBrand";
-import { cx, empty, panelFrame } from "./ui";
+import { usePoolForecasts } from "./usePoolForecasts";
+import { cx, empty } from "./ui";
 
-// Pools and accounts both sit in a grid of cards at least 300px wide.
+// Pools sit in a grid of cards wide enough for their charts, and accounts in
+// one of cards at least 300px wide.
 const cards = "grid gap-3 max-sm:grid-cols-1";
-// The panel padding, with a little more below.
-const card = `${panelFrame} px-5.5 pt-5 pb-5.5 max-sm:p-4.5`;
 // The error under an account's windows, as in AccountsPage.
 export const quotaError =
   "mt-3.5 text-[12px] leading-[1.6] text-danger wrap-anywhere";
@@ -22,12 +24,22 @@ export function Overview({
   accounts,
   pool,
   setPool,
+  request,
+  reloadKey,
 }: {
   accounts: Account[];
   // Provider whose accounts are shown alone, or "" for every pool.
   pool: string;
   setPool: (pool: string) => void;
+  request: APIRequest;
+  // Changes whenever the accounts reload.
+  reloadKey: string;
 }) {
+  const { basis, choose, forecasts } = usePoolForecasts(
+    request,
+    reloadKey,
+    accounts,
+  );
   const providers = [...new Set(accounts.map((a) => a.provider))];
   // The pool columns double as the filter. An empty filter shows every pool.
   const filter = providers.length > 1 && providers.includes(pool) ? pool : "";
@@ -36,19 +48,24 @@ export function Overview({
   );
   return (
     <>
+      {[...forecasts.values()].some(Boolean) && (
+        <ProjectionBasis basis={basis} choose={choose} />
+      )}
       {providers.length > 0 ? (
         <section
           className={cx(
             cards,
-            "grid-cols-[repeat(auto-fit,minmax(300px,1fr))]",
+            "grid-cols-[repeat(auto-fit,minmax(min(520px,100%),1fr))]",
           )}
           aria-label="Provider pools"
         >
           {providers.map((p) => (
-            <PoolColumn
+            <PoolCard
               key={p}
               provider={p}
               accounts={accounts.filter((a) => a.provider === p)}
+              forecast={forecasts.get(p) ?? null}
+              basis={basis}
               filter={filter}
               toggle={
                 providers.length > 1
@@ -75,145 +92,6 @@ export function Overview({
       )}
     </>
   );
-}
-
-function PoolColumn({
-  provider: p,
-  accounts,
-  filter,
-  toggle,
-}: {
-  provider: string;
-  accounts: Account[];
-  filter: string;
-  // Shows only this pool, or every pool again. Unset with a single pool.
-  toggle: (() => void) | undefined;
-}) {
-  const known = accounts.filter((a) => a.remaining !== null);
-  const remaining = known.reduce((sum, a) => sum + (a.remaining ?? 0), 0);
-  const stats = poolStats(accounts);
-  return (
-    <article
-      className={cx(
-        card,
-        "relative transition-opacity duration-150 ease-[ease]",
-        filter &&
-          filter !== p &&
-          "opacity-40 focus-within:opacity-75 hover:opacity-75",
-      )}
-      style={providerStyle(p)}
-    >
-      <div className="flex items-center gap-2.5">
-        <Brand provider={p} />
-        <h2 className="text-[15px] font-semibold">
-          {toggle ? (
-            // The pool name filters the account list. Its hit area covers
-            // the panel.
-            <button
-              className="after:absolute after:inset-0 after:rounded-[inherit]"
-              aria-pressed={filter === p}
-              title={
-                filter === p
-                  ? "Show all pools"
-                  : `Show only ${providerLabel(p)} accounts`
-              }
-              onClick={toggle}
-            >
-              {providerLabel(p)}
-            </button>
-          ) : (
-            providerLabel(p)
-          )}
-        </h2>
-        <span className="text-[13px] text-muted">
-          {accounts.length} {accounts.length === 1 ? "account" : "accounts"}
-        </span>
-      </div>
-      <div className="mt-5.5 flex flex-wrap items-end justify-between gap-x-12 gap-y-4.5">
-        <div>
-          <div className="flex items-baseline gap-2.5 leading-none">
-            {known.length === accounts.length ? (
-              <>
-                <span className="text-[46px] font-semibold tracking-[-1.6px] max-sm:text-[40px]">
-                  {Math.round(remaining)}
-                  <small className="ml-0.5 text-[24px] font-medium tracking-[-0.5px] text-muted">
-                    %
-                  </small>
-                </span>
-                {accounts.length > 1 && (
-                  <span className="text-[14px] text-muted">
-                    of {accounts.length * 100}%
-                  </span>
-                )}
-              </>
-            ) : (
-              <span className="flex h-11.5 items-center text-[24px] font-semibold tracking-[-0.5px] text-muted">
-                Not reported
-              </span>
-            )}
-          </div>
-          <p className="mt-2.5 text-[13px] text-muted">
-            {accounts.every((a) => a.window === "Weekly window")
-              ? "Weekly remaining"
-              : "Allowance remaining"}
-          </p>
-        </div>
-        {stats.length > 0 && (
-          <dl className="flex flex-wrap gap-x-11 gap-y-3.5 max-sm:gap-x-7">
-            {stats.map((s) => (
-              <div key={s.label}>
-                <dt className="text-[13px] whitespace-nowrap text-muted">
-                  {s.label}
-                </dt>
-                <dd className="mt-1.25 text-[15px] font-[550] whitespace-nowrap">
-                  {s.value}
-                </dd>
-              </div>
-            ))}
-          </dl>
-        )}
-      </div>
-      <div className="mt-4.5 flex gap-1">
-        {accounts.map((a) => (
-          <div key={a.id} className={cx(track, "h-1.5 flex-1")}>
-            {a.remaining !== null && (
-              <span className={fill} style={{ width: `${a.remaining}%` }} />
-            )}
-          </div>
-        ))}
-      </div>
-    </article>
-  );
-}
-
-// The pool's other quota windows, summed like the headline figure, and when
-// the headline window next resets.
-function poolStats(accounts: Account[]) {
-  const windows = new Map<string, { label: string; left: number }>();
-  let reset = Infinity;
-  for (const a of accounts) {
-    for (const w of a.windows ?? []) {
-      if (w.label === a.window) {
-        const at = new Date(w.resetAt ?? "").getTime();
-        if (at < reset) reset = at;
-        continue;
-      }
-      const pooled = windows.get(w.id) ?? { label: w.label, left: 0 };
-      pooled.left += w.remaining;
-      windows.set(w.id, pooled);
-    }
-  }
-  const stats = [...windows.values()].map((w) => ({
-    label: w.label,
-    value: `${Math.round(w.left)}% left`,
-  }));
-  const until = reset - Date.now();
-  if (Number.isFinite(until))
-    stats.push({
-      label: "Next reset",
-      value: until > 0 ? `In ${span(until)}` : "Due",
-    });
-  return stats;
 }
 
 function AccountCard({ account: a }: { account: Account }) {

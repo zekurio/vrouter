@@ -22,7 +22,8 @@ const usageMetaSchema = `CREATE TABLE IF NOT EXISTS usage_meta (id INTEGER PRIMA
 // nanodollars by the kind of token billed. Rows sit in key order, so one
 // user's history reads oldest first without a sort. usage_requests is the
 // bounded log behind the Requests view. An empty user_id is a key no user owns.
-// sessions holds the hashes of dashboard sign-ins.
+// sessions holds the hashes of dashboard sign-ins. quota_history holds each
+// account's reported quota windows; see quota_history.go.
 const usageSchema = `
 CREATE TABLE IF NOT EXISTS usage_pending (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, key_id TEXT NOT NULL, key_name TEXT NOT NULL, model TEXT NOT NULL, provider TEXT NOT NULL, started INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS usage_keys (key_id TEXT PRIMARY KEY, requests INTEGER NOT NULL, tokens INTEGER NOT NULL);
@@ -38,6 +39,8 @@ CREATE INDEX IF NOT EXISTS usage_requests_user ON usage_requests(user_id,finishe
 CREATE INDEX IF NOT EXISTS usage_requests_finished ON usage_requests(finished DESC);
 CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
+CREATE TABLE IF NOT EXISTS quota_history (account_id TEXT NOT NULL, window_id TEXT NOT NULL, since INTEGER NOT NULL, until INTEGER NOT NULL, remaining REAL NOT NULL, reset_at INTEGER NOT NULL, PRIMARY KEY(account_id,window_id,since)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS quota_history_until ON quota_history(until);
 `
 
 const (

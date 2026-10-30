@@ -67,7 +67,7 @@ Accounts imported with `vrouter import` are shared. Model settings, such as disa
 
 ## Data
 
-`vrouter.json` in the data directory holds users, accounts, model settings, and client keys. `usage.sqlite` holds usage totals, in-flight accounting, the latest requests, and sign-in sessions. Sessions are stored as hashes, so a copy of the database cannot sign anyone in. Both use restricted file permissions and are unencrypted, so keep backups private.
+`vrouter.json` in the data directory holds users, accounts, model settings, and client keys. `usage.sqlite` holds usage totals, in-flight accounting, the latest requests, sign-in sessions, and 30 days of account quota reports. Sessions are stored as hashes, so a copy of the database cannot sign anyone in. Both use restricted file permissions and are unencrypted, so keep backups private.
 
 Run one instance per data directory. Stop the server before you restore data or import provider credentials.
 
@@ -240,6 +240,12 @@ Open a model in the UI to copy a request or run **Test this model** with a clien
 
 **Connected** on an account means vrouter has saved credentials. It does not prove inference works.
 
+## Pool charts
+
+The Overview charts each provider pool's allowance, summed across the accounts that report one. It follows the weekly window, or an account's first window when it has no weekly one. The solid line shows what providers reported over the last window. The dashed line projects the next window from a spending rate you pick above the pools: the last 3 hours, the last day, or the average since each window reset. The projection splits that rate evenly across the accounts with allowance left, the way requests rotate, and refills each account when its window resets. Until there is enough history for the rate you picked, it uses the average since the reset.
+
+vrouter records a provider's report whenever it reads an account's usage. That happens while requests route through the pool and while the dashboard is open. A gap in the recorded line is time nobody looked, and the chart draws it straight. Usage spent outside vrouter during a gap shows up at the next report. vrouter keeps 30 days of reports in `usage.sqlite` and drops an account's history when you remove the account.
+
 ## Automatic usage resets
 
 When a client request finds every account in its provider pool blocked, vrouter refreshes their usage and looks for included resets.
@@ -282,6 +288,8 @@ Management requests need a dashboard session. Writes must carry an `Origin` head
 `expiresAt` takes a future RFC 3339 timestamp, or `null` for a key that never expires. Omitting it on an update keeps the current expiry.
 
 `GET /api/usage?tz=<IANA time zone>` returns your all-time totals, the breakdowns by provider, model, key, and account type, usage per day and per recent hour in that time zone, and your latest 1,000 requests. Without a known zone it uses UTC. Admins add `&owner=all` for everyone's usage with a breakdown by user.
+
+`GET /api/quota-history?window=weekly&days=7` returns how the named quota windows changed on the accounts you can see, over 1 to 30 days, seven by default. Repeat `window` for up to eight windows. Each run holds the remaining percentage, the reset time, and when vrouter first and last saw that report, all times in Unix milliseconds.
 
 `GET /api/settings` returns the routing order as `{"routing": "personal-first"}` or `"global-first"`. Admins change it with `PUT`.
 

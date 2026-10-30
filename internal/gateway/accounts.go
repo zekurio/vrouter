@@ -155,6 +155,9 @@ func (s *server) changeAccount(w http.ResponseWriter, r *http.Request, remove bo
 	delete(s.lastQuotas, body.ID)
 	s.quotaMu.Unlock()
 	if remove {
+		if err := s.store.data.usage.forgetQuota(r.Context(), body.ID); err != nil {
+			slog.Warn("quota history of a removed account kept", "account", body.ID, "error", err)
+		}
 		writeJSON(w, 200, map[string]string{"id": body.ID, "status": "removed"})
 	} else {
 		writeJSON(w, 200, map[string]any{"id": body.ID, "enabled": *body.Enabled})
@@ -195,6 +198,9 @@ func (s *server) nativeQuota(ctx context.Context, a storedAccount) quotaCache {
 		s.lastQuotas[a.ID] = q
 	}
 	s.quotaMu.Unlock()
+	if q.Error == "" {
+		s.recordQuota(ctx, a.ID, q)
+	}
 	return q
 }
 

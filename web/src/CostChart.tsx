@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, type PointerEvent } from "react";
+import { useState, type PointerEvent } from "react";
+import { axisText, ChartTip, tipRow, tipValue, useWidth } from "./chart";
 import { providerLabel, providerStyle } from "./ProviderBrand";
 import {
-  compact,
   dayLabel,
   hourLabel,
   intervals,
@@ -12,16 +12,25 @@ import {
   type Interval,
   type Usage,
 } from "./usage";
-import { cx, tab, tabs } from "./ui";
+import { tab, tabs } from "./ui";
 
 // Chart series follow the provider, so a provider keeps its color in every
 // view.
 export const series = providerStyle;
 // The dot that names a series, in its provider's colour.
 export const seriesKey = "size-2 rounded-full bg-provider";
-const axisText = "fill-muted text-[11px]";
 
-const SIZE = { height: 210, left: 46, right: 10, top: 10, bottom: 24 };
+// The top margin leaves room for the label over the tallest bar.
+const SIZE = { height: 210, left: 46, right: 10, top: 22, bottom: 24 };
+// The thickest a bar gets, so a short range does not draw blocks.
+const MAX_BAR = 24;
+// The least room an axis label gets, by interval.
+const labelRoom: Record<Interval, number> = {
+  hour: 52,
+  day: 60,
+  week: 60,
+  month: 76,
+};
 
 // A round step that splits the range into about three intervals.
 function tickStep(max: number) {
@@ -30,12 +39,14 @@ function tickStep(max: number) {
   const unit = rough / power;
   return (unit <= 1 ? 1 : unit <= 2 ? 2 : unit <= 5 ? 5 : 10) * power;
 }
-const axisMoney = (value: number) =>
-  value === 0
-    ? "0"
-    : value < 1
-      ? `$${value.toFixed(value < 0.1 ? 3 : 2)}`
-      : `$${compact(value)}`;
+// Short amounts in the reader's currency format, as the totals use.
+const shortMoney = (value: number) =>
+  value.toLocaleString(undefined, {
+    style: "currency",
+    currency: "USD",
+    notation: "compact",
+    maximumSignificantDigits: value < 1 ? 2 : 3,
+  });
 
 const DAY = 24 * 3600e3;
 const intervalLabel: Record<Interval, string> = {
@@ -81,7 +92,8 @@ function segment(
 function chartScale(buckets: Bucket[], providers: Group[], width: number) {
   const sum = (b: Bucket) =>
     providers.reduce((n, p) => n + (b.byProvider[p.name] ?? 0), 0);
-  const peak = Math.max(...buckets.map((b) => sum(b)), 0);
+  const totals = buckets.map((b) => sum(b));
+  const peak = Math.max(...totals, 0);
   const step = tickStep(peak || 1);
   const top = Math.ceil((peak || 1) / step) * step;
   const ticks = Array.from(
@@ -91,26 +103,23 @@ function chartScale(buckets: Bucket[], providers: Group[], width: number) {
   const inner = Math.max(width - SIZE.left - SIZE.right, 0);
   const plot = SIZE.height - SIZE.top - SIZE.bottom;
   const band = inner / buckets.length;
-  const bar = Math.min(Math.max(band - 2, 1), 40);
+  const bar = Math.min(Math.max(band - 2, 1), MAX_BAR);
   const x = (i: number) => SIZE.left + band * (i + 0.5);
   const y = (value: number) => SIZE.top + plot * (1 - value / top);
-  return { sum, ticks, plot, band, bar, x, y, width };
+  return {
+    sum,
+    peak,
+    peakAt: totals.indexOf(peak),
+    ticks,
+    plot,
+    band,
+    bar,
+    x,
+    y,
+    width,
+  };
 }
 type Scale = ReturnType<typeof chartScale>;
-
-// Tracks the width of the element the ref is attached to.
-function useWidth() {
-  const frame = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(0);
-  useEffect(() => {
-    const node = frame.current;
-    if (!node) return undefined;
-    const observer = new ResizeObserver(() => setWidth(node.clientWidth));
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
-  return { frame, width };
-}
 
 export function CostChart({ usage }: { usage: Usage }) {
   const { frame, width } = useWidth();
@@ -153,7 +162,7 @@ export function CostChart({ usage }: { usage: Usage }) {
       <div ref={frame} className="relative">
         {width > 0 && (
           <svg
-            className="touch-pan-y"
+            className="touch-pan-y overflow-visible"
             width={width}
             height={SIZE.height}
             role="img"
@@ -175,34 +184,31 @@ export function CostChart({ usage }: { usage: Usage }) {
           </svg>
         )}
         {at && hover !== null && (
-          <ChartTip
-            scale={scale}
-            hover={hover}
-            at={at}
-            interval={interval}
-            providers={providers}
-          />
+          <ChartTip x={scale.x(hover)} width={scale.width}>
+            <CostTip
+              scale={scale}
+              at={at}
+              interval={interval}
+              providers={providers}
+            />
+          </ChartTip>
         )}
       </div>
     </figure>
   );
 }
 
-// Where the label of bucket i sits: the first and last labels line up with the
-// ends of the plot.
-function markX(i: number, count: number, scale: Scale) {
-  if (count === 1) return scale.x(i);
-  if (i === 0) return SIZE.left;
-  if (i === count - 1) return scale.width - SIZE.right;
-  return scale.x(i);
-}
-function markAnchor(i: number, count: number) {
-  if (count > 1 && i === 0) return "start";
-  if (count > 1 && i === count - 1) return "end";
-  return "middle";
+// The buckets that get a time label: every few, counted back from the
+// newest, so the latest bucket is always named and labels keep their room.
+function labelled(count: number, band: number, interval: Interval) {
+  const every = Math.max(1, Math.ceil(labelRoom[interval] / (band || 1)));
+  return Array.from({ length: count }, (_, i) => i).filter(
+    (i) => (count - 1 - i) % every === 0,
+  );
 }
 
-// Grid lines with cost labels, and time labels under the plot.
+// Grid lines with cost labels, time labels under the plot, and the cost of
+// the tallest bar over it.
 function ChartAxes({
   scale,
   buckets,
@@ -212,14 +218,7 @@ function ChartAxes({
   buckets: Bucket[];
   interval: Interval;
 }) {
-  const { y, width } = scale;
-  // Axis labels at the first, middle and last bucket.
-  const marks = [
-    ...new Set([0, Math.floor((buckets.length - 1) / 2), buckets.length - 1]),
-  ].flatMap((i) => {
-    const b = buckets[i];
-    return b ? [{ i, start: b.start }] : [];
-  });
+  const { x, y, width, peak, peakAt } = scale;
   return (
     <>
       {scale.ticks.map((tick) => (
@@ -237,21 +236,31 @@ function ChartAxes({
             y={y(tick) + 3.5}
             textAnchor="end"
           >
-            {axisMoney(tick)}
+            {shortMoney(tick)}
           </text>
         </g>
       ))}
-      {marks.map(({ i, start }) => (
+      {labelled(buckets.length, scale.band, interval).map((i) => (
         <text
           key={i}
           className={axisText}
-          x={markX(i, buckets.length, scale)}
+          x={x(i)}
           y={SIZE.height - 5}
-          textAnchor={markAnchor(i, buckets.length)}
+          textAnchor="middle"
         >
-          {axisLabel[interval](start)}
+          {axisLabel[interval](buckets[i]?.start ?? 0)}
         </text>
       ))}
+      {peak > 0 && (
+        <text
+          className="fill-subtle text-[11px] font-medium tabular-nums"
+          x={x(peakAt)}
+          y={y(peak) - 7}
+          textAnchor="middle"
+        >
+          {shortMoney(peak)}
+        </text>
+      )}
     </>
   );
 }
@@ -291,37 +300,28 @@ function ChartBars({
   });
 }
 
-const tipRow = "flex items-center gap-1.75";
-const tipValue = "font-[550] text-text tabular-nums";
-
-function ChartTip({
+// The bucket's period and requests, then each provider that cost something.
+function CostTip({
   scale,
-  hover,
   at,
   interval,
   providers,
 }: {
   scale: Scale;
-  hover: number;
   at: Bucket;
   interval: Interval;
   providers: Group[];
 }) {
-  const { x } = scale;
+  const spent = providers.filter((p) => (at.byProvider[p.name] ?? 0) > 0);
   return (
-    <div
-      className={cx(
-        "pointer-events-none absolute top-1.5 z-2 grid gap-1.5 rounded-[10px] border border-line bg-control px-3 py-2.5 text-[12px] whitespace-nowrap text-muted shadow-[0_10px_30px_#0006]",
-        // Beside the hovered bar, on the side with more room.
-        x(hover) > scale.width / 2
-          ? "-translate-x-[calc(100%+12px)]"
-          : "translate-x-3",
-      )}
-      style={{ left: x(hover) }}
-      role="status"
-    >
-      <p>{tipLabel[interval](at.start)}</p>
-      {providers.map((p) => (
+    <>
+      <p>
+        {tipLabel[interval](at.start)}
+        {at.requests > 0 &&
+          ` · ${at.requests.toLocaleString()} ${at.requests === 1 ? "request" : "requests"}`}
+      </p>
+      {at.requests === 0 && <p className="text-text">No requests</p>}
+      {spent.map((p) => (
         <div key={p.name} className={tipRow} style={series(p.provider)}>
           <span className={seriesKey} aria-hidden="true" />
           <strong className={tipValue}>
@@ -330,12 +330,12 @@ function ChartTip({
           {providerLabel(p.provider)}
         </div>
       ))}
-      {providers.length > 1 && (
+      {spent.length > 1 && (
         <div className={tipRow}>
           <strong className={tipValue}>{money(scale.sum(at))}</strong>
           Total
         </div>
       )}
-    </div>
+    </>
   );
 }

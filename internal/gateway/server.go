@@ -213,6 +213,7 @@ func (s *server) routes(assets fs.FS) http.Handler {
 		{"PATCH /api/keys/{id}", s.patchKey, false},
 		{"DELETE /api/keys/{id}", s.deleteKey, false},
 		{"GET /api/usage", s.usageHandler, false},
+		{"GET /api/quota-history", s.quotaHistoryHandler, false},
 		{"GET /api/users", s.listUsers, true},
 		{"PATCH /api/users/{id}", s.patchUser, true},
 	}

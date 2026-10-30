@@ -2,9 +2,9 @@ import { Private } from "./Privacy";
 import { cx } from "./ui";
 
 // A provider-tinted bar, and its filled part.
-export const track =
+const track =
   "overflow-hidden rounded-[3px] bg-[color-mix(in_srgb,var(--color-provider)_16%,var(--color-surface))]";
-export const fill = "block h-full rounded-[3px] bg-provider";
+const fill = "block h-full rounded-[3px] bg-provider";
 
 export type QuotaWindow = {
   id: string;
