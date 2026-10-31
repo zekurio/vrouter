@@ -65,7 +65,6 @@ export function Overview({
               provider={p}
               accounts={accounts.filter((a) => a.provider === p)}
               forecast={forecasts.get(p) ?? null}
-              basis={basis}
               filter={filter}
               toggle={
                 providers.length > 1

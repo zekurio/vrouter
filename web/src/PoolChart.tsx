@@ -4,7 +4,6 @@ import {
   DAY,
   HOUR,
   poolValue,
-  type Basis,
   type Point,
   type PoolForecast,
 } from "./poolForecast";
@@ -102,13 +101,10 @@ function jumpLabels(f: PoolForecast, s: Scale) {
 export function PoolChart({
   forecast: f,
   label,
-  basis,
 }: {
   forecast: PoolForecast;
   // The provider, for the chart's accessible name.
   label: string;
-  // The basis the user chose. The forecast says which one it could use.
-  basis: Basis;
 }) {
   const { frame, width } = useWidth();
   const [hover, setHover] = useState<number | null>(null);
@@ -155,9 +151,7 @@ export function PoolChart({
         )}
         <span className="flex items-center gap-1.75">
           <i className={projectedKey} aria-hidden="true" />
-          Projected from {basisPhrase[f.basis]}
-          {f.basis !== basis &&
-            `, as there is too little history for ${basisPhrase[basis]}`}
+          Projected
         </span>
       </figcaption>
     </figure>
@@ -166,11 +160,6 @@ export function PoolChart({
 
 const recordedKey = "h-0.5 w-3.5 rounded-full bg-provider";
 const projectedKey = "w-3.5 border-t-2 border-dashed border-provider";
-const basisPhrase: Record<Basis, string> = {
-  "3h": "the last 3 hours",
-  day: "the last day",
-  window: "the pace since the reset",
-};
 
 // Gridlines with share labels, day or hour boundaries, and the Now line.
 function ChartGrid({
