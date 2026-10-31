@@ -120,9 +120,10 @@ export const groupHeading = "flex min-h-8 items-center gap-2.5";
 export const groupTitle = "text-[15px] font-semibold";
 export const groupCount = "text-[13px] text-muted";
 
-// On/off switch, tinted with the provider colour when on.
+// On/off switch, tinted with the provider colour when on. The knob then takes
+// the surface colour, which stands out on any brand, white included.
 export const toggle =
-  "relative h-4.5 w-7.5 rounded-[9px] bg-chip transition-[background] duration-150 ease-[ease] after:absolute after:top-0.75 after:left-0.75 after:size-3 after:rounded-full after:bg-muted after:transition-[translate,background] after:duration-150 after:ease-[ease] aria-checked:bg-provider aria-checked:after:translate-x-3 aria-checked:after:bg-white light:not-aria-checked:bg-line";
+  "relative h-4.5 w-7.5 rounded-[9px] bg-chip transition-[background] duration-150 ease-[ease] after:absolute after:top-0.75 after:left-0.75 after:size-3 after:rounded-full after:bg-muted after:transition-[translate,background] after:duration-150 after:ease-[ease] aria-checked:bg-provider aria-checked:after:translate-x-3 aria-checked:after:bg-surface light:not-aria-checked:bg-line";
 
 // Positioned so visually hidden text in a cell scrolls with the table.
 export const tableScroll = "relative overflow-x-auto";
