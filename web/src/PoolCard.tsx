@@ -71,7 +71,9 @@ export function PoolCard({
     <article
       className={cx(
         card,
-        "relative transition-opacity duration-150 ease-[ease]",
+        // A column, so the chart sits at the bottom and lines up with the
+        // pool beside it.
+        "relative flex flex-col transition-opacity duration-150 ease-[ease]",
         filter &&
           filter !== p &&
           "opacity-40 focus-within:opacity-75 hover:opacity-75",
@@ -104,50 +106,48 @@ export function PoolCard({
           {accounts.length} {accounts.length === 1 ? "account" : "accounts"}
         </span>
       </div>
-      <div className="mt-5.5 flex flex-wrap items-end justify-between gap-x-12 gap-y-4.5">
-        <div>
-          <div className="flex items-baseline gap-2.5 leading-none">
-            {known.length === accounts.length ? (
-              <>
-                <span className="text-[46px] font-semibold tracking-[-1.6px] max-sm:text-[40px]">
-                  {Math.round(remaining)}
-                  <small className="ml-0.5 text-[24px] font-medium tracking-[-0.5px] text-muted">
-                    %
-                  </small>
-                </span>
-                {accounts.length > 1 && (
-                  <span className="text-[14px] text-muted">
-                    of {accounts.length * 100}%
-                  </span>
-                )}
-              </>
-            ) : (
-              <span className="flex h-11.5 items-center text-[24px] font-semibold tracking-[-0.5px] text-muted">
-                Not reported
+      <div className="mt-5.5 flex items-baseline gap-2.5 leading-none">
+        {known.length === accounts.length ? (
+          <>
+            <span className="text-[46px] font-semibold tracking-[-1.6px] max-sm:text-[40px]">
+              {Math.round(remaining)}
+              <small className="ml-0.5 text-[24px] font-medium tracking-[-0.5px] text-muted">
+                %
+              </small>
+            </span>
+            {accounts.length > 1 && (
+              <span className="text-[14px] text-muted">
+                of {accounts.length * 100}%
               </span>
             )}
-          </div>
-          <p className="mt-2.5 text-[13px] text-muted">
-            {accounts.every((a) => a.window === "Weekly window")
-              ? "Weekly remaining"
-              : "Allowance remaining"}
-          </p>
-        </div>
-        {stats.length > 0 && (
-          <dl className="flex flex-wrap gap-x-11 gap-y-3.5 max-sm:gap-x-7">
-            {stats.map((s) => (
-              <div key={s.label}>
-                <dt className="text-[13px] whitespace-nowrap text-muted">
-                  {s.label}
-                </dt>
-                <dd className="mt-1.25 text-[15px] font-[550] whitespace-nowrap">
-                  {s.value}
-                </dd>
-              </div>
-            ))}
-          </dl>
+          </>
+        ) : (
+          <span className="flex h-11.5 items-center text-[24px] font-semibold tracking-[-0.5px] text-muted">
+            Not reported
+          </span>
         )}
       </div>
+      <p className="mt-2.5 text-[13px] text-muted">
+        {accounts.every((a) => a.window === "Weekly window")
+          ? "Weekly remaining"
+          : "Allowance remaining"}
+      </p>
+      {stats.length > 0 && (
+        // Columns of one width, so pools side by side wrap their stats
+        // alike and line up.
+        <dl className="mt-5 grid grid-cols-[repeat(auto-fill,minmax(7.5rem,1fr))] gap-x-6 gap-y-3.5">
+          {stats.map((s) => (
+            <div key={s.label}>
+              <dt className="text-[13px] whitespace-nowrap text-muted">
+                {s.label}
+              </dt>
+              <dd className="mt-1.25 text-[15px] font-[550] whitespace-nowrap">
+                {s.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
       {f && <PoolChart forecast={f} label={providerLabel(p)} basis={basis} />}
     </article>
   );

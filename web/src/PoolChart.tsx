@@ -125,8 +125,9 @@ export function PoolChart({
   }
 
   return (
-    // Above the pool's filter button, which covers the rest of the panel.
-    <figure className="relative z-1 mt-5 min-w-0">
+    // Above the pool's filter button, which covers the rest of the panel, and
+    // at the bottom of the card.
+    <figure className="relative z-1 mt-auto min-w-0 pt-5">
       <div ref={frame} className="relative">
         {width > 0 && (
           <svg
@@ -180,6 +181,8 @@ function ChartGrid({
   scale: Scale;
 }) {
   const { lines, labels } = timeTicks(f, s);
+  // A boundary right beside the Now line would read as a double line.
+  const apart = (t: number) => Math.abs(s.x(t) - s.x(f.now)) >= 8;
   const bottom = SIZE.top + s.plot;
   return (
     <>
@@ -202,16 +205,18 @@ function ChartGrid({
           </text>
         </g>
       ))}
-      {lines.map((t) => (
-        <line
-          key={t}
-          className="stroke-border"
-          x1={s.x(t)}
-          x2={s.x(t)}
-          y1={SIZE.top}
-          y2={bottom}
-        />
-      ))}
+      {lines
+        .filter((t) => apart(t))
+        .map((t) => (
+          <line
+            key={t}
+            className="stroke-border"
+            x1={s.x(t)}
+            x2={s.x(t)}
+            y1={SIZE.top}
+            y2={bottom}
+          />
+        ))}
       {labels.map(({ t, text }) => (
         <text
           key={t}
