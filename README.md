@@ -185,6 +185,39 @@ The model ID picks the provider and the endpoint picks the client protocol. When
 
 vrouter never moves a request from a subscription account to a paid API-key account.
 
+### Pi with Claude subscriptions
+
+Add a custom provider to `~/.pi/agent/models.json`, using a vrouter client key and a Claude model available from `/v1/models`:
+
+```json
+{
+  "providers": {
+    "vrouter": {
+      "baseUrl": "http://localhost:8080",
+      "api": "anthropic-messages",
+      "apiKey": "${VROUTER_API_KEY}",
+      "models": [
+        {
+          "id": "claude-sonnet-4-6",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 200000,
+          "maxTokens": 64000
+        }
+      ]
+    }
+  }
+}
+```
+
+Set `VROUTER_API_KEY` in Pi's environment, replace the URL and model as needed, then select the model with `/model`. The base URL has no `/v1` suffix because the Anthropic client appends `/v1/messages`. Use the selected model's actual context and output limits when changing the example.
+
+Claude OAuth requests use a Claude Code header profile and signed billing block. vrouter moves third-party system instructions into conversation system messages on newer Claude models, or system reminders in the first user message on Claude 3 and 4. Custom tools get deterministic MCP aliases; responses restore the original names, including streamed tool calls. Tool arguments, caller cache markers, and thinking signatures are preserved. Native Claude Code requests with their own identity and billing blocks keep their system layout and tool names. API-key accounts do not receive this adaptation.
+
+Session identity comes from `X-Claude-Code-Session-Id`, `X-Session-Id`, `Session-Id`, `session_id`, or an OpenAI `prompt_cache_key`, then Claude's `metadata.user_id` session field. Without a session identifier, vrouter derives one from the client key, caller identity, system instructions and first user message. Clients that compact history should send a stable session identifier. Tool aliases stay stable across account rotation and restarts; vrouter adds no changing date text to the conversation.
+
+Anthropic may reject third-party subscription requests or require extra usage. HTTP 200 alone does not establish which allowance was charged.
+
 ### Parameters
 
 Codex subscription accounts accept an output token cap. vrouter converts Messages `max_tokens` and Chat `max_completion_tokens` to Responses `max_output_tokens`.

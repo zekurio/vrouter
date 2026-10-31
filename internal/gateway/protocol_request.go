@@ -79,6 +79,8 @@ type preparedInference struct {
 	provider, native       string
 	stream, upstreamStream bool
 	includeUsage           bool
+	claudeSessionID        string
+	claudeToolNames        map[string]string
 	fast                   bool
 	speed                  string
 	ignoredParameters      []string
@@ -120,6 +122,22 @@ func (s *server) prepareInference(w http.ResponseWriter, r *http.Request, attemp
 	attempt.native = p.native
 	if ierr := p.encodeUpstreamRequest(payload); ierr != nil {
 		return nil, ierr
+	}
+	if p.provider == "claude" && p.accounts[0].AuthMode == "oauth" {
+		explicit := r.Header.Get("X-Claude-Code-Session-Id")
+		if explicit == "" {
+			explicit = r.Header.Get("X-Session-Id")
+		}
+		if explicit == "" {
+			explicit = r.Header.Get("Session-Id")
+		}
+		if explicit == "" {
+			explicit = r.Header.Get("Session_id")
+		}
+		if explicit == "" {
+			explicit = str(payload["prompt_cache_key"])
+		}
+		p.claudeSessionID = claudeSession(p.payload, attempt.principal.KeyID, explicit)
 	}
 	attempt.speed = p.speed
 	return p, nil

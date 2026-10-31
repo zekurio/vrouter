@@ -275,7 +275,7 @@ func windowTriggerRequest(ctx context.Context, account storedAccount, model Mode
 		}
 		values[k] = raw
 	}
-	req, err := providerInferenceRequest(ctx, target, values, account)
+	req, _, err := providerInferenceRequest(ctx, target, values, account, "")
 	if err != nil {
 		return nil, errors.New("could not prepare trigger")
 	}
