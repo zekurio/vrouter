@@ -64,7 +64,7 @@ buildGo126Module {
       ../web/embed.go
     ];
   };
-  vendorHash = "sha256-sP3nQ7rv7E+4/Jjpih0VJSXcrhtLUv4gs9P5uZwnOuo=";
+  vendorHash = "sha256-IfDeKLghNvrQFrHlYZX8GLxU5HkheIr7Eil5x4q9IeU=";
   subPackages = [ "cmd/vrouter" ];
   env.CGO_ENABLED = 0;
   preBuild = ''

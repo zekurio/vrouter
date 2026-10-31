@@ -265,9 +265,13 @@ func forwardRequest(r *http.Request, prepared *preparedInference, a storedAccoun
 	} else if a.AuthMode == "codex" {
 		target = "https://chatgpt.com/backend-api/codex/responses"
 	}
-	req, err := providerInferenceRequest(r.Context(), target, prepared.payload, a)
+	req, aliases, err := providerInferenceRequest(r.Context(), target, prepared.payload, a, prepared.claudeSessionID)
 	if err != nil {
 		return nil, err
+	}
+	prepared.claudeToolNames = aliases
+	if channel == "claude" && a.AuthMode == "oauth" {
+		forwardClaudeNativeHeaders(req, r, prepared.payload)
 	}
 	if prepared.upstreamStream {
 		req.Header.Set("Accept", "text/event-stream")
@@ -275,11 +279,11 @@ func forwardRequest(r *http.Request, prepared *preparedInference, a storedAccoun
 	// Header allowlist prevents downstream credentials, cookies and arbitrary
 	// routing headers from reaching provider services.
 	if channel == "claude" && r.Header.Get("Anthropic-Beta") != "" {
-		beta := r.Header.Get("Anthropic-Beta")
-		if a.AuthMode != "api_key" {
-			beta = "oauth-2025-04-20," + beta
+		for beta := range strings.SplitSeq(r.Header.Get("Anthropic-Beta"), ",") {
+			if beta = strings.TrimSpace(beta); beta != "" {
+				addAnthropicBeta(req, beta)
+			}
 		}
-		req.Header.Set("Anthropic-Beta", beta)
 	}
 	if channel == "claude" && prepared.fast {
 		addAnthropicBeta(req, claudeFastBeta)

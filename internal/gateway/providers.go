@@ -290,14 +290,33 @@ func requestJSON(ctx context.Context, target string, payload map[string]json.Raw
 	return req, err
 }
 
-func providerInferenceRequest(ctx context.Context, target string, payload map[string]json.RawMessage, account storedAccount) (*http.Request, error) {
-	prepared, err := claudeOAuthPayload(payload, account)
+func providerInferenceRequest(ctx context.Context, target string, payload map[string]json.RawMessage, account storedAccount, session string) (*http.Request, map[string]string, error) {
+	if account.Provider == "claude" && account.AuthMode == "oauth" && session == "" {
+		session = claudeSession(payload, "", "")
+	}
+	prepared, aliases, err := claudeOAuthPayload(payload, account, session)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	req, err := requestJSON(ctx, target, prepared)
-	if err == nil {
-		providerHeaders(req, account)
+	var req *http.Request
+	if account.Provider == "claude" && account.AuthMode == "oauth" {
+		data, signErr := signClaudeBody(prepared)
+		if signErr != nil {
+			return nil, nil, signErr
+		}
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(data))
+		if err == nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+	} else {
+		req, err = requestJSON(ctx, target, prepared)
 	}
-	return req, err
+	if err != nil {
+		return nil, nil, err
+	}
+	providerHeaders(req, account)
+	if account.Provider == "claude" && account.AuthMode == "oauth" {
+		claudeInferenceHeaders(req, prepared, session)
+	}
+	return req, aliases, nil
 }

@@ -35,7 +35,10 @@ func (r inferenceBodyReader) Read(p []byte) (int, error) {
 // deliverInference relays a successful provider response and closes its body.
 func (s *server) deliverInference(w http.ResponseWriter, r *http.Request, resp *http.Response, attempt *inferenceAttempt, p *preparedInference, account storedAccount) {
 	defer resp.Body.Close()
-	reader := inferenceBodyReader{source: resp.Body, attempt: attempt}
+	var reader io.Reader = inferenceBodyReader{source: resp.Body, attempt: attempt}
+	if len(p.claudeToolNames) > 0 {
+		reader = &claudeToolReader{source: reader, aliases: p.claudeToolNames, stream: p.upstreamStream}
+	}
 	if retry := resp.Header.Get("Retry-After"); retry != "" {
 		w.Header().Set("Retry-After", retry)
 	}
@@ -96,7 +99,7 @@ func relayNativeInference(w http.ResponseWriter, r *http.Request, reader io.Read
 		// The provider's terminal event ends the stream. Clients may
 		// close immediately after receiving it, cancelling the upstream
 		// read before HTTP EOF. The delivered response is still complete.
-		if p.upstreamStream && attempt.usage.terminal {
+		if p.upstreamStream && attempt.usage.terminal && len(p.claudeToolNames) == 0 {
 			_ = relayInferenceChunk(w, scrubber.flush(), p.stream)
 			return
 		}
