@@ -28,8 +28,8 @@ export const DAY = 24 * HOUR;
 export const bases = ["3h", "day", "window"] as const;
 export type Basis = (typeof bases)[number];
 export const basisLabel: Record<Basis, string> = {
-  "3h": "Last 3 hours",
-  day: "Last day",
+  "3h": "3h",
+  day: "24h",
   window: "Since reset",
 };
 const basisSpan: Record<Basis, number> = {

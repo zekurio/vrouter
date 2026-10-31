@@ -30,8 +30,8 @@ export function ProjectionBasis({
 }) {
   return (
     <div className={pageToolbar}>
-      <span className={pageNote}>Project from</span>
-      <div className={tabs()} role="group" aria-label="Project from">
+      <span className={pageNote}>Burn rate</span>
+      <div className={tabs()} role="group" aria-label="Burn rate">
         {bases.map((b) => (
           <button
             key={b}
@@ -51,7 +51,6 @@ export function PoolCard({
   provider: p,
   accounts,
   forecast: f,
-  basis,
   filter,
   toggle,
 }: {
@@ -59,7 +58,6 @@ export function PoolCard({
   accounts: Account[];
   // Null when no account reports its allowance.
   forecast: PoolForecast | null;
-  basis: Basis;
   filter: string;
   // Shows only this pool, or every pool again. Unset with a single pool.
   toggle: (() => void) | undefined;
@@ -71,7 +69,9 @@ export function PoolCard({
     <article
       className={cx(
         card,
-        "relative transition-opacity duration-150 ease-[ease]",
+        // A column, so the chart sits at the bottom and lines up with the
+        // pool beside it.
+        "relative flex flex-col transition-opacity duration-150 ease-[ease]",
         filter &&
           filter !== p &&
           "opacity-40 focus-within:opacity-75 hover:opacity-75",
@@ -104,51 +104,43 @@ export function PoolCard({
           {accounts.length} {accounts.length === 1 ? "account" : "accounts"}
         </span>
       </div>
-      <div className="mt-5.5 flex flex-wrap items-end justify-between gap-x-12 gap-y-4.5">
-        <div>
-          <div className="flex items-baseline gap-2.5 leading-none">
-            {known.length === accounts.length ? (
-              <>
-                <span className="text-[46px] font-semibold tracking-[-1.6px] max-sm:text-[40px]">
-                  {Math.round(remaining)}
-                  <small className="ml-0.5 text-[24px] font-medium tracking-[-0.5px] text-muted">
-                    %
-                  </small>
-                </span>
-                {accounts.length > 1 && (
-                  <span className="text-[14px] text-muted">
-                    of {accounts.length * 100}%
-                  </span>
-                )}
-              </>
-            ) : (
-              <span className="flex h-11.5 items-center text-[24px] font-semibold tracking-[-0.5px] text-muted">
-                Not reported
-              </span>
-            )}
-          </div>
-          <p className="mt-2.5 text-[13px] text-muted">
-            {accounts.every((a) => a.window === "Weekly window")
-              ? "Weekly remaining"
-              : "Allowance remaining"}
-          </p>
-        </div>
-        {stats.length > 0 && (
-          <dl className="flex flex-wrap gap-x-11 gap-y-3.5 max-sm:gap-x-7">
-            {stats.map((s) => (
-              <div key={s.label}>
-                <dt className="text-[13px] whitespace-nowrap text-muted">
-                  {s.label}
-                </dt>
-                <dd className="mt-1.25 text-[15px] font-[550] whitespace-nowrap">
-                  {s.value}
-                </dd>
-              </div>
-            ))}
-          </dl>
+      <div className="mt-5.5 flex items-baseline gap-2.5 leading-none">
+        {known.length === accounts.length ? (
+          <>
+            <span className="text-[46px] font-semibold tracking-[-1.6px] max-sm:text-[40px]">
+              {Math.round(remaining)}
+              <small className="ml-0.5 text-[24px] font-medium tracking-[-0.5px] text-muted">
+                %
+              </small>
+            </span>
+            <span className="text-[14px] text-muted">
+              of {accounts.length * 100}%
+              {accounts.every((a) => a.window === "Weekly window") && " weekly"}
+            </span>
+          </>
+        ) : (
+          <span className="flex h-11.5 items-center text-[24px] font-semibold tracking-[-0.5px] text-muted">
+            Not reported
+          </span>
         )}
       </div>
-      {f && <PoolChart forecast={f} label={providerLabel(p)} basis={basis} />}
+      {stats.length > 0 && (
+        // Columns of one width, so pools side by side wrap their stats
+        // alike and line up.
+        <dl className="mt-5 grid grid-cols-[repeat(auto-fill,minmax(7.5rem,1fr))] gap-x-6 gap-y-3.5">
+          {stats.map((s) => (
+            <div key={s.label}>
+              <dt className="text-[13px] whitespace-nowrap text-muted">
+                {s.label}
+              </dt>
+              <dd className="mt-1.25 text-[15px] font-[550] whitespace-nowrap">
+                {s.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {f && <PoolChart forecast={f} label={providerLabel(p)} />}
     </article>
   );
 }
@@ -159,6 +151,13 @@ function runsOut(f: PoolForecast) {
   return f.empty > f.now ? `In ${span(f.empty - f.now)}` : "Now";
 }
 
+// When the headline window resets, led by what the projection gains there.
+function nextReset(f: PoolForecast | null, reset: number, until: number) {
+  const gain = Math.round(f?.jumps.find((j) => j.t === reset)?.gain ?? 0);
+  if (until <= 0) return gain > 0 ? `+${gain}% due` : "Due";
+  return gain > 0 ? `+${gain}% in ${span(until)}` : `In ${span(until)}`;
+}
+
 // Percent of one account's allowance per hour.
 function rate(value: number) {
   if (value > 0 && value < 0.05) return "<0.1%/h";
@@ -166,13 +165,13 @@ function rate(value: number) {
 }
 const burnLabel: Record<Basis, string> = {
   "3h": "Burn, last 3h",
-  day: "Burn, last day",
+  day: "Burn, last 24h",
   window: "Burn since reset",
 };
 
-// The pool's other quota windows, summed like the headline figure, when the
-// projection runs dry, when the headline window next resets, and how fast
-// the pool is spent.
+// When the projection runs dry, when the headline window next resets and by
+// how much, how fast the pool is spent, and the pool's other quota windows,
+// summed like the headline figure.
 function poolStats(accounts: Account[], f: PoolForecast | null) {
   const windows = new Map<string, { label: string; left: number }>();
   let reset = Infinity;
@@ -188,17 +187,13 @@ function poolStats(accounts: Account[], f: PoolForecast | null) {
       windows.set(w.id, pooled);
     }
   }
-  const stats = [...windows.values()].map((w) => ({
-    label: w.label,
-    value: `${Math.round(w.left)}% left`,
-  }));
-  if (f) stats.push({ label: "Runs out", value: runsOut(f) });
+  const stats: { label: string; value: string }[] = [];
+  if (f) stats.push({ label: "Pool empty", value: runsOut(f) });
   const until = reset - Date.now();
   if (Number.isFinite(until))
-    stats.push({
-      label: "Next reset",
-      value: until > 0 ? `In ${span(until)}` : "Due",
-    });
+    stats.push({ label: "Next reset", value: nextReset(f, reset, until) });
   if (f) stats.push({ label: burnLabel[f.basis], value: rate(f.rate) });
+  for (const w of windows.values())
+    stats.push({ label: w.label, value: `${Math.round(w.left)}% left` });
   return stats;
 }

@@ -4,7 +4,6 @@ import {
   DAY,
   HOUR,
   poolValue,
-  type Basis,
   type Point,
   type PoolForecast,
 } from "./poolForecast";
@@ -102,13 +101,10 @@ function jumpLabels(f: PoolForecast, s: Scale) {
 export function PoolChart({
   forecast: f,
   label,
-  basis,
 }: {
   forecast: PoolForecast;
   // The provider, for the chart's accessible name.
   label: string;
-  // The basis the user chose. The forecast says which one it could use.
-  basis: Basis;
 }) {
   const { frame, width } = useWidth();
   const [hover, setHover] = useState<number | null>(null);
@@ -125,8 +121,9 @@ export function PoolChart({
   }
 
   return (
-    // Above the pool's filter button, which covers the rest of the panel.
-    <figure className="relative z-1 mt-5 min-w-0">
+    // Above the pool's filter button, which covers the rest of the panel, and
+    // at the bottom of the card.
+    <figure className="relative z-1 mt-auto min-w-0 pt-5">
       <div ref={frame} className="relative">
         {width > 0 && (
           <svg
@@ -154,9 +151,7 @@ export function PoolChart({
         )}
         <span className="flex items-center gap-1.75">
           <i className={projectedKey} aria-hidden="true" />
-          Projected from {basisPhrase[f.basis]}
-          {f.basis !== basis &&
-            `, as there is too little history for ${basisPhrase[basis]}`}
+          Projected
         </span>
       </figcaption>
     </figure>
@@ -165,11 +160,6 @@ export function PoolChart({
 
 const recordedKey = "h-0.5 w-3.5 rounded-full bg-provider";
 const projectedKey = "w-3.5 border-t-2 border-dashed border-provider";
-const basisPhrase: Record<Basis, string> = {
-  "3h": "the last 3 hours",
-  day: "the last day",
-  window: "the pace since the reset",
-};
 
 // Gridlines with share labels, day or hour boundaries, and the Now line.
 function ChartGrid({
@@ -180,6 +170,8 @@ function ChartGrid({
   scale: Scale;
 }) {
   const { lines, labels } = timeTicks(f, s);
+  // A boundary right beside the Now line would read as a double line.
+  const apart = (t: number) => Math.abs(s.x(t) - s.x(f.now)) >= 8;
   const bottom = SIZE.top + s.plot;
   return (
     <>
@@ -202,16 +194,18 @@ function ChartGrid({
           </text>
         </g>
       ))}
-      {lines.map((t) => (
-        <line
-          key={t}
-          className="stroke-border"
-          x1={s.x(t)}
-          x2={s.x(t)}
-          y1={SIZE.top}
-          y2={bottom}
-        />
-      ))}
+      {lines
+        .filter((t) => apart(t))
+        .map((t) => (
+          <line
+            key={t}
+            className="stroke-border"
+            x1={s.x(t)}
+            x2={s.x(t)}
+            y1={SIZE.top}
+            y2={bottom}
+          />
+        ))}
       {labels.map(({ t, text }) => (
         <text
           key={t}
