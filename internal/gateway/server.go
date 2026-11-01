@@ -87,6 +87,9 @@ type server struct {
 	oidc         *oidcClient
 	client       *http.Client
 	streamClient *http.Client
+	// imageClient waits longer for response headers. The Images API answers
+	// only once the image is done.
+	imageClient  *http.Client
 	quotaMu      sync.Mutex
 	quotas       map[string]quotaCache
 	quotaPending map[string]chan struct{}
@@ -143,7 +146,9 @@ func New(cfg Config, assets fs.FS) (http.Handler, error) {
 		return nil, err
 	}
 	noRedirect := func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-	s := &server{cfg: cfg, store: store, registry: &registryStore{data: store.data}, oidc: signIn, client: &http.Client{Transport: transport, Timeout: 12 * time.Second, CheckRedirect: noRedirect}, streamClient: &http.Client{Transport: transport, CheckRedirect: noRedirect}, quotas: map[string]quotaCache{}, lastQuotas: map[string]quotaCache{}, oauth: map[string]oauthSession{}, catalogs: map[string]catalogCache{}, windowWatch: map[string]windowWatch{}}
+	imageTransport := transport.Clone()
+	imageTransport.ResponseHeaderTimeout = 5 * time.Minute
+	s := &server{cfg: cfg, store: store, registry: &registryStore{data: store.data}, oidc: signIn, client: &http.Client{Transport: transport, Timeout: 12 * time.Second, CheckRedirect: noRedirect}, streamClient: &http.Client{Transport: transport, CheckRedirect: noRedirect}, imageClient: &http.Client{Transport: imageTransport, CheckRedirect: noRedirect}, quotas: map[string]quotaCache{}, lastQuotas: map[string]quotaCache{}, oauth: map[string]oauthSession{}, catalogs: map[string]catalogCache{}, windowWatch: map[string]windowWatch{}}
 	s.handler = s.routes(assets)
 	if cfg.StartWindows {
 		var ctx context.Context
@@ -180,6 +185,9 @@ func (s *server) Close() error {
 	}
 	if s.streamClient != nil {
 		s.streamClient.CloseIdleConnections()
+	}
+	if s.imageClient != nil {
+		s.imageClient.CloseIdleConnections()
 	}
 	return s.store.close()
 }

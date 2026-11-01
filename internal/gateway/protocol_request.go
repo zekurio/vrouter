@@ -90,6 +90,9 @@ type preparedInference struct {
 	accounts []storedAccount
 	// routing names the account tier tried first.
 	routing string
+	// images is the Images API operation, generations or edits, of an image
+	// request. Image requests use none of the protocol fields above.
+	images string
 }
 
 // Select the model before quota admission. The endpoint only selects the
@@ -105,16 +108,8 @@ func (s *server) prepareInference(w http.ResponseWriter, r *http.Request, attemp
 	if ierr != nil {
 		return nil, ierr
 	}
-	p := &preparedInference{client: inferenceProtocol(r.URL.Path), provider: channel, native: native, stream: stream, upstreamStream: stream, routing: routing}
+	p := &preparedInference{client: inferenceProtocol(r.URL.Path), provider: channel, native: native, stream: stream, upstreamStream: stream, routing: routing, accounts: billingPool(accounts, routing)}
 	p.includeUsage = object(payload["stream_options"])["include_usage"] == true
-	// Keep each pool within one billing mode, the one of the first account
-	// in routing order.
-	accounts = routingOrder(accounts, routing, 0)
-	for _, a := range accounts {
-		if a.AuthMode == accounts[0].AuthMode {
-			p.accounts = append(p.accounts, a)
-		}
-	}
 	p.upstream = responsesProtocol
 	if p.provider == "claude" {
 		p.upstream = messagesProtocol
@@ -162,6 +157,19 @@ func readInferencePayload(w http.ResponseWriter, r *http.Request) (map[string]an
 		return nil, "", false, &inferenceError{status: 400, message: "stream must be a boolean"}
 	}
 	return payload, model, stream, nil
+}
+
+// billingPool keeps a pool within one billing mode, the one of the first
+// account in routing order.
+func billingPool(accounts []storedAccount, routing string) []storedAccount {
+	accounts = routingOrder(accounts, routing, 0)
+	var pool []storedAccount
+	for _, a := range accounts {
+		if a.AuthMode == accounts[0].AuthMode {
+			pool = append(pool, a)
+		}
+	}
+	return pool
 }
 
 // inferenceAccountPool returns the one provider channel that advertises the

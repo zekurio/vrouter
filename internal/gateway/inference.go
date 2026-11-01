@@ -59,9 +59,13 @@ func (s *server) authorizeInference(w http.ResponseWriter, r *http.Request) (inf
 // serveInferenceAuthorized selects the model and checks its provider quota.
 // Each supported POST settles usage aggregates, including failed requests.
 func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request, principal inferenceKey) {
-	if r.Method != http.MethodPost || inferenceProtocol(r.URL.Path) == "" {
+	if r.Method != http.MethodPost || inferenceProtocol(r.URL.Path) == "" && imageOperation(r.URL.Path) == "" {
 		s.inference(w, r, principal.UserID)
 		return
+	}
+	prepare, forward := s.prepareInference, s.forwardInference
+	if imageOperation(r.URL.Path) != "" {
+		prepare, forward = s.prepareImages, s.forwardImages
 	}
 	recorder := &attemptWriter{ResponseWriter: w}
 	attempt := &inferenceAttempt{principal: principal, startedAt: time.Now().UTC()}
@@ -76,7 +80,7 @@ func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request
 		writeJSON(w, 503, map[string]string{"error": "Usage accounting is unavailable. Try again shortly."})
 		return
 	}
-	prepared, refused := s.prepareInference(recorder, r, attempt)
+	prepared, refused := prepare(recorder, r, attempt)
 	if refused != nil {
 		writeJSON(recorder, refused.status, refused.body())
 		s.finishAttempt(attempt, recorder)
@@ -98,7 +102,7 @@ func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request
 		s.finishAttempt(attempt, recorder)
 		return
 	}
-	s.forwardInference(recorder, r, attempt, prepared)
+	forward(recorder, r, attempt, prepared)
 	s.finishAttempt(attempt, recorder)
 }
 
@@ -187,8 +191,8 @@ func (s *server) inference(w http.ResponseWriter, r *http.Request, userID string
 		writeJSON(w, 200, map[string]any{"object": "list", "data": data})
 		return
 	}
-	if inferenceProtocol(r.URL.Path) == "" {
-		writeJSON(w, 404, map[string]string{"error": "Supported endpoints are /v1/models, /v1/responses, /v1/messages and /v1/chat/completions"})
+	if inferenceProtocol(r.URL.Path) == "" && imageOperation(r.URL.Path) == "" {
+		writeJSON(w, 404, map[string]string{"error": "Supported endpoints are /v1/models, /v1/responses, /v1/messages, /v1/chat/completions, /v1/images/generations and /v1/images/edits"})
 		return
 	}
 	w.Header().Set("Allow", "POST")

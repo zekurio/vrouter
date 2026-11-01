@@ -179,7 +179,7 @@ Back up the entire data directory with the service stopped, including `usage.sql
 
 OpenAI-compatible clients use `https://your-host/v1` as the base URL. Anthropic clients that append `/v1/messages` use `https://your-host`. In Delta, select Responses and use the base URL with `/v1`.
 
-vrouter serves `/v1/models`, `/v1/responses`, `/v1/messages`, and `/v1/chat/completions`. `/v1beta` is unsupported.
+vrouter serves `/v1/models`, `/v1/responses`, `/v1/messages`, `/v1/chat/completions`, `/v1/images/generations`, and `/v1/images/edits`. `/v1beta` is unsupported.
 
 The model ID picks the provider and the endpoint picks the client protocol. When they differ, vrouter converts text, images, tools, tool results, and streaming events to the provider's format. It returns HTTP 400 for anything it cannot convert.
 
@@ -262,6 +262,16 @@ The effort is a hint, not a thinking token limit, and the output token cap still
 Conversion accepts cache hints and direct tool-call defaults. A failed tool result keeps its content and call ID and gains an error marker.
 
 Clients must replay the complete assistant output when they send tool results. To keep signed reasoning intact across protocols, vrouter carries provider state in Responses `encrypted_content`, Messages `signature`, or the Chat extension `vrouter_reasoning`. The wrapper is base64. Send it back unchanged and stay on the same provider. Chat clients that drop `vrouter_reasoning` break reasoning with tool calls.
+
+### Images
+
+`/v1/images/generations` and `/v1/images/edits` follow the OpenAI Images API and run on Codex and OpenAI accounts. Subscription accounts use the ChatGPT image endpoint that the Codex CLI calls, and API-key accounts use the OpenAI API. Ask for an image model such as `gpt-image-2`. Image models are not listed in `/v1/models`.
+
+Edits take JSON with `images` as a list of `{"image_url": ...}` or `{"file_id": ...}` entries, or the multipart form that the OpenAI SDKs send, with `image`, `image[]` and `mask` files in PNG, JPEG or WebP. vrouter turns uploaded files into data URLs. An image request may be up to 32 MiB.
+
+Images always come back as `b64_json`. vrouter rejects `response_format: "url"` and `stream: true`. For Codex subscription accounts it drops `user` and lists it in `X-Vrouter-Ignored-Parameters`.
+
+ChatGPT plans limit image generation separately, and vrouter does not track that limit. An account that answers HTTP 429 passes the request to the next one, and image requests never spend a usage reset. The usage page counts image tokens, but image models have no list price yet, so they count as unpriced.
 
 ### Claude OAuth
 
