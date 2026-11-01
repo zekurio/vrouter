@@ -20,6 +20,12 @@ const endpoints = [
     note: "OpenAI Chat Completions API",
   },
   { method: "POST", path: "/messages", note: "Anthropic Messages API" },
+  {
+    method: "POST",
+    path: "/images/generations",
+    note: "OpenAI Images API",
+  },
+  { method: "POST", path: "/images/edits", note: "OpenAI image edits" },
 ];
 
 export function HelpDialog({
