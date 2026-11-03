@@ -22,10 +22,11 @@ type claudeProfile struct {
 
 func (p claudeProfile) plan() string {
 	switch strings.ToLower(p.Organization.Tier) {
+	// Anthropic renamed Max 5x to Max and Max 20x to Ultra.
 	case "default_claude_max_5x":
-		return "Max 5x"
+		return "Max"
 	case "default_claude_max_20x":
-		return "Max 20x"
+		return "Ultra"
 	}
 	switch strings.ToLower(p.Organization.Type) {
 	case "claude_pro":

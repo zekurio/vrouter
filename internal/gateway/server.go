@@ -307,10 +307,12 @@ func planName(provider, value string) string {
 	}
 	if provider == "codex" {
 		switch strings.ToLower(value) {
-		case "pro":
-			return "Pro 20x"
 		case "prolite":
-			return "Pro 5x"
+			return "Pro 100"
+		case "pro":
+			return "Pro 200"
+		case "promax":
+			return "Pro 500"
 		}
 	}
 	return strings.ToUpper(value[:1]) + value[1:]

@@ -78,7 +78,7 @@ in
       default = [ "codex:pro*" ];
       example = [
         "codex:pro*"
-        "claude:max 20x"
+        "claude:ultra"
       ];
       description = ''
         Plans that never get an automatic 5-hour window trigger, as plan or
