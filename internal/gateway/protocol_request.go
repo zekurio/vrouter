@@ -138,12 +138,24 @@ func (s *server) prepareInference(w http.ResponseWriter, r *http.Request, attemp
 	return p, nil
 }
 
+// inferenceRequestMax bounds one inference request body. It matches the
+// 32 MB limit of the Anthropic Messages API, since long agent sessions with
+// screenshots grow past 16 MiB.
+const inferenceRequestMax = 32 << 20
+
 func readInferencePayload(w http.ResponseWriter, r *http.Request) (map[string]any, string, bool, *inferenceError) {
 	var payload map[string]any
-	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<20))
+	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, inferenceRequestMax))
 	d.UseNumber()
-	if d.Decode(&payload) != nil || payload == nil || d.Decode(&struct{}{}) != io.EOF {
-		return nil, "", false, &inferenceError{status: 400, message: "Expected a JSON inference request, at most 16 MiB"}
+	err := d.Decode(&payload)
+	if err == nil {
+		err = d.Decode(&struct{}{})
+	}
+	if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
+		return nil, "", false, &inferenceError{status: http.StatusRequestEntityTooLarge, code: "request_too_large", message: "Inference requests are limited to 32 MiB"}
+	}
+	if err != io.EOF || payload == nil {
+		return nil, "", false, &inferenceError{status: 400, message: "Expected a JSON inference request"}
 	}
 	model, ok := payload["model"].(string)
 	if !ok || model == "" {
