@@ -147,9 +147,7 @@ func (s *server) changeAccount(w http.ResponseWriter, r *http.Request, remove bo
 		writeJSON(w, status, map[string]string{"error": "Could not update the saved account"})
 		return
 	}
-	s.catalogMu.Lock()
-	delete(s.catalogs, body.ID)
-	s.catalogMu.Unlock()
+	s.forgetAccountState(body.ID)
 	s.quotaMu.Lock()
 	delete(s.quotas, body.ID)
 	delete(s.lastQuotas, body.ID)

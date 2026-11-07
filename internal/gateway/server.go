@@ -32,6 +32,9 @@ type Config struct {
 	// WindowSkipPlans lists plans that never get a window trigger, as
 	// comma-separated "plan" or "provider:plan". Empty skips the Codex Pro plans.
 	WindowSkipPlans string
+	// PriceCatalog is where list prices come from: empty for models.dev, off
+	// for the built-in prices alone, or the URL of a catalog in its format.
+	PriceCatalog string
 }
 
 // Model is a model offered through the gateway.
@@ -87,9 +90,12 @@ type server struct {
 	oidc         *oidcClient
 	client       *http.Client
 	streamClient *http.Client
-	// imageClient waits longer for response headers. The Images API answers
-	// only once the image is done.
-	imageClient  *http.Client
+	// slowClient waits longer for response headers. A buffered response, an
+	// image included, answers only once it is done.
+	slowClient *http.Client
+	// priceClient downloads the price catalog, which takes a while on a slow
+	// link.
+	priceClient  *http.Client
 	quotaMu      sync.Mutex
 	quotas       map[string]quotaCache
 	quotaPending map[string]chan struct{}
@@ -100,13 +106,32 @@ type server struct {
 	modelMu      sync.Mutex
 	catalogMu    sync.Mutex
 	catalogs     map[string]catalogCache
-	refreshMu    sync.Mutex
-	windowMu     sync.Mutex
-	windowWatch  map[string]windowWatch
-	stopWindows  context.CancelFunc
-	windowsDone  chan struct{}
-	resetMu      sync.Mutex
-	sequence     atomic.Uint64
+	// catalogPending holds a channel per account whose catalog is loading. It
+	// closes when the load ends.
+	catalogPending map[string]chan struct{}
+	refreshMu      sync.Mutex
+	// refreshFailures holds each account's last failed token refresh. Guarded
+	// by refreshMu.
+	refreshFailures map[string]refreshFailure
+	// trouble holds when accounts that just failed on their own may lead the
+	// routing order again. rejected holds the expiry of each access token a
+	// provider refused, so the next request refreshes it first.
+	troubleMu   sync.Mutex
+	trouble     map[string]time.Time
+	rejected    map[string]time.Time
+	windowMu    sync.Mutex
+	windowWatch map[string]windowWatch
+	stopWindows context.CancelFunc
+	windowsDone chan struct{}
+	resetMu     sync.Mutex
+	sequence    atomic.Uint64
+	// background runs work no request waits for, such as price and catalog
+	// refreshes. Close cancels it and waits for the work to end.
+	background     context.Context //nolint:containedctx // lifetime of the server's background work
+	stopBackground context.CancelFunc
+	backgroundMu   sync.Mutex
+	backgroundWG   sync.WaitGroup
+	closing        bool
 }
 
 // DefaultDataDir returns the data directory used when none is configured.
@@ -128,6 +153,10 @@ func New(cfg Config, assets fs.FS) (http.Handler, error) {
 		return nil, err
 	}
 	cfg.PublicURL = publicURL
+	priceSource, err := priceCatalogSource(cfg.PriceCatalog)
+	if err != nil {
+		return nil, err
+	}
 	base, _ := http.DefaultTransport.(*http.Transport)
 	transport := base.Clone()
 	transport.ResponseHeaderTimeout = 60 * time.Second
@@ -146,10 +175,23 @@ func New(cfg Config, assets fs.FS) (http.Handler, error) {
 		return nil, err
 	}
 	noRedirect := func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-	imageTransport := transport.Clone()
-	imageTransport.ResponseHeaderTimeout = 5 * time.Minute
-	s := &server{cfg: cfg, store: store, registry: &registryStore{data: store.data}, oidc: signIn, client: &http.Client{Transport: transport, Timeout: 12 * time.Second, CheckRedirect: noRedirect}, streamClient: &http.Client{Transport: transport, CheckRedirect: noRedirect}, imageClient: &http.Client{Transport: imageTransport, CheckRedirect: noRedirect}, quotas: map[string]quotaCache{}, lastQuotas: map[string]quotaCache{}, oauth: map[string]oauthSession{}, catalogs: map[string]catalogCache{}, windowWatch: map[string]windowWatch{}}
+	slowTransport := transport.Clone()
+	// Anthropic serves a buffered response for up to ten minutes.
+	slowTransport.ResponseHeaderTimeout = 10 * time.Minute
+	s := &server{
+		cfg: cfg, store: store, registry: &registryStore{data: store.data}, oidc: signIn,
+		client:       &http.Client{Transport: transport, Timeout: 12 * time.Second, CheckRedirect: noRedirect},
+		streamClient: &http.Client{Transport: transport, CheckRedirect: noRedirect},
+		slowClient:   &http.Client{Transport: slowTransport, CheckRedirect: noRedirect},
+		priceClient:  &http.Client{Transport: transport, Timeout: time.Minute},
+		quotas:       map[string]quotaCache{}, lastQuotas: map[string]quotaCache{}, oauth: map[string]oauthSession{},
+		catalogs: map[string]catalogCache{}, catalogPending: map[string]chan struct{}{}, refreshFailures: map[string]refreshFailure{},
+		trouble: map[string]time.Time{}, rejected: map[string]time.Time{}, windowWatch: map[string]windowWatch{},
+	}
 	s.handler = s.routes(assets)
+	s.background, s.stopBackground = context.WithCancel(context.Background())
+	watch := s.loadStoredPrices(s.background, priceSource)
+	s.runBackground(func(ctx context.Context) { s.watchPrices(ctx, watch) })
 	if cfg.StartWindows {
 		var ctx context.Context
 		ctx, s.stopWindows = context.WithCancel(context.Background())
@@ -171,6 +213,13 @@ func (s *server) Close() error {
 		s.stopWindows()
 		<-s.windowsDone
 	}
+	if s.stopBackground != nil {
+		s.backgroundMu.Lock()
+		s.closing = true
+		s.backgroundMu.Unlock()
+		s.stopBackground()
+		s.backgroundWG.Wait()
+	}
 	s.oauthMu.Lock()
 	for _, servers := range s.callbacks {
 		for _, srv := range servers {
@@ -186,10 +235,22 @@ func (s *server) Close() error {
 	if s.streamClient != nil {
 		s.streamClient.CloseIdleConnections()
 	}
-	if s.imageClient != nil {
-		s.imageClient.CloseIdleConnections()
+	if s.slowClient != nil {
+		s.slowClient.CloseIdleConnections()
 	}
 	return s.store.close()
+}
+
+// runBackground starts work that outlives the request that asked for it. It
+// reports false once the server is closing.
+func (s *server) runBackground(work func(ctx context.Context)) bool {
+	s.backgroundMu.Lock()
+	defer s.backgroundMu.Unlock()
+	if s.closing {
+		return false
+	}
+	s.backgroundWG.Go(func() { work(s.background) })
+	return true
 }
 
 func (s *server) routes(assets fs.FS) http.Handler {

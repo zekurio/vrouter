@@ -370,9 +370,7 @@ func (s *server) completeOAuth(ctx context.Context, id string, q url.Values) err
 	if err != nil {
 		return fail("Could not save the verified connection")
 	}
-	s.catalogMu.Lock()
-	delete(s.catalogs, a.ID)
-	s.catalogMu.Unlock()
+	s.forgetAccountState(a.ID)
 	s.quotaMu.Lock()
 	delete(s.quotas, a.ID)
 	delete(s.lastQuotas, a.ID)

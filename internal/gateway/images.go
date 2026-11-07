@@ -92,11 +92,15 @@ func (s *server) prepareImages(w http.ResponseWriter, r *http.Request, attempt *
 // readImageRequest reads a JSON request, or the multipart form that OpenAI
 // SDKs send for edits.
 func readImageRequest(w http.ResponseWriter, r *http.Request, operation string) (map[string]any, *inferenceError) {
-	r.Body = http.MaxBytesReader(w, r.Body, imageRequestMax)
+	body := &bodyReader{source: r.Body}
+	r.Body = http.MaxBytesReader(w, body, imageRequestMax)
 	if media, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); operation == "edits" && media == "multipart/form-data" {
 		payload, err := readImageForm(r)
 		if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
 			return nil, &inferenceError{status: 400, message: "Image edits are limited to 32 MiB"}
+		}
+		if body.err != nil {
+			return nil, incompleteBody()
 		}
 		if err != nil {
 			return nil, &inferenceError{status: 400, message: err.Error()}
@@ -107,6 +111,9 @@ func readImageRequest(w http.ResponseWriter, r *http.Request, operation string) 
 	d := json.NewDecoder(r.Body)
 	d.UseNumber()
 	if d.Decode(&payload) != nil || payload == nil || d.Decode(&struct{}{}) != io.EOF {
+		if body.err != nil {
+			return nil, incompleteBody()
+		}
 		return nil, &inferenceError{status: 400, message: "Expected a JSON image request, at most 32 MiB"}
 	}
 	return payload, nil
@@ -274,42 +281,22 @@ func imageReference(value any) bool {
 // forwardImages tries each account once, in routing order. Image generation
 // has a provider limit of its own, apart from the windows vrouter tracks, so
 // those windows neither skip an account nor start a usage reset. An account
-// that answers 429 passes the request to the next one.
+// that fails on its own, such as with a 429, passes the request to the next
+// one.
 func (s *server) forwardImages(w http.ResponseWriter, r *http.Request, attempt *inferenceAttempt, prepared *preparedInference) {
-	candidates := routingOrder(prepared.accounts, prepared.routing, s.sequence.Add(1)-1)
-	for attemptIndex := range candidates {
-		a, err := s.accessAccount(r.Context(), candidates[attemptIndex].ID)
-		if err != nil || !routableAuth(a) {
-			continue
-		}
-		req, err := imageRequest(r.Context(), prepared, a, attempt.id)
-		if err != nil {
-			writeJSON(w, 400, map[string]string{"error": "Invalid image request"})
-			return
-		}
-		attempt.provider, attempt.account = a.Provider, a
-		resp, err := s.imageClient.Do(req)
-		if err != nil {
-			if r.Context().Err() != nil {
-				attempt.cutShort(reasonClientClosed)
-				return
-			}
-			writeJSON(w, 502, map[string]string{"error": "Provider connection failed"})
-			return
-		}
-		if (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) && attemptIndex+1 < len(candidates) {
-			_ = resp.Body.Close()
-			continue
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			noReset := true
-			s.forwardFailure(w, r, resp, prepared, a, &noReset)
-			return
-		}
-		deliverImages(w, r, resp, attempt, a)
-		return
-	}
-	writeJSON(w, 503, map[string]string{"error": "No usable account remains. Reconnect or enable an account."})
+	s.tryAccounts(w, r, attempt, routingOrder(prepared.accounts, prepared.routing, s.sequence.Add(1)-1), forwardPlan{
+		client: s.slowClient,
+		request: func(a storedAccount) (*http.Request, error) {
+			return imageRequest(r.Context(), prepared, a, attempt.id)
+		},
+		invalid: "Invalid image request",
+		deliver: func(resp *http.Response, a storedAccount) { deliverImages(w, r, resp, attempt, a) },
+		keep:    func(resp *http.Response, a storedAccount) *forwardError { return providerFailure(resp, prepared, a) },
+		fail: func(resp *http.Response, a storedAccount) []storedAccount {
+			providerFailure(resp, prepared, a).write(w)
+			return nil
+		},
+	})
 }
 
 // imageRequest builds the Images API request for one account. Subscription

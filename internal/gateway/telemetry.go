@@ -42,9 +42,9 @@ type telemetryRecord struct {
 	InputTokens   int64 `json:"inputTokens"`
 	OutputTokens  int64 `json:"outputTokens"`
 	CachedTokens  int64 `json:"cachedTokens"`
-	// CacheWriteTokens are Claude cache-creation tokens. Like CachedTokens they
-	// are a subset of InputTokens, kept apart because the API bills them at a
-	// different rate.
+	// CacheWriteTokens are Claude cache-creation tokens or OpenAI cache
+	// writes. Like CachedTokens they are a subset of InputTokens, kept apart
+	// because the API bills them at a different rate.
 	CacheWriteTokens int64 `json:"cacheWriteTokens,omitempty"`
 	TotalTokens      int64 `json:"totalTokens"`
 	UsageKnown       bool  `json:"usageKnown"`
@@ -330,6 +330,8 @@ type usagePayload struct {
 	Speed              string `json:"speed"`
 	InputTokensDetails *struct {
 		CachedTokens *int64 `json:"cached_tokens"`
+		// CacheWriteTokens are OpenAI cache writes, a subset of input_tokens.
+		CacheWriteTokens *int64 `json:"cache_write_tokens"`
 	} `json:"input_tokens_details"`
 }
 
@@ -730,7 +732,7 @@ func (u *usageParser) invalidateUsage() {
 // applyUsage folds one cumulative usage sample into the maxima and reports
 // whether it contributed usable counts. Claude counts cache reads and cache
 // writes apart from input_tokens, so they are added to input while cached
-// reads stay a subset of it. A sample with any negative or absurd count is
+// reads stay a subset of it. OpenAI counts both inside input_tokens. A sample with any negative or absurd count is
 // discarded whole, and a sample with no usable fields after earlier counts
 // were seen invalidates those earlier counts: invalid numbers must never look
 // like a trustworthy zero.
@@ -759,6 +761,7 @@ func (u *usageParser) applyUsage(sample *usagePayload) bool {
 	raiseUsageCount(&u.cacheWrite, sample.CacheCreationInputTokens)
 	if sample.InputTokensDetails != nil {
 		seen = raiseUsageCount(&u.cached, sample.InputTokensDetails.CachedTokens) || seen
+		raiseUsageCount(&u.cacheWrite, sample.InputTokensDetails.CacheWriteTokens)
 	}
 	seen = raiseUsageCount(&u.output, sample.OutputTokens) || seen
 	seen = raiseUsageCount(&u.total, sample.TotalTokens) || seen
@@ -776,7 +779,7 @@ func (u *usageParser) applyUsage(sample *usagePayload) bool {
 func usageCountsValid(sample *usagePayload) bool {
 	counts := []*int64{sample.InputTokens, sample.OutputTokens, sample.TotalTokens, sample.CacheReadInputTokens, sample.CacheCreationInputTokens}
 	if sample.InputTokensDetails != nil {
-		counts = append(counts, sample.InputTokensDetails.CachedTokens)
+		counts = append(counts, sample.InputTokensDetails.CachedTokens, sample.InputTokensDetails.CacheWriteTokens)
 	}
 	for _, count := range counts {
 		if count != nil && (*count < 0 || *count > maxTokenCount) {

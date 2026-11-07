@@ -52,7 +52,29 @@ type providerError struct {
 var (
 	errProviderUnavailable = errors.New("provider is unavailable")
 	errProviderTimeout     = errors.New("provider request timed out")
+	// The account itself cannot serve until someone acts on it.
+	errAccountDisabled = errors.New("account is no longer enabled")
+	errAccountAuth     = errors.New("unsupported account authentication; add the account using Codex sign-in")
+	errAccountSignIn   = errors.New("account needs sign-in")
 )
+
+// refreshFailureCooldown spaces token refreshes after one fails, so requests
+// do not queue behind a token endpoint that is down.
+const refreshFailureCooldown = 30 * time.Second
+
+type refreshFailure struct {
+	at  time.Time
+	err error
+}
+
+// accountRefused reports whether an error says the account's credentials or
+// access failed, as opposed to the provider or the network.
+func accountRefused(err error) bool {
+	if httpError, ok := errors.AsType[*providerError](err); ok {
+		return httpError.Status >= 400 && httpError.Status < 500 && httpError.Status != http.StatusRequestTimeout && httpError.Status != http.StatusTooManyRequests
+	}
+	return errors.Is(err, errAccountDisabled) || errors.Is(err, errAccountAuth) || errors.Is(err, errAccountSignIn)
+}
 
 func providerHTTPError(resp *http.Response) *providerError {
 	e := &providerError{Status: resp.StatusCode}
@@ -124,7 +146,7 @@ func (s *server) accessAccount(ctx context.Context, id string) (storedAccount, e
 		return storedAccount{}, err
 	}
 	for _, a := range s.store.snapshot().Accounts {
-		if a.ID == id && !a.Disabled && routableAuth(a) && accountTokenFresh(a) {
+		if a.ID == id && !a.Disabled && routableAuth(a) && s.tokenUsable(a) {
 			return a, nil
 		}
 	}
@@ -145,18 +167,52 @@ func (s *server) accessAccount(ctx context.Context, id string) (storedAccount, e
 		}
 	}
 	if !found || a.Disabled {
-		return a, errors.New("account is no longer enabled")
+		return a, errAccountDisabled
 	}
 	if !routableAuth(a) {
-		return a, errors.New("unsupported account authentication; add the account using Codex sign-in")
+		return a, errAccountAuth
 	}
-	if accountTokenFresh(a) {
+	if s.tokenUsable(a) {
 		return a, nil
 	}
 	if a.RefreshToken == "" {
-		return a, errors.New("account needs sign-in")
+		return a, errAccountSignIn
 	}
-	return s.refreshAccount(ctx, a)
+	return s.refreshOrKeep(ctx, a)
+}
+
+// tokenUsable reports whether an account's access token is fresh and was not
+// refused by its provider.
+func (s *server) tokenUsable(a storedAccount) bool {
+	return accountTokenFresh(a) && !s.tokenRejected(a)
+}
+
+// refreshOrKeep refreshes an expiring or refused token. After a failure it
+// waits out a cooldown before trying again, and an expiring token serves
+// while it lasts. The caller holds refreshMu.
+func (s *server) refreshOrKeep(ctx context.Context, a storedAccount) (storedAccount, error) {
+	if failure, ok := s.refreshFailures[a.ID]; ok && time.Since(failure.at) < refreshFailureCooldown {
+		return s.tokenStillValid(a, failure.err)
+	}
+	refreshed, err := s.refreshAccount(ctx, a)
+	if err == nil {
+		delete(s.refreshFailures, a.ID)
+		return refreshed, nil
+	}
+	if ctx.Err() != nil {
+		return a, err
+	}
+	s.refreshFailures[a.ID] = refreshFailure{at: time.Now(), err: err}
+	return s.tokenStillValid(a, err)
+}
+
+// tokenStillValid lets an access token serve out its last minute when a
+// refresh failed, unless the provider already refused it.
+func (s *server) tokenStillValid(a storedAccount, err error) (storedAccount, error) {
+	if a.AccessToken != "" && time.Now().Before(a.ExpiresAt) && !s.tokenRejected(a) {
+		return a, nil
+	}
+	return a, err
 }
 
 // refreshAccount rotates an expired access token and saves it. The caller

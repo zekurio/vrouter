@@ -23,7 +23,8 @@ const usageMetaSchema = `CREATE TABLE IF NOT EXISTS usage_meta (id INTEGER PRIMA
 // user's history reads oldest first without a sort. usage_requests is the
 // bounded log behind the Requests view. An empty user_id is a key no user owns.
 // sessions holds the hashes of dashboard sign-ins. quota_history holds each
-// account's reported quota windows; see quota_history.go.
+// account's reported quota windows; see quota_history.go. price_catalog holds
+// the last list prices read from models.dev; see price_catalog.go.
 const usageSchema = `
 CREATE TABLE IF NOT EXISTS usage_pending (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, key_id TEXT NOT NULL, key_name TEXT NOT NULL, model TEXT NOT NULL, provider TEXT NOT NULL, started INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS usage_keys (key_id TEXT PRIMARY KEY, requests INTEGER NOT NULL, tokens INTEGER NOT NULL);
@@ -41,6 +42,7 @@ CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, user_id TEXT NOT NUL
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 CREATE TABLE IF NOT EXISTS quota_history (account_id TEXT NOT NULL, window_id TEXT NOT NULL, since INTEGER NOT NULL, until INTEGER NOT NULL, remaining REAL NOT NULL, reset_at INTEGER NOT NULL, PRIMARY KEY(account_id,window_id,since)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS quota_history_until ON quota_history(until);
+CREATE TABLE IF NOT EXISTS price_catalog (id INTEGER PRIMARY KEY CHECK(id=1), source TEXT NOT NULL, etag TEXT NOT NULL, checked INTEGER NOT NULL, body TEXT NOT NULL);
 `
 
 const (
@@ -52,7 +54,8 @@ const (
 )
 
 type usageStore struct {
-	db *sql.DB
+	db     *sql.DB
+	prices *usagePrices
 }
 
 func openUsageStore(dir string) (*usageStore, error) {
@@ -81,7 +84,7 @@ func openUsageStore(dir string) (*usageStore, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	s := &usageStore{db: db}
+	s := &usageStore{db: db, prices: newUsagePrices()}
 	if err := s.initialize(); err != nil {
 		_ = db.Close()
 		return nil, err

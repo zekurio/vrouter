@@ -82,8 +82,10 @@ func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request
 	}
 	prepared, refused := prepare(recorder, r, attempt)
 	if refused != nil {
-		writeJSON(recorder, refused.status, refused.body())
-		s.finishAttempt(attempt, recorder)
+		if refused.clientGone {
+			attempt.cutShort(reasonClientClosed)
+		}
+		s.refuseAttempt(r, attempt, recorder, refused.status, refused.body())
 		return
 	}
 	if len(prepared.ignoredParameters) > 0 {
@@ -92,17 +94,25 @@ func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request
 	principal.Provider = prepared.provider
 	attempt.principal = principal
 	if err := s.store.data.usage.identify(r.Context(), id, boundedField(attempt.model), prepared.provider); err != nil {
-		writeJSON(recorder, 503, map[string]string{"error": "Usage accounting is unavailable. Try again shortly."})
-		s.finishAttempt(attempt, recorder)
+		s.refuseAttempt(r, attempt, recorder, 503, map[string]string{"error": "Usage accounting is unavailable. Try again shortly."})
 		return
 	}
 	if allowed, status, message := s.reserve(principal); !allowed {
 		attempt.outcome = outcomeError
-		writeJSON(recorder, status, map[string]string{"error": message})
-		s.finishAttempt(attempt, recorder)
+		s.refuseAttempt(r, attempt, recorder, status, map[string]string{"error": message})
 		return
 	}
 	forward(recorder, r, attempt, prepared)
+	s.finishAttempt(attempt, recorder)
+}
+
+// refuseAttempt answers a request vrouter will not forward. A client that
+// already left cut the request short; nothing failed.
+func (s *server) refuseAttempt(r *http.Request, attempt *inferenceAttempt, recorder *attemptWriter, status int, body any) {
+	if r.Context().Err() != nil {
+		attempt.cutShort(reasonClientClosed)
+	}
+	writeJSON(recorder, status, body)
 	s.finishAttempt(attempt, recorder)
 }
 
@@ -213,6 +223,10 @@ func (s *server) forwardInference(w http.ResponseWriter, r *http.Request, attemp
 		resetTried = true
 		candidates = s.resetExhaustedPool(r.Context(), pool, native)
 		if len(candidates) == 0 {
+			if r.Context().Err() != nil {
+				attempt.cutShort(reasonClientClosed)
+				return
+			}
 			w.Header().Set("Retry-After", "60")
 			writeJSON(w, 429, map[string]string{"error": "Account usage limits reached; no usable reset was confirmed. Usage will be checked again automatically."})
 			return
@@ -224,40 +238,28 @@ func (s *server) forwardInference(w http.ResponseWriter, r *http.Request, attemp
 }
 
 // forwardRotation tries each candidate once, in routing order: the preferred
-// tier first, each tier starting at its next rotation slot. It returns the
-// accounts a usage reset recovered when the request should be retried with
-// them; otherwise the response has been written.
+// tier first, each tier starting at its next rotation slot, with accounts that
+// just failed last. It returns the accounts a usage reset recovered when the
+// request should be retried with them; otherwise the response has been
+// written.
 func (s *server) forwardRotation(w http.ResponseWriter, r *http.Request, attempt *inferenceAttempt, prepared *preparedInference, candidates []storedAccount, resetTried *bool) []storedAccount {
-	candidates = routingOrder(candidates, prepared.routing, s.sequence.Add(1)-1)
-	for attemptIndex := range candidates {
-		a, err := s.accessAccount(r.Context(), candidates[attemptIndex].ID)
-		if err != nil || !routableAuth(a) {
-			continue
-		}
-		req, err := forwardRequest(r, prepared, a)
-		if err != nil {
-			writeJSON(w, 400, map[string]string{"error": "Invalid inference request"})
-			return nil
-		}
-		attempt.provider, attempt.account = a.Provider, a
-		resp, err := s.streamClient.Do(req)
-		if err != nil {
-			writeJSON(w, 502, map[string]string{"error": "Provider connection failed"})
-			return nil
-		}
-		if (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable) && attemptIndex+1 < len(candidates) {
-			_ = resp.Body.Close()
-			continue
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return s.forwardFailure(w, r, resp, prepared, a, resetTried)
-		}
-		attempt.usage.begin(prepared.upstreamStream)
-		s.deliverInference(w, r, resp, attempt, prepared, a)
-		return nil
+	client := s.streamClient
+	if !prepared.upstreamStream {
+		client = s.slowClient
 	}
-	writeJSON(w, 503, map[string]string{"error": "No usable account remains. Reconnect or enable an account."})
-	return nil
+	return s.tryAccounts(w, r, attempt, routingOrder(candidates, prepared.routing, s.sequence.Add(1)-1), forwardPlan{
+		client:  client,
+		request: func(a storedAccount) (*http.Request, error) { return forwardRequest(r, prepared, a) },
+		invalid: "Invalid inference request",
+		deliver: func(resp *http.Response, a storedAccount) {
+			attempt.usage.begin(prepared.upstreamStream)
+			s.deliverInference(w, r, resp, attempt, prepared, a)
+		},
+		keep: func(resp *http.Response, a storedAccount) *forwardError { return providerFailure(resp, prepared, a) },
+		fail: func(resp *http.Response, a storedAccount) []storedAccount {
+			return s.forwardFailure(w, r, resp, prepared, a, resetTried)
+		},
+	})
 }
 
 // forwardRequest builds the provider request for one account.
@@ -300,27 +302,31 @@ func forwardRequest(r *http.Request, prepared *preparedInference, a storedAccoun
 	return req, nil
 }
 
+// providerFailure reads a failed provider response into the error relayed to
+// the client, and closes its body.
+func providerFailure(resp *http.Response, prepared *preparedInference, a storedAccount) *forwardError {
+	body := readProviderError(resp, a)
+	if prepared.fast {
+		explainFastModeError(body, prepared.provider, resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	status := resp.StatusCode
+	if status >= 300 && status < 400 {
+		status = 502
+	}
+	return &forwardError{status: status, body: body, retryAfter: resp.Header.Get("Retry-After")}
+}
+
 // forwardFailure relays a provider error. A 429 from a subscription account
 // first tries one usage reset, and returns the recovered accounts to retry.
 func (s *server) forwardFailure(w http.ResponseWriter, r *http.Request, resp *http.Response, prepared *preparedInference, a storedAccount, resetTried *bool) []storedAccount {
-	providerError := readProviderError(resp, a)
-	if prepared.fast {
-		explainFastModeError(providerError, prepared.provider, resp.StatusCode)
-	}
-	_ = resp.Body.Close()
+	failure := providerFailure(resp, prepared, a)
 	if resp.StatusCode == http.StatusTooManyRequests && !*resetTried && nativeUsage(a) {
 		*resetTried = true
 		if candidates := s.resetExhaustedPool(r.Context(), prepared.accounts, prepared.native); len(candidates) > 0 {
 			return candidates
 		}
 	}
-	if retry := resp.Header.Get("Retry-After"); retry != "" {
-		w.Header().Set("Retry-After", retry)
-	}
-	status := resp.StatusCode
-	if status >= 300 && status < 400 {
-		status = 502
-	}
-	writeJSON(w, status, providerError)
+	failure.write(w)
 	return nil
 }

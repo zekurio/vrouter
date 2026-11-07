@@ -75,7 +75,6 @@ export type Usage = {
   keys: Group[];
   scopes: Group[];
   users: Group[] | undefined;
-  days: Group[];
   series: Record<Interval, Bucket[]>;
   // Less than two days of usage reads better by the hour.
   recent: boolean;
@@ -141,9 +140,6 @@ export function summarize(report: UsageReport, now = Date.now()): Usage {
     keys: report.keys,
     scopes: report.scopes,
     users: report.users,
-    days: report.days
-      .map((day) => ({ ...day, name: String(day.start), provider: "" }))
-      .toReversed(),
     series: {
       hour: [...series.hour.values()],
       day: [...series.day.values()],

@@ -40,6 +40,7 @@ vrouter does not load `.env` files. Export variables or set them in your service
 | `VROUTER_OIDC_CLIENT_SECRET_FILE` | A file that holds the client secret, in place of `VROUTER_OIDC_CLIENT_SECRET` |
 | `VROUTER_OIDC_NAME` | The provider's name on the sign-in page, such as `Pocket ID`. Defaults to the issuer's host |
 | `VROUTER_WINDOW_SKIP_PLANS` | Plans that never get an automatic 5-hour window trigger, default `codex:pro*` |
+| `VROUTER_PRICE_CATALOG` | Where the Usage page's list prices come from. Empty reads [models.dev](https://models.dev), `off` uses only the prices built into vrouter, and any other value is the URL of a catalog in the models.dev format |
 
 `VROUTER_ADMIN_TOKEN`, `VROUTER_EXTERNAL_AUTH`, and `VROUTER_OIDC_GROUPS` were removed. vrouter refuses to start while any of them is set, so an old configuration fails loudly instead of locking people out or leaving the dashboard open.
 
@@ -59,7 +60,9 @@ The first admin who signs in adopts every API key from before users existed, alo
 
 A shared account serves every user's API keys. Only admins add, reconnect, disable, or remove shared accounts. A personal account serves only its owner's keys, and only the owner can see or change it.
 
-The routing order on the Accounts page applies to everyone. With personal accounts first, a request goes to the key owner's personal accounts and falls back to shared accounts when the personal ones lack the model, are over their limits, or return a rate limit error. Shared accounts first works the other way round. Requests rotate across the accounts within each group the way they rotate across a provider pool.
+The routing order on the Accounts page applies to everyone. With personal accounts first, a request goes to the key owner's personal accounts and falls back to shared accounts when the personal ones lack the model, are over their limits, or fail on their own: a rate limit, refused credentials, a provider outage or overload, or a dropped connection. Shared accounts first works the other way round. Requests rotate across the accounts within each group the way they rotate across a provider pool. An account that just failed moves to the back of the order for 30 seconds, or for as long as its rate limit's `Retry-After` asks, up to five minutes. When a provider refuses an access token that has not expired yet, vrouter refreshes it before the account's next request.
+
+vrouter keeps each account's model catalog for a minute and then reloads it in the background. When a provider fails to list its models, the last list it sent keeps serving for up to six hours, unless the provider refused the account's credentials. A failed token refresh is retried after 30 seconds, and the old token serves until it expires.
 
 Each provider account connects to vrouter once. Signing in to an account that is already connected under another owner fails, because both records would rotate the same refresh token. Its current owner has to remove it first.
 
@@ -165,7 +168,9 @@ Keys have no usage limits. vrouter counts each authenticated inference attempt w
 
 Usage lives in `usage.sqlite` in the data directory. Credentials and configuration stay in `vrouter.json`. SQLite uses WAL mode and durable transactions; inference accounting does not rewrite the configuration file. The first run with SQLite starts fresh usage history and discards the old JSON request log and key counters while preserving accounts, keys, and settings.
 
-The Usage page shows what your requests would cost at public API list prices: the total, the cost over time, and the split by token type, speed tier, model, key, account type, and day. The totals cover every request since the database was created. They survive restarts and never decrease.
+The Usage page shows what your requests would cost at public API list prices: the total, the cost over time, and the split by token type, speed tier, model, key, and account type. The totals cover every request since the database was created. They survive restarts and never decrease.
+
+Prices come from [models.dev](https://models.dev). vrouter downloads its catalog at startup and then twice a day, asks again within the hour when a request uses a model it has no price for, and keeps a copy in `usage.sqlite` for restarts without network. Models the catalog lacks fall back to prices built into vrouter. A request is priced when it finishes. A model that later gets a price also prices its earlier unpriced usage, though cache writes in that usage count at the input rate and long-prompt surcharges do not apply. Set `VROUTER_PRICE_CATALOG=off` to keep vrouter from contacting models.dev.
 
 Admins can switch the page to everyone's usage, which adds a split by user. Requests that other people sent through their personal accounts show no account name there.
 
@@ -271,7 +276,7 @@ Edits take JSON with `images` as a list of `{"image_url": ...}` or `{"file_id": 
 
 Images always come back as `b64_json`. vrouter rejects `response_format: "url"` and `stream: true`. For Codex subscription accounts it drops `user` and lists it in `X-Vrouter-Ignored-Parameters`.
 
-ChatGPT plans limit image generation separately, and vrouter does not track that limit. An account that answers HTTP 429 passes the request to the next one, and image requests never spend a usage reset. The usage page counts image tokens, but image models have no list price yet, so they count as unpriced.
+ChatGPT plans limit image generation separately, and vrouter does not track that limit. An account that answers HTTP 429, or fails on its own in another way, passes the request to the next one, and image requests never spend a usage reset. The usage page prices image tokens with the model's models.dev entry, which lists only the text input rate, so edits that send images come out a little low. A model without an entry counts as unpriced.
 
 ### Claude OAuth
 

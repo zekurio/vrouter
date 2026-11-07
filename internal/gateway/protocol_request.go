@@ -50,6 +50,30 @@ type inferenceError struct {
 	status  int
 	message string
 	code    string
+	// clientGone marks a request whose client left before its body arrived.
+	clientGone bool
+}
+
+// bodyReader remembers why reading a request body failed, other than at its
+// end. A failed read means the client left before sending all of it.
+type bodyReader struct {
+	source io.ReadCloser
+	err    error
+}
+
+func (b *bodyReader) Read(p []byte) (int, error) {
+	n, err := b.source.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) && b.err == nil {
+		b.err = err
+	}
+	return n, err
+}
+
+func (b *bodyReader) Close() error { return b.source.Close() }
+
+// incompleteBody refuses a request whose client left mid-upload.
+func incompleteBody() *inferenceError {
+	return &inferenceError{status: 400, message: "The request body did not arrive completely", clientGone: true}
 }
 
 func invalidRequest(err error) *inferenceError {
@@ -145,7 +169,8 @@ const inferenceRequestMax = 32 << 20
 
 func readInferencePayload(w http.ResponseWriter, r *http.Request) (map[string]any, string, bool, *inferenceError) {
 	var payload map[string]any
-	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, inferenceRequestMax))
+	body := &bodyReader{source: r.Body}
+	d := json.NewDecoder(http.MaxBytesReader(w, body, inferenceRequestMax))
 	d.UseNumber()
 	err := d.Decode(&payload)
 	if err == nil {
@@ -153,6 +178,9 @@ func readInferencePayload(w http.ResponseWriter, r *http.Request) (map[string]an
 	}
 	if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
 		return nil, "", false, &inferenceError{status: http.StatusRequestEntityTooLarge, code: "request_too_large", message: "Inference requests are limited to 32 MiB"}
+	}
+	if body.err != nil {
+		return nil, "", false, incompleteBody()
 	}
 	if err != io.EOF || payload == nil {
 		return nil, "", false, &inferenceError{status: 400, message: "Expected a JSON inference request"}

@@ -1,5 +1,5 @@
 // The usage page's breakdowns: cost split by type and by tier, and the panel
-// that groups usage by model, key, user, account or day, or lists requests.
+// that groups usage by model, key, user or account, or lists requests.
 import type { CSSProperties } from "react";
 import { series } from "./CostChart";
 import {
@@ -17,7 +17,6 @@ import {
   compact,
   costTypeLabel,
   costTypes,
-  dayLabel,
   money,
   share,
   type Group,
@@ -26,13 +25,12 @@ import {
 } from "./usage";
 
 // What a breakdown table groups the usage by.
-export type GroupView = "model" | "key" | "scope" | "user" | "day";
+export type GroupView = "model" | "key" | "scope" | "user";
 const groupHeading: Record<GroupView, string> = {
   model: "Model",
   key: "Key",
   user: "User",
   scope: "Account type",
-  day: "Day",
 };
 
 export type View = GroupView | "requests";
@@ -45,7 +43,6 @@ const views: { value: View; label: string }[] = [
   { value: "key", label: "Key" },
   { value: "user", label: "User" },
   { value: "scope", label: "Account" },
-  { value: "day", label: "Day" },
   { value: "requests", label: "Requests" },
 ];
 
@@ -109,13 +106,7 @@ function GroupTable({
                   {view === "model" && (
                     <ProviderBrand provider={g.provider} small />
                   )}
-                  {view === "day" ? (
-                    dayLabel(Number(g.name))
-                  ) : view === "user" ? (
-                    <Private peek>{g.name}</Private>
-                  ) : (
-                    g.name
-                  )}
+                  {view === "user" ? <Private peek>{g.name}</Private> : g.name}
                 </span>
                 {peak > 0 && g.cost > 0 && (
                   <span
@@ -169,7 +160,6 @@ export function Breakdown({
     key: usage.keys,
     user: usage.users ?? [],
     scope: usage.scopes,
-    day: usage.days,
   };
   return (
     // Phones narrow the sides and top, but the table keeps its short bottom.

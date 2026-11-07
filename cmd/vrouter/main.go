@@ -31,6 +31,7 @@ func main() {
 		},
 		StartWindows:    true,
 		WindowSkipPlans: os.Getenv("VROUTER_WINDOW_SKIP_PLANS"),
+		PriceCatalog:    os.Getenv("VROUTER_PRICE_CATALOG"),
 	}
 	if len(os.Args) > 1 {
 		if os.Args[1] != "import" || len(os.Args) < 3 {

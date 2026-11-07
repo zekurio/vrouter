@@ -16,11 +16,11 @@ func usageColumns() []string {
 
 // usageCounts is what one request adds to its bucket, in usageColumns order.
 // A request without a trustworthy usage report adds no tokens and no cost.
-func usageCounts(r telemetryRecord) []any {
+func usageCounts(r telemetryRecord, prices *usagePrices) []any {
 	if !r.UsageKnown {
 		return []any{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 	}
-	cost, priced := usagePrice(r)
+	cost, priced := prices.price(r)
 	unpriced := 1
 	if priced {
 		unpriced = 0
@@ -67,7 +67,7 @@ func (s *usageStore) settle(ctx context.Context, r telemetryRecord, accepted boo
 	}
 	now := time.Now().UTC()
 	bucket := []any{r.UserID, now.Unix() / usageBucketSeconds * usageBucketSeconds, r.Provider, r.Model, r.KeyID, r.Speed, r.AccountScope, r.KeyName}
-	if _, err := tx.ExecContext(ctx, usageUpsert(), append(bucket, usageCounts(r)...)...); err != nil {
+	if _, err := tx.ExecContext(ctx, usageUpsert(), append(bucket, usageCounts(r, s.prices)...)...); err != nil {
 		return err
 	}
 	if accepted && r.KeyID != "" {
