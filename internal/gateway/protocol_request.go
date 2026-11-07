@@ -55,14 +55,23 @@ type inferenceError struct {
 }
 
 // bodyReader remembers why reading a request body failed, other than at its
-// end. A failed read means the client left before sending all of it.
+// end. A failed read means the client left before sending all of it. It also
+// keeps the first bytes, so a body that cannot be read whole can still name
+// its model.
 type bodyReader struct {
 	source io.ReadCloser
 	err    error
+	head   []byte
 }
+
+// bodyHeadMax bounds the start of a request body kept for headModel.
+const bodyHeadMax = 64 << 10
 
 func (b *bodyReader) Read(p []byte) (int, error) {
 	n, err := b.source.Read(p)
+	if room := bodyHeadMax - len(b.head); room > 0 && n > 0 {
+		b.head = append(b.head, p[:min(n, room)]...)
+	}
 	if err != nil && !errors.Is(err, io.EOF) && b.err == nil {
 		b.err = err
 	}
@@ -70,6 +79,34 @@ func (b *bodyReader) Read(p []byte) (int, error) {
 }
 
 func (b *bodyReader) Close() error { return b.source.Close() }
+
+// headModel reads the top-level model string from the start of a JSON object
+// that could not be read whole: one over the size limit, cut off, or
+// malformed further on. Clients usually send the model before the messages,
+// so the first bytes tend to hold it. It returns "" when they do not.
+func headModel(head []byte) string {
+	d := json.NewDecoder(bytes.NewReader(head))
+	if token, err := d.Token(); err != nil || token != json.Delim('{') {
+		return ""
+	}
+	for d.More() {
+		key, err := d.Token()
+		if err != nil {
+			return ""
+		}
+		if key == "model" {
+			value, err := d.Token()
+			if model, ok := value.(string); err == nil && ok {
+				return boundedField(model)
+			}
+			return ""
+		}
+		if d.Decode(&json.RawMessage{}) != nil {
+			return ""
+		}
+	}
+	return ""
+}
 
 // incompleteBody refuses a request whose client left mid-upload.
 func incompleteBody() *inferenceError {
@@ -123,10 +160,10 @@ type preparedInference struct {
 // client protocol. It does not select the provider or its quota.
 func (s *server) prepareInference(w http.ResponseWriter, r *http.Request, attempt *inferenceAttempt) (*preparedInference, *inferenceError) {
 	payload, model, stream, ierr := readInferencePayload(w, r)
+	attempt.model, attempt.stream = model, stream
 	if ierr != nil {
 		return nil, ierr
 	}
-	attempt.model, attempt.stream = model, stream
 	routing := s.store.snapshot().Routing
 	channel, native, accounts, ierr := s.inferenceAccountPool(r.Context(), attempt.principal.UserID, model)
 	if ierr != nil {
@@ -167,6 +204,8 @@ func (s *server) prepareInference(w http.ResponseWriter, r *http.Request, attemp
 // screenshots grow past 16 MiB.
 const inferenceRequestMax = 32 << 20
 
+// readInferencePayload reads the request. A request it refuses still names
+// its model when the model could be read.
 func readInferencePayload(w http.ResponseWriter, r *http.Request) (map[string]any, string, bool, *inferenceError) {
 	var payload map[string]any
 	body := &bodyReader{source: r.Body}
@@ -176,14 +215,15 @@ func readInferencePayload(w http.ResponseWriter, r *http.Request) (map[string]an
 	if err == nil {
 		err = d.Decode(&struct{}{})
 	}
-	if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
-		return nil, "", false, &inferenceError{status: http.StatusRequestEntityTooLarge, code: "request_too_large", message: "Inference requests are limited to 32 MiB"}
-	}
-	if body.err != nil {
-		return nil, "", false, incompleteBody()
-	}
 	if err != io.EOF || payload == nil {
-		return nil, "", false, &inferenceError{status: 400, message: "Expected a JSON inference request"}
+		model := headModel(body.head)
+		if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
+			return nil, model, false, &inferenceError{status: http.StatusRequestEntityTooLarge, code: "request_too_large", message: "Inference requests are limited to 32 MiB"}
+		}
+		if body.err != nil {
+			return nil, model, false, incompleteBody()
+		}
+		return nil, model, false, &inferenceError{status: 400, message: "Expected a JSON inference request"}
 	}
 	model, ok := payload["model"].(string)
 	if !ok || model == "" {
@@ -194,7 +234,7 @@ func readInferencePayload(w http.ResponseWriter, r *http.Request) (map[string]an
 		// JSON null means omitted, as for every other field.
 		delete(payload, "stream")
 	} else if stream, ok = value.(bool); !ok {
-		return nil, "", false, &inferenceError{status: 400, message: "stream must be a boolean"}
+		return nil, model, false, &inferenceError{status: 400, message: "stream must be a boolean"}
 	}
 	return payload, model, stream, nil
 }

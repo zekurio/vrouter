@@ -43,8 +43,9 @@ func imageOperation(path string) string {
 // subscription accounts that the OpenAI API serves to API keys.
 func (s *server) prepareImages(w http.ResponseWriter, r *http.Request, attempt *inferenceAttempt) (*preparedInference, *inferenceError) {
 	operation := imageOperation(r.URL.Path)
-	payload, ierr := readImageRequest(w, r, operation)
+	payload, hint, ierr := readImageRequest(w, r, operation)
 	if ierr != nil {
+		attempt.model = hint
 		return nil, ierr
 	}
 	model := str(payload["model"])
@@ -90,33 +91,34 @@ func (s *server) prepareImages(w http.ResponseWriter, r *http.Request, attempt *
 }
 
 // readImageRequest reads a JSON request, or the multipart form that OpenAI
-// SDKs send for edits.
-func readImageRequest(w http.ResponseWriter, r *http.Request, operation string) (map[string]any, *inferenceError) {
+// SDKs send for edits. When it refuses a JSON request it still returns the
+// model the request named, if it could read one.
+func readImageRequest(w http.ResponseWriter, r *http.Request, operation string) (map[string]any, string, *inferenceError) {
 	body := &bodyReader{source: r.Body}
 	r.Body = http.MaxBytesReader(w, body, imageRequestMax)
 	if media, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); operation == "edits" && media == "multipart/form-data" {
 		payload, err := readImageForm(r)
 		if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
-			return nil, &inferenceError{status: 400, message: "Image edits are limited to 32 MiB"}
+			return nil, "", &inferenceError{status: 400, message: "Image edits are limited to 32 MiB"}
 		}
 		if body.err != nil {
-			return nil, incompleteBody()
+			return nil, "", incompleteBody()
 		}
 		if err != nil {
-			return nil, &inferenceError{status: 400, message: err.Error()}
+			return nil, "", &inferenceError{status: 400, message: err.Error()}
 		}
-		return payload, nil
+		return payload, "", nil
 	}
 	var payload map[string]any
 	d := json.NewDecoder(r.Body)
 	d.UseNumber()
 	if d.Decode(&payload) != nil || payload == nil || d.Decode(&struct{}{}) != io.EOF {
 		if body.err != nil {
-			return nil, incompleteBody()
+			return nil, headModel(body.head), incompleteBody()
 		}
-		return nil, &inferenceError{status: 400, message: "Expected a JSON image request, at most 32 MiB"}
+		return nil, headModel(body.head), &inferenceError{status: 400, message: "Expected a JSON image request, at most 32 MiB"}
 	}
-	return payload, nil
+	return payload, "", nil
 }
 
 // readImageForm turns a multipart edit into the JSON request. Image files
