@@ -3,7 +3,7 @@ import { LogIn, Plus, Trash2 } from "lucide-react";
 import { ConnectDialog, connectable, type Scope } from "./ConnectDialog";
 import { ProviderBrand, providerLabel, providerStyle } from "./ProviderBrand";
 import { Private, usePrivateLabel } from "./Privacy";
-import { AccountWindows, type QuotaWindow } from "./Quota";
+import { AccountWindows, QuotaIssue, type QuotaWindow } from "./Quota";
 import { errorMessage, type APIRequest } from "./api";
 import { RemoveAccountDialog } from "./RemoveAccountDialog";
 import { RoutingPanel } from "./RoutingPanel";
@@ -41,6 +41,8 @@ export type Account = {
   windows?: QuotaWindow[];
   quotaUpdatedAt?: string;
   quotaError?: string;
+  // When vrouter next reads usage after quotaError.
+  quotaRetryAt?: string;
   availableResets?: number;
 };
 type Props = {
@@ -361,9 +363,12 @@ function AccountRow({
       {/* The name plus one secondary line, matching the quota block, centred
           as a block so a name-only account sits on the row's midline. */}
       <div className="flex min-h-11.5 flex-col justify-center max-lg:min-h-0">
-        <h3 className={cx(accountName, !on && "opacity-50")}>
-          <Private peek>{accountLabel(a)}</Private>
-        </h3>
+        <div className="relative flex items-center gap-2">
+          <h3 className={cx(accountName, "min-w-0", !on && "opacity-50")}>
+            <Private peek>{accountLabel(a)}</Private>
+          </h3>
+          <QuotaIssue account={a} />
+        </div>
         {a.availableResets !== undefined && (
           <p className={cx(rowNote, "text-muted")}>
             {a.availableResets} usage{" "}
@@ -388,7 +393,7 @@ function AccountRow({
       <span className={cx(plan, !on && "opacity-50")}>{a.plan}</span>
       <AccountWindows
         windows={a.windows ?? []}
-        quotaError={a.quotaError ?? ""}
+        failed={(a.quotaError ?? "") !== ""}
         off={!on}
       />
       <div className="flex justify-end gap-1.5 max-lg:col-start-3 max-lg:row-start-1 max-lg:-mt-1.75">

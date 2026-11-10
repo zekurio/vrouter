@@ -71,6 +71,7 @@ type Account struct {
 	Windows         []QuotaWindow `json:"windows,omitempty"`
 	QuotaUpdatedAt  *time.Time    `json:"quotaUpdatedAt,omitempty"`
 	QuotaError      string        `json:"quotaError,omitempty"`
+	QuotaRetryAt    *time.Time    `json:"quotaRetryAt,omitempty"` // next usage read after QuotaError
 	AvailableResets *int          `json:"availableResets,omitempty"`
 }
 

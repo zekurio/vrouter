@@ -49,7 +49,7 @@ func quotaFailure(err error, now time.Time) (string, time.Time) {
 		}
 		switch httpError.Status {
 		case 429:
-			return "Provider usage is rate limited. Retrying after the cooldown.", retryAt
+			return "The provider is rate limiting usage requests (HTTP 429).", retryAt
 		case 401:
 			return "Provider rejected this account's credentials (HTTP 401). Reconnect this account if it persists.", retryAt
 		case 403:

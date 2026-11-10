@@ -3,7 +3,7 @@ import type { APIRequest } from "./api";
 import { badgeRow, ScopeBadge } from "./Badge";
 import { card, PoolCard, ProjectionBasis } from "./PoolCard";
 import { Private } from "./Privacy";
-import { QuotaWindows } from "./Quota";
+import { QuotaIssue, QuotaWindows } from "./Quota";
 import {
   ProviderBrand as Brand,
   providerLabel,
@@ -15,9 +15,6 @@ import { cx, empty } from "./ui";
 // Pools sit in a grid of cards wide enough for their charts, and accounts in
 // one of cards at least 300px wide.
 const cards = "grid gap-3 max-sm:grid-cols-1";
-// The error under an account's windows, as in AccountsPage.
-export const quotaError =
-  "mt-3.5 text-[12px] leading-[1.6] text-danger wrap-anywhere";
 
 // The account pools, with a card for each account.
 export function Overview({
@@ -98,9 +95,12 @@ function AccountCard({ account: a }: { account: Account }) {
     <article className={card} style={providerStyle(a.provider)}>
       <div className="flex items-start justify-between gap-2.5">
         <div>
-          <h3 className="flex items-center gap-1.75 text-[14px] font-semibold wrap-anywhere">
-            <Private peek>{accountLabel(a)}</Private>
-          </h3>
+          <div className="relative flex items-center gap-1.75">
+            <h3 className="text-[14px] font-semibold wrap-anywhere">
+              <Private peek>{accountLabel(a)}</Private>
+            </h3>
+            <QuotaIssue account={a} />
+          </div>
           <div className={cx(badgeRow, "mt-1.5")}>
             <span className="inline-block text-[12px] font-medium text-provider">
               {a.plan || providerLabel(a.provider)}
@@ -129,11 +129,6 @@ function AccountCard({ account: a }: { account: Account }) {
           <span>{a.window}</span>
           <strong className="font-medium text-text">Unknown</strong>
         </div>
-      )}
-      {a.quotaError !== undefined && a.quotaError !== "" && (
-        <p className={quotaError}>
-          <Private>{a.quotaError}</Private>
-        </p>
       )}
     </article>
   );

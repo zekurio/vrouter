@@ -81,6 +81,9 @@ func accountStatus(a storedAccount) (string, string) {
 func applyAccountQuota(account *Account, q quotaCache) {
 	account.Windows = q.Windows
 	account.QuotaError = q.Error
+	if q.Error != "" && !q.RetryAt.IsZero() {
+		account.QuotaRetryAt = &q.RetryAt
+	}
 	if q.Resets != nil {
 		account.AvailableResets = &q.Resets.Available
 	}
@@ -262,6 +265,7 @@ func (s *server) dashboardQuota(ctx context.Context, a storedAccount) quotaCache
 	if len(last.Windows) == 0 {
 		return q
 	}
-	last.Error = q.Error + " Showing the last reported values."
+	// Windows beside an error tell the UI they are old.
+	last.Error, last.RetryAt = q.Error, q.RetryAt
 	return last
 }
