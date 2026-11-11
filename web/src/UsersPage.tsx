@@ -14,11 +14,15 @@ import {
   keyCell,
   keyHead,
   keyRowHead,
+  keyActions,
+  keyHeader,
+  keyRow,
   keyStatus,
   keyTable,
   pageNote,
 } from "./pageStyles";
-import { Private } from "./Privacy";
+import { Private, usePrivateLabel } from "./Privacy";
+import { useToast } from "./Toaster";
 import {
   button,
   confirmTitle,
@@ -93,6 +97,8 @@ export function UsersPage({
   notify: (text: string) => void;
 }) {
   const { users, setUsers, error, loading, load } = useUsers(request);
+  const toast = useToast();
+  const label = usePrivateLabel();
   const [confirm, setConfirm] = useState<User | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmError, setConfirmError] = useState("");
@@ -115,7 +121,18 @@ export function UsersPage({
       setConfirm(null);
       notify(disable ? "User disabled" : "User enabled");
     } catch (err) {
-      setConfirmError(errorMessage(err, "Could not update the user."));
+      const message = errorMessage(err, "Could not update the user.");
+      // Disabling fails inside its confirmation. Enabling has no dialog.
+      if (disable) setConfirmError(message);
+      else
+        toast(
+          `${label(userLabel(user), "The user")} is still disabled. ${message}`,
+          {
+            failed: true,
+            id: `enable-${user.id}`,
+            action: { label: "Retry", run: () => void setAccess(user, false) },
+          },
+        );
     } finally {
       setBusy(false);
     }
@@ -183,7 +200,7 @@ function UserTable({
   return (
     <div className={cx(panel, tableScroll)}>
       <table className={keyTable}>
-        <thead>
+        <thead className={keyHeader}>
           <tr>
             <th scope="col" className={keyHead()}>
               User
@@ -212,30 +229,43 @@ function UserTable({
           {users.map((u) => {
             const off = disabled(u);
             return (
-              <tr key={u.id}>
+              <tr key={u.id} className={keyRow}>
                 <th scope="row" className={keyRowHead(off)}>
                   <span className={badgeRow}>
-                    <Private peek>{userLabel(u)}</Private>
+                    {/* A flex item of its own, so a long address can shrink
+                        and break instead of running under the button. */}
+                    <span className="min-w-0 wrap-anywhere">
+                      <Private peek>{userLabel(u)}</Private>
+                    </span>
                     {u.id === me && <Badge>You</Badge>}
                   </span>
                   {u.name !== "" && u.email !== "" && (
-                    <span className="mt-0.5 block text-[11.5px] font-normal text-muted">
+                    <span className="mt-0.5 block text-[12px] font-normal text-muted">
                       <Private peek>{u.email}</Private>
                     </span>
                   )}
                 </th>
-                <td className={keyCell("left", off)}>
+                <td className={keyCell("left", off)} data-label="Role">
                   <RoleBadge role={u.role} />
                 </td>
-                <td className={keyStatus(off ? "revoked" : "active")}>
-                  {off ? "Disabled" : "Active"}
+                <td className={keyCell()} data-label="Status">
+                  <span className={keyStatus(off ? "revoked" : "active")}>
+                    {off ? "Disabled" : "Active"}
+                  </span>
                 </td>
-                <td className={keyCell("numeric", off)}>
+                <td
+                  className={keyCell("numeric", off)}
+                  data-label="Active keys"
+                >
                   {u.keys.toLocaleString()}
                 </td>
-                <td className={keyCell("left", off)}>{day(u.createdAt)}</td>
-                <td className={keyCell("left", off)}>{day(u.signedInAt)}</td>
-                <td className={keyCell("right")}>
+                <td className={keyCell("left", off)} data-label="First sign-in">
+                  {day(u.createdAt)}
+                </td>
+                <td className={keyCell("left", off)} data-label="Last sign-in">
+                  {day(u.signedInAt)}
+                </td>
+                <td className={keyActions}>
                   {u.id !== me && (
                     <button
                       className={button(off ? "secondary" : "danger-text")}

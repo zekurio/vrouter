@@ -166,7 +166,7 @@ function ModelRow({
           {m.name}
         </button>
         {readOnly && (
-          <p className="text-[11px] leading-normal text-muted">{readOnly}</p>
+          <p className="text-[12px] leading-normal text-muted">{readOnly}</p>
         )}
       </div>
       <div className="max-md:col-start-2 max-md:col-end-4 max-md:row-start-2">
@@ -198,7 +198,7 @@ function ModelRow({
         </div>
         {duplicate && (
           <p
-            className="mt-1.25 ml-2.5 text-[11px] leading-normal text-danger max-md:ml-0"
+            className="mt-1.25 ml-2.5 text-[12px] leading-normal text-danger max-md:ml-0"
             role="alert"
           >
             Another enabled model uses this ID.
@@ -217,6 +217,8 @@ function ModelRow({
         }
       >
         {m.context ? compact(m.context) : "Unknown"}
+        {/* The column heading is hidden below 720px. */}
+        <span className="hidden text-muted max-md:inline"> context</span>
       </div>
       <div className="flex justify-end max-md:col-start-3 max-md:row-start-1">
         {view.isChanged(m) && (

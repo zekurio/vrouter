@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { errorMessage, isStale, type APIRequest } from "./api";
 import { Select, type SelectOption } from "./Select";
-import { cx, panel } from "./ui";
+import { useToast } from "./Toaster";
+import { cx, noticeAction, panel } from "./ui";
 
 type Routing = "personal-first" | "global-first";
 const routings: SelectOption<Routing>[] = [
@@ -28,8 +29,10 @@ export function RoutingPanel({
   notify: (message: string) => void;
 }) {
   const [routing, setRouting] = useState<Routing | null>(null);
+  // Why the order could not be loaded.
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const toast = useToast();
   const load = useCallback(async () => {
     try {
       const result = await request<{ routing: Routing }>("/api/settings");
@@ -46,7 +49,6 @@ export function RoutingPanel({
 
   async function change(next: Routing) {
     setSaving(true);
-    setError("");
     try {
       const result = await request<{ routing: Routing }>(
         "/api/settings",
@@ -56,7 +58,13 @@ export function RoutingPanel({
       setRouting(result.routing);
       notify("Routing order saved");
     } catch (err) {
-      setError(errorMessage(err, "Could not save the routing order."));
+      // The select keeps the saved order, so the failure is all there is to
+      // show.
+      toast(errorMessage(err, "Could not save the routing order."), {
+        failed: true,
+        id: "routing",
+        action: { label: "Retry", run: () => void change(next) },
+      });
     } finally {
       setSaving(false);
     }
@@ -74,15 +82,16 @@ export function RoutingPanel({
         <h2 id="routing-title" className="text-[15px] font-semibold">
           Routing order
         </h2>
-        <p className={cx(note, "text-muted")}>
-          {routing ? routingNote[routing] : "Loading the routing order."}
-        </p>
-        {error && (
-          <p
-            className={cx(note, "text-[12px] text-danger wrap-anywhere")}
-            role="alert"
-          >
+        {routing || !error ? (
+          <p className={cx(note, "text-muted")}>
+            {routing ? routingNote[routing] : "Loading the routing order."}
+          </p>
+        ) : (
+          <p className={cx(note, "text-danger wrap-anywhere")} role="alert">
             {error}
+            <button className={noticeAction} onClick={() => void load()}>
+              Try again
+            </button>
           </p>
         )}
       </div>

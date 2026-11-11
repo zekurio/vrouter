@@ -37,6 +37,10 @@ export function useTheme() {
   }, []);
   useEffect(() => {
     document.documentElement.dataset["theme"] = light ? "light" : "dark";
+    // The browser's own bars take the page colour, --color-bg in style.css.
+    document
+      .querySelector('meta[name="theme-color"]')
+      ?.setAttribute("content", light ? "#f1f1f1" : "#000000");
     writeStored(themeKey, theme);
   }, [light, theme]);
   return { theme, setTheme };

@@ -121,14 +121,16 @@ function AccountCard({ account: a }: { account: Account }) {
         <Brand provider={a.provider} small />
       </div>
       {a.windows !== undefined && a.windows.length > 0 ? (
-        <div className="mt-5.5">
+        // Dimmed like the account's row on the Accounts page.
+        <div className={cx("mt-5.5", a.status === "disabled" && "opacity-50")}>
           <QuotaWindows windows={a.windows} />
         </div>
       ) : (
-        <div className="mt-5.75 flex justify-between gap-3 text-[12px] text-muted">
-          <span>{a.window}</span>
-          <strong className="font-medium text-text">Unknown</strong>
-        </div>
+        <p className="mt-5.75 text-[12px] text-muted">
+          {(a.quotaError ?? "") === ""
+            ? "Allowance not reported"
+            : "Usage unavailable"}
+        </p>
       )}
     </article>
   );

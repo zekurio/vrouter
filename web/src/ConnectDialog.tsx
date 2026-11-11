@@ -371,7 +371,7 @@ function ProviderChoice({
             onClick={() => choose(p)}
           >
             <ProviderBrand provider={p} />
-            <span className="flex flex-col gap-0.75 text-[11px] text-muted">
+            <span className="flex flex-col gap-0.75 text-[12px] text-muted">
               <strong className="text-[13px] font-[550] text-text">
                 Sign in with {providerLabel(p)}
               </strong>

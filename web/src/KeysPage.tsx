@@ -2,13 +2,22 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Ban, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { errorMessage, isStale, type APIRequest } from "./api";
 import { ConfirmKeyDialog, KeyDialog, type Confirm } from "./KeyDialog";
-import { keyState, stateLabel, type APIKey } from "./keys";
+import {
+  keyState,
+  stateLabel,
+  updatedKey,
+  type APIKey,
+  type KeyUpdate,
+} from "./keys";
 import { OwnerTabs, ownerQuery, type Owner } from "./OwnerTabs";
 import {
   keyBody,
   keyCell,
   keyHead,
   keyRowHead,
+  keyActions,
+  keyHeader,
+  keyRow,
   keyStatus,
   keyTable,
   pageNote,
@@ -60,6 +69,8 @@ const moment = (value: string) =>
 // Loads the key list again whenever reloadKey or the owner changes.
 function useKeys(request: APIRequest, reloadKey: string, owner: Owner) {
   const [keys, setKeys] = useState<APIKey[] | null>(null);
+  // Whose keys the list holds.
+  const [loaded, setLoaded] = useState<Owner | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const sequence = useRef(0);
@@ -74,6 +85,7 @@ function useKeys(request: APIRequest, reloadKey: string, owner: Owner) {
       );
       if (current !== sequence.current) return;
       setKeys(result.keys ?? []);
+      setLoaded(owner);
       setError("");
     } catch (err) {
       if (current !== sequence.current || isStale(err)) return;
@@ -86,7 +98,8 @@ function useKeys(request: APIRequest, reloadKey: string, owner: Owner) {
     void load();
   }, [reloadKey, load]);
 
-  return { keys, setKeys, loading, error, load };
+  // A reload that fails behind a list that is still right needs no message.
+  return { keys, setKeys, loading, error: loaded === owner ? "" : error, load };
 }
 
 export function KeysPage({
@@ -126,12 +139,12 @@ export function KeysPage({
     setConfirmError("");
     try {
       if (action === "revoke") {
-        const result = await request<{ key: APIKey }>(
+        const result = await request<KeyUpdate>(
           `/api/keys/${encodeURIComponent(key.id)}`,
           "PATCH",
           { revoked: true },
         );
-        put(result.key);
+        put(updatedKey(result, key));
         notify("Key revoked");
       } else {
         await request(`/api/keys/${encodeURIComponent(key.id)}`, "DELETE");
@@ -275,7 +288,7 @@ function KeyTable({
       )}
     >
       <table className={keyTable}>
-        <thead>
+        <thead className={keyHeader}>
           <tr>
             {columns
               .filter((c) => showOwner || c !== "Owner")
@@ -328,20 +341,21 @@ function KeyRow({
   const off = state !== "active";
   return (
     <tbody className={keyBody}>
-      <tr>
+      <tr className={keyRow}>
         <th scope="row" className={keyRowHead(off)}>
           {label}
         </th>
         {showOwner && (
-          <td className={keyCell("left", off)}>
+          <td className={keyCell("left", off)} data-label="Owner">
             <Private peek>{key.owner?.name ?? ""}</Private>
           </td>
         )}
-        <td className={keyCell("left", off)}>
+        <td className={keyCell("left", off)} data-label="Prefix">
           <code className="text-muted">{key.prefix}…</code>
         </td>
         <td
-          className={keyStatus(state)}
+          className={keyCell()}
+          data-label="Status"
           title={
             state === "revoked"
               ? `Revoked ${day(key.revokedAt!)}. Delete it to remove it from this list.`
@@ -350,17 +364,23 @@ function KeyRow({
                 : undefined
           }
         >
-          {stateLabel[state]}
+          <span className={keyStatus(state)}>{stateLabel[state]}</span>
         </td>
-        <td className={keyCell("numeric", off)}>{number(key.usedRequests)}</td>
-        <td className={keyCell("numeric", off)}>{number(key.usedTokens)}</td>
-        <td className={keyCell("left", off)}>{day(key.createdAt)}</td>
-        <td className={keyCell("left", off)}>
+        <td className={keyCell("numeric", off)} data-label="Requests">
+          {number(key.usedRequests)}
+        </td>
+        <td className={keyCell("numeric", off)} data-label="Tokens">
+          {number(key.usedTokens)}
+        </td>
+        <td className={keyCell("left", off)} data-label="Created">
+          {day(key.createdAt)}
+        </td>
+        <td className={keyCell("left", off)} data-label="Expires">
           {key.expiresAt === undefined || key.expiresAt === ""
             ? "No expiry"
             : moment(key.expiresAt)}
         </td>
-        <td className={keyCell()}>
+        <td className={keyActions}>
           <div className={rowActions}>
             <button
               className={iconButton()}

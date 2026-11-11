@@ -156,7 +156,7 @@ function ModelFacts({
     <dl className="mt-5.5 mb-6.5 grid grid-cols-[1fr_1fr] gap-x-5 gap-y-4.5 empty:mt-5 empty:mb-0 max-sm:grid-cols-[1fr]">
       {exposed !== detail.id && (
         <div>
-          <dt className="mb-1.5 text-[11px] text-muted">Original ID</dt>
+          <dt className="mb-1.5 text-[12px] text-muted">Original ID</dt>
           <dd className="text-[12px] leading-normal wrap-anywhere">
             <code>{detail.id}</code>
           </dd>
@@ -164,7 +164,7 @@ function ModelFacts({
       )}
       {detail.context > 0 && (
         <div>
-          <dt className="mb-1.5 text-[11px] text-muted">Context</dt>
+          <dt className="mb-1.5 text-[12px] text-muted">Context</dt>
           <dd className="text-[12px] leading-normal wrap-anywhere">
             {detail.context.toLocaleString()} tokens
           </dd>
@@ -172,7 +172,7 @@ function ModelFacts({
       )}
       {detail.maxOutput !== undefined && detail.maxOutput !== 0 && (
         <div>
-          <dt className="mb-1.5 text-[11px] text-muted">Max output</dt>
+          <dt className="mb-1.5 text-[12px] text-muted">Max output</dt>
           <dd className="text-[12px] leading-normal wrap-anywhere">
             {detail.maxOutput.toLocaleString()} tokens
           </dd>
@@ -180,7 +180,7 @@ function ModelFacts({
       )}
       {detail.inputs !== undefined && detail.inputs.length > 0 && (
         <div>
-          <dt className="mb-1.5 text-[11px] text-muted">Input</dt>
+          <dt className="mb-1.5 text-[12px] text-muted">Input</dt>
           <dd className="text-[12px] leading-normal wrap-anywhere">
             {detail.inputs.join(", ")}
           </dd>
@@ -188,7 +188,7 @@ function ModelFacts({
       )}
       {detail.reasoningSupported === true && (
         <div>
-          <dt className="mb-1.5 text-[11px] text-muted">Reasoning</dt>
+          <dt className="mb-1.5 text-[12px] text-muted">Reasoning</dt>
           <dd className="text-[12px] leading-normal wrap-anywhere">
             {detail.reasoning !== undefined && detail.reasoning.length > 0
               ? detail.reasoning.join(", ")

@@ -49,11 +49,13 @@ type Props = {
 };
 
 // Loads the models and accounts, polls them while the page is visible, and
-// retries with a growing delay while vrouter cannot be reached.
+// retries with a growing delay while vrouter cannot be reached. failures
+// counts the loads that failed in a row.
 function useWorkspaceState(client: ReturnType<typeof createClient>) {
   const [state, setState] = useState<State | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [failures, setFailures] = useState(0);
   const refreshSequence = useRef(0);
   const refreshPending = useRef(false);
   const retry = useRef({ delay: 0, timer: 0 });
@@ -73,11 +75,13 @@ function useWorkspaceState(client: ReturnType<typeof createClient>) {
         if (sequence !== refreshSequence.current) return;
         retry.current.delay = 0;
         setError("");
+        setFailures(0);
         setState(next);
       } catch (err) {
         if (sequence !== refreshSequence.current || isStale(err)) return;
         if (statusOf(err) === 401) return;
         setError(errorMessage(err, "Could not load models and accounts."));
+        setFailures((n) => n + 1);
         // Try again soon instead of waiting for the next poll, backing off while
         // vrouter stays unreachable.
         const delay = Math.min(retry.current.delay * 2 || 3000, 60000);
@@ -109,7 +113,7 @@ function useWorkspaceState(client: ReturnType<typeof createClient>) {
     };
   }, [client, refresh]);
 
-  return { state, loading, error, refresh };
+  return { state, loading, error, failures, refresh };
 }
 
 // Every page behind sign-in. Signing out unmounts it, which closes its client.
@@ -128,7 +132,8 @@ export function Workspace({
   const [client] = useState(() =>
     createClient({ onUnauthorized: () => unauthorized.current() }),
   );
-  const { state, loading, error, refresh } = useWorkspaceState(client);
+  const { state, loading, error, failures, refresh } =
+    useWorkspaceState(client);
   const [pool, setPool] = useState("");
   const [connect, setConnect] = useState<string | null>(null);
   const [creatingKey, setCreatingKey] = useState(false);
@@ -154,6 +159,7 @@ export function Workspace({
         state={state}
         loading={loading}
         error={error}
+        failures={failures}
         onRetry={() => void refresh()}
       />
       {page === "Overview" && state && (
@@ -169,6 +175,7 @@ export function Workspace({
         <div hidden={page !== "Models"}>
           <ModelsPage
             models={state.models}
+            warnings={state.warnings}
             request={client.request}
             active={page === "Models"}
             reloadKey={state.observedAt}

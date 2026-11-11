@@ -7,7 +7,7 @@ export const endpointMethod =
   "text-[10px] font-semibold tracking-[0.4px] text-muted";
 // The label and protocol switch above an example request.
 export const protocolChoice =
-  "mb-2 flex items-center justify-between gap-2.5 text-[11px] text-muted";
+  "mb-2 flex items-center justify-between gap-2.5 text-[12px] text-muted";
 
 const tokenColors: Record<string, string> = {
   command: "font-semibold text-text",

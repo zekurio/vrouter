@@ -23,12 +23,13 @@ const buttonVariants: Record<ButtonVariant, string> = {
   "danger-text":
     "border-transparent bg-control font-medium text-danger hover:not-disabled:bg-chip",
 };
+// Phones get taller controls, so a finger hits the one it aims for.
 const buttonSizes = {
-  md: "h-8 gap-1.75 px-3",
+  md: "h-8 gap-1.75 px-3 max-sm:h-10",
   // Beside a page heading.
-  lg: "h-9 gap-1.75 px-3.5",
+  lg: "h-9 gap-1.75 px-3.5 max-sm:h-10",
   // The one action of a panel, across its width.
-  wide: "h-9 w-full gap-2 px-3",
+  wide: "h-9 w-full gap-2 px-3 max-sm:h-11",
 };
 export const button = (
   variant: ButtonVariant,
@@ -48,10 +49,12 @@ export const iconButton = (
 ) =>
   cx(
     "inline-flex shrink-0 items-center justify-center rounded-lg",
-    size === "sm" && "size-6 text-muted hover:not-disabled:bg-hover",
-    size === "md" && "size-8 text-muted hover:not-disabled:bg-hover",
+    size === "sm" &&
+      "size-6 text-muted hover:not-disabled:bg-hover max-sm:size-8",
+    size === "md" &&
+      "size-8 text-muted hover:not-disabled:bg-hover max-sm:size-10",
     size === "lg" &&
-      "size-9 bg-control text-subtle hover:not-disabled:bg-chip light:bg-surface light:ring-1 light:ring-line",
+      "size-9 bg-control text-subtle hover:not-disabled:bg-chip light:bg-surface light:ring-1 light:ring-line max-sm:size-10",
     danger ? "hover:not-disabled:text-danger" : "hover:not-disabled:text-text",
   );
 
@@ -71,7 +74,7 @@ export const lifted =
 export const tab = (selected: boolean, size: "md" | "sm" = "md") =>
   cx(
     "flex items-center gap-1.75 rounded-[7px] text-[12.5px] font-medium whitespace-nowrap",
-    size === "md" ? "h-7 px-2.75" : "h-6.5 px-2.25",
+    size === "md" ? "h-7 px-2.75 max-sm:h-9" : "h-6.5 px-2.25 max-sm:h-8.5",
     selected ? lifted : "text-muted hover:text-text",
   );
 
@@ -93,15 +96,19 @@ export const empty =
   "flex min-h-8 flex-wrap items-center gap-x-3.5 gap-y-2 text-[13px] leading-[1.6] text-muted";
 
 // Native modal dialogs, centred with the auto margin preflight removes.
-// Fields inside use the field colour as their well.
+// Fields inside use the field colour as their well. A phone hangs them from
+// the top, where the on-screen keyboard does not cover them.
 export const dialog = (width: "md" | "sm" | "xs" = "md") =>
   cx(
-    "m-auto w-[calc(100%-32px)] rounded-2xl border border-line bg-surface p-6.5 text-text shadow-[0_24px_80px_#000a] [--color-well:var(--color-field)] backdrop:bg-[#000b] backdrop:[backdrop-filter:blur(4px)] max-sm:p-5",
+    "m-auto w-[calc(100%-32px)] rounded-2xl border border-line bg-surface p-6.5 text-text shadow-[0_24px_80px_#000a] [--color-well:var(--color-field)] backdrop:bg-[#000b] backdrop:[backdrop-filter:blur(4px)] max-sm:mt-[max(16px,env(safe-area-inset-top))] max-sm:max-h-[calc(100dvh-32px)] max-sm:p-5",
     width === "md" && "max-w-[560px]",
     width === "sm" && "max-w-[480px]",
     width === "xs" && "max-w-[420px]",
   );
-export const dialogHeading = "flex items-center justify-between gap-3";
+// The title and the close button. They stay in view while a long dialog
+// scrolls, over a short fade into the content.
+export const dialogHeading =
+  "sticky -top-6.5 z-1 -mx-6.5 -mt-6.5 flex items-center justify-between gap-3 bg-surface px-6.5 pt-6.5 after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-3 after:bg-linear-to-b after:from-surface after:to-transparent max-sm:-top-5 max-sm:-mx-5 max-sm:-mt-5 max-sm:px-5 max-sm:pt-5";
 export const dialogTitle =
   "text-[21px] font-medium tracking-[-0.6px] wrap-anywhere";
 // The smaller title of a confirmation or a form.
@@ -121,9 +128,10 @@ export const groupTitle = "text-[15px] font-semibold";
 export const groupCount = "text-[13px] text-muted";
 
 // On/off switch, tinted with the provider colour when on. The knob then takes
-// the surface colour, which stands out on any brand, white included.
+// the surface colour, which stands out on any brand, white included. The
+// switch is small, so an unseen margin around it takes clicks and taps too.
 export const toggle =
-  "relative h-4.5 w-7.5 rounded-[9px] bg-chip transition-[background] duration-150 ease-[ease] after:absolute after:top-0.75 after:left-0.75 after:size-3 after:rounded-full after:bg-muted after:transition-[translate,background] after:duration-150 after:ease-[ease] aria-checked:bg-provider aria-checked:after:translate-x-3 aria-checked:after:bg-surface light:not-aria-checked:bg-line";
+  "relative h-4.5 w-7.5 rounded-[9px] bg-chip before:absolute before:-inset-x-2 before:-inset-y-3 transition-[background] duration-150 ease-[ease] after:absolute after:top-0.75 after:left-0.75 after:size-3 after:rounded-full after:bg-muted after:transition-[translate,background] after:duration-150 after:ease-[ease] aria-checked:bg-provider aria-checked:after:translate-x-3 aria-checked:after:bg-surface light:not-aria-checked:bg-line";
 
 // Positioned so visually hidden text in a cell scrolls with the table.
 export const tableScroll = "relative overflow-x-auto";

@@ -2,7 +2,13 @@ import { useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { errorMessage, isStale, type APIRequest } from "./api";
 import { Modal } from "./Modal";
-import { expiryText, parseExpiry, type APIKey } from "./keys";
+import {
+  expiryText,
+  parseExpiry,
+  updatedKey,
+  type APIKey,
+  type KeyUpdate,
+} from "./keys";
 import {
   button,
   confirmTitle,
@@ -57,12 +63,12 @@ export function KeyDialog({
     };
     try {
       if (target) {
-        const result = await request<{ key: APIKey }>(
+        const result = await request<KeyUpdate>(
           `/api/keys/${encodeURIComponent(target.id)}`,
           "PATCH",
           body,
         );
-        onSaved(result.key, false);
+        onSaved(updatedKey(result, target), false);
         onClose();
       } else {
         const result = await request<{ key: APIKey; secret: string }>(
@@ -226,7 +232,7 @@ function KeyForm({
           <p
             id="key-expiry-help"
             className={cx(
-              "mt-1.75 text-[11.5px] leading-[1.6]",
+              "mt-1.75 text-[12px] leading-[1.6]",
               expiryError ? "text-danger" : "text-muted",
             )}
           >

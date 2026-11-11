@@ -14,21 +14,27 @@ const titles: Partial<Record<Page, string>> = {
   Keys: "API keys",
 };
 
-// Load errors, provider warnings, and the first load's spinner.
+// The first load's spinner, and the one banner for a vrouter that does not
+// answer. Without data the error shows at once. With data on screen a single
+// failed poll says nothing, since the next one usually works. From the second
+// failure on, a quiet line says how old the data is.
 export function WorkspaceNotices({
   state,
   loading,
   error,
+  failures,
   onRetry,
 }: {
   state: State | null;
   loading: boolean;
   error: string;
+  // Loads that failed in a row.
+  failures: number;
   onRetry: () => void;
 }) {
   return (
     <>
-      {error && (
+      {error && !state && (
         <div className={cx(notice({ error: true }), "my-3.75")} role="alert">
           {error}{" "}
           <button className={noticeAction} onClick={onRetry}>
@@ -36,11 +42,19 @@ export function WorkspaceNotices({
           </button>
         </div>
       )}
-      {state?.warnings.map((w) => (
-        <div className={cx(notice(), "my-3.75")} key={w}>
-          {w}
+      {error && state && failures > 1 && (
+        <div className={cx(notice(), "my-3.75")} role="status">
+          Cannot reach vrouter. Showing data from{" "}
+          {new Date(state.observedAt).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          })}
+          .
+          <button className={noticeAction} onClick={onRetry}>
+            Try again
+          </button>
         </div>
-      ))}
+      )}
       {loading && !state && (
         <div className={loadingClass} role="status" aria-label="Loading">
           <RefreshCw size={22} className="animate-spin" />

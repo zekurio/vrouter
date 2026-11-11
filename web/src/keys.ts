@@ -15,6 +15,19 @@ export type APIKey = {
 };
 export type KeyState = "active" | "revoked" | "expired";
 
+// What a key update answers with. usageUnknown says the change was saved but
+// the counts could not be read, so the key carries zeros.
+export type KeyUpdate = { key: APIKey; usageUnknown?: boolean };
+// The updated key, with the counts it had before when the answer has none.
+export const updatedKey = (update: KeyUpdate, before: APIKey): APIKey =>
+  update.usageUnknown === true
+    ? {
+        ...update.key,
+        usedRequests: before.usedRequests,
+        usedTokens: before.usedTokens,
+      }
+    : update.key;
+
 // The first reason a call with this key would be refused, if any.
 export function keyState(key: APIKey, now = Date.now()): KeyState {
   if (key.revokedAt !== undefined && key.revokedAt !== "") return "revoked";

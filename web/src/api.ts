@@ -5,6 +5,8 @@ export type APIRequest = <T>(
   path: string,
   method?: string,
   body?: unknown,
+  // Milliseconds to wait, for the few requests the server answers slowly.
+  timeout?: number,
 ) => Promise<T>;
 // Where sign-in leads: the identity provider's name, or its host.
 export type AuthInfo = { publicUrl: string; provider: string };
@@ -65,6 +67,13 @@ export function errorText(body: unknown): string {
   return tags.length > 0 ? `${text} (${tags.join(", ")})` : text;
 }
 
+// The message for an error response without a readable body. A proxy in front
+// of a vrouter that is down answers 502, 503 or 504 with a page of its own.
+const unreadable = (status: number) =>
+  status >= 502 && status <= 504
+    ? `vrouter did not answer (HTTP ${status}).`
+    : `Request failed (${status}).`;
+
 // Everything a request sends except its signal.
 function requestInit(method: string, body: unknown) {
   return {
@@ -93,8 +102,8 @@ export function createClient(options: Options) {
   let closed = false;
 
   // Reads also end when the client closes.
-  const signalFor = (read: boolean) => {
-    const timeout = AbortSignal.timeout(options.timeout ?? 15000);
+  const signalFor = (read: boolean, wait?: number) => {
+    const timeout = AbortSignal.timeout(wait ?? options.timeout ?? 15000);
     return read ? AbortSignal.any([timeout, reads.signal]) : timeout;
   };
 
@@ -102,10 +111,11 @@ export function createClient(options: Options) {
     path: string,
     method = "GET",
     body?: unknown,
+    timeout?: number,
   ): Promise<T> => {
     const read = method === "GET";
     if (closed && method !== "DELETE") throw stale();
-    const signal = signalFor(read);
+    const signal = signalFor(read, timeout);
     let response: Response;
     try {
       response = await send(path, {
@@ -121,7 +131,7 @@ export function createClient(options: Options) {
     if (response.status === 401 && !closed) options.onUnauthorized?.();
     if (!response.ok)
       throw failure(
-        errorText(result) || `Request failed (${response.status}).`,
+        errorText(result) || unreadable(response.status),
         response.status,
       );
     // The JSON shapes are the Go handlers' types, kept in sync by hand.

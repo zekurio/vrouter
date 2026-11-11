@@ -152,7 +152,7 @@ export function AccountWindows({
   return (
     <div
       className={cx(
-        "grid min-h-11.5 content-center max-lg:col-[2/4] max-xs:col-span-full",
+        "grid min-h-11.5 content-center max-md:col-[2/4] max-xs:col-span-full",
         off && "opacity-50",
       )}
     >
@@ -227,7 +227,8 @@ function IssueMark({
     >
       <button
         type="button"
-        className="inline-flex size-4 cursor-default items-center justify-center rounded-full text-amber"
+        // The mark is small, so an unseen margin around it takes taps too.
+        className="relative inline-flex size-4 cursor-default items-center justify-center rounded-full text-amber before:absolute before:-inset-3"
         aria-label={title}
         aria-describedby={shown ? id : undefined}
         onFocus={() => setFocus(true)}

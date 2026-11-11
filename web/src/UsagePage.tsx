@@ -38,6 +38,8 @@ const plural = (n: number, noun: string) =>
 // Loads the usage report again whenever reloadKey or the owner changes.
 function useUsage(request: APIRequest, reloadKey: string, owner: Owner) {
   const [data, setData] = useState<UsageReport | null>(null);
+  // Whose usage the report holds.
+  const [loaded, setLoaded] = useState<Owner | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const sequence = useRef(0);
@@ -53,6 +55,7 @@ function useUsage(request: APIRequest, reloadKey: string, owner: Owner) {
       );
       if (current !== sequence.current) return;
       setData(result);
+      setLoaded(owner);
       setError("");
     } catch (err) {
       if (current !== sequence.current || isStale(err)) return;
@@ -65,7 +68,8 @@ function useUsage(request: APIRequest, reloadKey: string, owner: Owner) {
     void load();
   }, [reloadKey, load]);
 
-  return { data, loading, error, load };
+  // A reload that fails behind a report that is still right needs no message.
+  return { data, loading, error: loaded === owner ? "" : error, load };
 }
 
 export function UsagePage({ admin, request, reloadKey }: Props) {
@@ -137,7 +141,7 @@ function UsageSummary({ usage, total }: { usage: Usage; total: Tally }) {
       )}
     >
       <div>
-        <p className="text-[52px] leading-[1.05] font-semibold tracking-[-1.8px]">
+        <p className="text-[52px] leading-[1.05] font-semibold tracking-[-1.8px] max-sm:text-[40px]">
           {money(total.cost)}
         </p>
         <p className={cx(caption, "mt-2.5")}>

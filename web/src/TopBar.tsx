@@ -58,7 +58,7 @@ export function TopBar({
     // bar pinned to the bottom edge.
     <header
       className={cx(
-        "mx-auto flex h-17 max-w-[1440px] items-center gap-7 px-7.5 max-2xl:grid max-2xl:h-auto max-2xl:grid-cols-[auto_minmax(0,1fr)_auto] max-2xl:gap-x-6 max-2xl:gap-y-3 max-2xl:pt-5 max-xl:px-6 max-sm:px-4 max-xs:grid-cols-[minmax(0,1fr)_auto]",
+        "mx-auto flex h-17 max-w-[1280px] items-center gap-7 px-7.5 max-2xl:grid max-2xl:h-auto max-2xl:grid-cols-[auto_minmax(0,1fr)_auto] max-2xl:gap-x-6 max-2xl:gap-y-3 max-2xl:pt-5 max-xl:px-6 max-sm:px-4 max-xs:grid-cols-[minmax(0,1fr)_auto]",
         !user && "max-2xl:pb-5",
       )}
     >
@@ -74,7 +74,7 @@ export function TopBar({
       </a>
       {user && (
         <nav
-          className="flex h-full items-center gap-0.5 max-2xl:col-span-full max-2xl:row-start-2 max-2xl:h-auto max-2xl:overflow-x-auto max-2xl:[scrollbar-width:none] max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:z-15 max-sm:grid max-sm:auto-cols-[minmax(0,1fr)] max-sm:grid-flow-col max-sm:gap-1 max-sm:overflow-visible max-sm:border-t max-sm:border-border max-sm:bg-bg max-sm:px-2 max-sm:py-1.5"
+          className="flex h-full items-center gap-0.5 max-2xl:col-span-full max-2xl:row-start-2 max-2xl:h-auto max-2xl:overflow-x-auto max-2xl:[scrollbar-width:none] max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:z-15 max-sm:grid max-sm:auto-cols-[minmax(0,1fr)] max-sm:grid-flow-col max-sm:gap-1 max-sm:overflow-visible max-sm:border-t max-sm:border-border max-sm:bg-bg max-sm:px-2 max-sm:pt-1.5 max-sm:pb-[calc(6px+env(safe-area-inset-bottom))]"
           aria-label="Main navigation"
         >
           {pagesFor(user.role).map((item) => {
@@ -84,7 +84,7 @@ export function TopBar({
                 key={item}
                 href={`#${item.toLowerCase()}`}
                 className={cx(
-                  "flex h-8.5 items-center gap-2 rounded-lg px-3 font-medium max-2xl:shrink-0 max-sm:h-12.5 max-sm:flex-col max-sm:justify-center max-sm:gap-1.25 max-sm:p-0 max-sm:text-[11px]",
+                  "flex h-8.5 items-center gap-2 rounded-lg px-3 font-medium max-2xl:shrink-0 max-sm:h-12.5 max-sm:flex-col max-sm:justify-center max-sm:gap-1.25 max-sm:p-0 max-sm:text-[12px]",
                   page === item ? lifted : "text-muted hover:text-text",
                 )}
                 aria-current={page === item ? "page" : undefined}

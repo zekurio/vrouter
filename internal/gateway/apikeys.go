@@ -230,7 +230,8 @@ func (s *server) patchKey(w http.ResponseWriter, r *http.Request) {
 	}
 	counts, err := s.store.data.usage.keys(r.Context())
 	if err != nil {
-		writeJSON(w, 503, map[string]string{"error": "Key updated, but usage is unavailable. Refresh to retry."})
+		// The change is saved. Missing counts must not make it look failed.
+		writeJSON(w, 200, map[string]any{"key": updated.view(keyUsage{}), "usageUnknown": true})
 		return
 	}
 	writeJSON(w, 200, map[string]any{"key": updated.view(counts[updated.ID])})

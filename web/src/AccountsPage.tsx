@@ -1,24 +1,12 @@
 import { useEffect, useState } from "react";
-import { LogIn, Plus, Trash2 } from "lucide-react";
+import { AccountPool, type RowActions } from "./AccountPool";
 import { ConnectDialog, connectable, type Scope } from "./ConnectDialog";
-import { ProviderBrand, providerLabel, providerStyle } from "./ProviderBrand";
-import { Private, usePrivateLabel } from "./Privacy";
-import { AccountWindows, QuotaIssue, type QuotaWindow } from "./Quota";
+import { providerLabel } from "./ProviderBrand";
+import type { QuotaWindow } from "./Quota";
 import { errorMessage, type APIRequest } from "./api";
 import { RemoveAccountDialog } from "./RemoveAccountDialog";
+import type { AccountReset } from "./ResetDialog";
 import { RoutingPanel } from "./RoutingPanel";
-import {
-  button,
-  cx,
-  empty,
-  groupCount,
-  groupHeading,
-  groupTitle,
-  iconButton,
-  notice,
-  panelFrame,
-  toggle as switchClass,
-} from "./ui";
 
 export type Account = {
   id: string;
@@ -43,7 +31,8 @@ export type Account = {
   quotaError?: string;
   // When vrouter next reads usage after quotaError.
   quotaRetryAt?: string;
-  availableResets?: number;
+  // The usage resets the account holds, usable or not.
+  resets?: AccountReset[];
 };
 type Props = {
   accounts: Account[];
@@ -69,15 +58,6 @@ export function accountState(account: Account) {
   return account.status === "disabled" ? "Disabled" : "Unavailable";
 }
 
-// What a row can do to its account, shared by every pool.
-type RowActions = {
-  busy: string;
-  enabled: (account: Account) => boolean;
-  onToggle: (account: Account) => void;
-  onReconnect: (account: Account) => void;
-  onRemove: (account: Account) => void;
-};
-
 export function AccountsPage({
   accounts,
   admin,
@@ -90,7 +70,6 @@ export function AccountsPage({
   // Switch positions that were saved but are not yet in the refreshed account list.
   const [saved, setSaved] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState("");
-  const [error, setError] = useState("");
   const [removing, setRemoving] = useState<Account | null>(null);
   const [removeError, setRemoveError] = useState("");
   // Account being reconnected. Cleared whenever the connect dialog closes.
@@ -110,10 +89,10 @@ export function AccountsPage({
   ];
   const enabled = (a: Account) => saved[a.id] ?? a.status !== "disabled";
 
+  // Rejects when the switch could not be saved. The row says so.
   async function toggle(account: Account) {
     const next = !enabled(account);
     setBusy(account.id);
-    setError("");
     try {
       await request("/api/accounts", "PATCH", {
         id: account.id,
@@ -122,8 +101,6 @@ export function AccountsPage({
       setSaved((current) => ({ ...current, [account.id]: next }));
       notify(next ? "Account enabled" : "Account disabled");
       onChanged();
-    } catch (err) {
-      setError(errorMessage(err, "Could not update the account."));
     } finally {
       setBusy("");
     }
@@ -151,58 +128,37 @@ export function AccountsPage({
   const actions: RowActions = {
     busy,
     enabled,
-    onToggle: (a) => void toggle(a),
+    onToggle: toggle,
     onReconnect: (a) => {
       setReauth(a);
       setConnect(a.provider);
     },
     onRemove: setRemoving,
+    request,
+    onResetUsed: () => {
+      notify("Reset used");
+      onChanged();
+    },
   };
 
   return (
     <>
-      {error && (
-        <div className={cx(notice({ error: true }), "my-3.75")} role="alert">
-          {error}
-        </div>
-      )}
       <RoutingPanel admin={admin} request={request} notify={notify} />
       {scopes.map((section) => (
-        <section
+        <ScopeSection
           key={section.scope}
-          className="mt-7.5"
-          aria-labelledby={`section-${section.scope}`}
-        >
-          <SectionHeading
-            id={`section-${section.scope}`}
-            title={section.title}
-            lead={
-              section.scope === "global" && !admin
-                ? `${section.lead} Admins manage them.`
-                : section.lead
-            }
-          />
-          {providers.map((provider) => (
-            <AccountPool
-              key={provider}
-              provider={provider}
-              scope={section.scope}
-              pool={accounts.filter(
-                (a) => a.provider === provider && a.scope === section.scope,
-              )}
-              onAdd={
-                section.scope === "global" && !admin
-                  ? undefined
-                  : () => {
-                      setReauth(null);
-                      setScope(section.scope);
-                      setConnect(provider);
-                    }
-              }
-              actions={actions}
-            />
-          ))}
-        </section>
+          section={section}
+          // Members cannot add shared accounts.
+          locked={section.scope === "global" && !admin}
+          providers={providers}
+          accounts={accounts}
+          actions={actions}
+          onAdd={(provider) => {
+            setReauth(null);
+            setScope(section.scope);
+            setConnect(provider);
+          }}
+        />
       ))}
       <RemoveAccountDialog
         removing={removing}
@@ -231,6 +187,50 @@ export function AccountsPage({
         />
       )}
     </>
+  );
+}
+
+// The accounts of one scope, a pool per provider.
+function ScopeSection({
+  section,
+  locked,
+  providers,
+  accounts,
+  actions,
+  onAdd,
+}: {
+  section: (typeof scopes)[number];
+  // Admins manage this scope and the user is not one.
+  locked: boolean;
+  providers: string[];
+  accounts: Account[];
+  actions: RowActions;
+  onAdd: (provider: string) => void;
+}) {
+  return (
+    <section className="mt-7.5" aria-labelledby={`section-${section.scope}`}>
+      <SectionHeading
+        id={`section-${section.scope}`}
+        title={section.title}
+        lead={locked ? `${section.lead} Admins manage them.` : section.lead}
+      />
+      {providers.map((provider) => (
+        <AccountPool
+          key={provider}
+          provider={provider}
+          scope={section.scope}
+          pool={accounts.filter(
+            (a) => a.provider === provider && a.scope === section.scope,
+          )}
+          onAdd={
+            locked || !connectable.includes(provider)
+              ? undefined
+              : () => onAdd(provider)
+          }
+          actions={actions}
+        />
+      ))}
+    </section>
   );
 }
 
@@ -265,168 +265,3 @@ const scopes: { scope: Scope; title: string; lead: string }[] = [
     lead: "Every user's API keys can use these.",
   },
 ];
-
-function AccountPool({
-  provider,
-  scope,
-  pool,
-  onAdd,
-  actions,
-}: {
-  provider: string;
-  scope: Scope;
-  pool: Account[];
-  // Unset when the user cannot add accounts to this pool.
-  onAdd: (() => void) | undefined;
-  actions: RowActions;
-}) {
-  const canConnect = connectable.includes(provider) && onAdd !== undefined;
-  const id = `pool-${scope}-${provider}`;
-  // Pools after the first in a section stand apart from the one above.
-  return (
-    <section
-      className={cx(
-        panelFrame,
-        "px-5.5 pt-5 pb-1.5 not-first-of-type:mt-3 max-sm:p-4.5",
-      )}
-      style={providerStyle(provider)}
-      aria-labelledby={id}
-    >
-      <div
-        className={cx(groupHeading, "flex-wrap border-b border-border pb-3.5")}
-      >
-        <ProviderBrand provider={provider} />
-        <h3 id={id} className={groupTitle}>
-          {providerLabel(provider)}
-        </h3>
-        <span className={cx(groupCount, "whitespace-nowrap")}>
-          {pool.length} {pool.length === 1 ? "account" : "accounts"}
-        </span>
-        <div className="ml-auto flex gap-2">
-          {canConnect && (
-            <button className={button("secondary")} onClick={onAdd}>
-              <Plus size={14} /> Add account
-            </button>
-          )}
-        </div>
-      </div>
-      {pool.length === 0 ? (
-        <p className={cx(empty, "mt-3 mb-2")}>
-          {scope === "personal" ? "No personal accounts" : "No shared accounts"}
-        </p>
-      ) : (
-        <ul>
-          {pool.map((a, i) => (
-            <AccountRow
-              key={a.id}
-              account={a}
-              fallback={`${provider} account ${i + 1}`}
-              actions={actions}
-            />
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
-
-function AccountRow({
-  account: a,
-  fallback,
-  actions,
-}: {
-  account: Account;
-  // Label used in place of one that holds a hidden address.
-  fallback: string;
-  actions: RowActions;
-}) {
-  const label = usePrivateLabel();
-  const { busy } = actions;
-  const on = actions.enabled(a);
-  const statusMessage = a.statusMessage ?? "";
-  const name = label(accountLabel(a), fallback);
-  return (
-    // Switch, identity, plan, usage, actions. Identity and plan have fixed
-    // widths so the usage windows start at the same x on every row and
-    // provider. Below 800px the fixed columns would squeeze the usage
-    // windows, so the row stacks: name and actions on top, plan, then usage.
-    <li className="grid min-h-16.5 grid-cols-[30px_minmax(0,208px)_88px_minmax(0,1fr)_70px] items-center gap-x-5 border-b border-border py-4 last:border-b-0 max-[1120px]:grid-cols-[30px_minmax(0,143px)_72px_minmax(0,1fr)_64px] max-[1120px]:gap-x-3.5 max-lg:grid-cols-[30px_minmax(0,1fr)_70px] max-lg:items-start max-lg:gap-y-3.5">
-      <button
-        className={cx(switchClass, "max-lg:mt-px")}
-        role="switch"
-        aria-checked={on}
-        aria-label={`Route requests through ${name}`}
-        title={a.manageable ? undefined : "Admins manage shared accounts"}
-        disabled={busy === a.id || !a.manageable}
-        onClick={() => actions.onToggle(a)}
-      />
-      {/* The name plus one secondary line, matching the quota block, centred
-          as a block so a name-only account sits on the row's midline. */}
-      <div className="flex min-h-11.5 flex-col justify-center max-lg:min-h-0">
-        <div className="relative flex items-center gap-2">
-          <h3 className={cx(accountName, "min-w-0", !on && "opacity-50")}>
-            <Private peek>{accountLabel(a)}</Private>
-          </h3>
-          <QuotaIssue account={a} />
-        </div>
-        {a.availableResets !== undefined && (
-          <p className={cx(rowNote, "text-muted")}>
-            {a.availableResets} usage{" "}
-            {a.availableResets === 1 ? "reset" : "resets"} available
-          </p>
-        )}
-        {on ? (
-          accountState(a) && (
-            <p className={cx(rowNote, "text-amber")}>
-              <Private>
-                {statusMessage ||
-                  "Unavailable. vrouter is not routing to it right now."}
-              </Private>
-            </p>
-          )
-        ) : (
-          <p className={cx(rowNote, "text-muted")}>
-            Disabled. Requests skip this account.
-          </p>
-        )}
-      </div>
-      <span className={cx(plan, !on && "opacity-50")}>{a.plan}</span>
-      <AccountWindows
-        windows={a.windows ?? []}
-        failed={(a.quotaError ?? "") !== ""}
-        off={!on}
-      />
-      <div className="flex justify-end gap-1.5 max-lg:col-start-3 max-lg:row-start-1 max-lg:-mt-1.75">
-        {a.reconnectable === true && (
-          <button
-            className={iconButton()}
-            aria-label={`Reconnect ${name}`}
-            title={`Reconnect ${name}`}
-            disabled={busy === a.id}
-            onClick={() => actions.onReconnect(a)}
-          >
-            <LogIn size={14} />
-          </button>
-        )}
-        {a.manageable && (
-          <button
-            className={iconButton("md", { danger: true })}
-            aria-label={`Remove ${name}`}
-            onClick={() => actions.onRemove(a)}
-          >
-            <Trash2 size={15} />
-          </button>
-        )}
-      </div>
-    </li>
-  );
-}
-
-const accountName =
-  "flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5 text-[14px] leading-5 font-[550] wrap-anywhere";
-// The secondary lines under an account's name.
-const rowNote = "mt-1 text-[12px] leading-normal wrap-anywhere";
-// An empty plan keeps rows lined up in the wide layout. The stacked layout
-// drops it, so no blank line is left behind.
-const plan =
-  "inline-block text-[13px] leading-[1.4] font-medium text-provider wrap-anywhere max-lg:col-[2/4] max-lg:-mt-2 max-lg:empty:hidden";

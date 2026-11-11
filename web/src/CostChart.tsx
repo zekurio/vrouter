@@ -12,7 +12,7 @@ import {
   type Interval,
   type Usage,
 } from "./usage";
-import { tab, tabs } from "./ui";
+import { cx, tab, tabs } from "./ui";
 
 // Chart series follow the provider, so a provider keeps its color in every
 // view.
@@ -141,14 +141,23 @@ export function CostChart({ usage }: { usage: Usage }) {
 
   return (
     <figure className="min-w-0">
-      <figcaption className="mb-3.5 flex items-center justify-between gap-3 text-[15px] font-semibold">
+      <figcaption className="mb-3.5 flex items-center justify-between gap-3 text-[15px] font-semibold max-sm:flex-wrap">
         Cost
-        <div className={tabs(true)} role="group" aria-label="Chart interval">
+        {/* On a phone the intervals take a row of their own, so none is cut
+            off. */}
+        <div
+          className={cx(tabs(true), "max-sm:w-full")}
+          role="group"
+          aria-label="Chart interval"
+        >
           {intervals.map((value) => (
             <button
               key={value}
               aria-pressed={interval === value}
-              className={tab(interval === value)}
+              className={cx(
+                tab(interval === value),
+                "max-sm:flex-1 max-sm:justify-center",
+              )}
               onClick={() => {
                 setHover(null);
                 setChosen(value);

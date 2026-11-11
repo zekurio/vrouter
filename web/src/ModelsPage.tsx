@@ -28,6 +28,7 @@ const statuses: SelectOption<Status>[] = [
 
 export function ModelsPage({
   models,
+  warnings,
   request,
   active,
   reloadKey,
@@ -40,6 +41,8 @@ export function ModelsPage({
   editable,
 }: {
   models: Model[];
+  // What vrouter could not load about the models, such as a provider catalog.
+  warnings: string[];
   request: APIRequest;
   // False while another page is shown. The page stays mounted to keep drafts.
   active: boolean;
@@ -103,7 +106,10 @@ export function ModelsPage({
   return (
     <>
       <ModelsNotices
-        loadError={data.loadError}
+        // Once the settings are on screen, a failed reload in the background
+        // is not worth a banner.
+        loadError={data.editable ? "" : data.loadError}
+        warning={warnings[0] ?? ""}
         loading={loading}
         editable={editable}
         onRetry={() => void data.load()}
@@ -178,31 +184,37 @@ export function ModelsPage({
   );
 }
 
+// One message at most. A settings load that failed and a catalog warning
+// describe the same trouble, so the error stands in for both.
 function ModelsNotices({
   loadError,
+  warning,
   loading,
   editable,
   onRetry,
 }: {
   loadError: string;
+  warning: string;
   loading: boolean;
   editable: boolean;
   onRetry: () => void;
 }) {
   return (
     <>
-      {loadError && (
+      {loadError ? (
         <div className={cx(notice({ error: true }), "my-3.75")} role="alert">
           {loadError}
           <button className={noticeAction} disabled={loading} onClick={onRetry}>
             Try again
           </button>
         </div>
+      ) : (
+        warning && <div className={cx(notice(), "my-3.75")}>{warning}</div>
       )}
       {!editable && (
-        <div className={cx(notice(), "my-3.75")}>
-          Model settings apply to everyone. Only admins can change them.
-        </div>
+        <p className="mb-3 text-[13px] leading-[1.6] text-muted">
+          Only admins can change model settings.
+        </p>
       )}
     </>
   );

@@ -13,7 +13,7 @@ import {
   type OutcomeFilter,
   type RequestRecord,
 } from "./telemetry";
-import { cx, empty, tab, tableScroll, tabs } from "./ui";
+import { button, cx, empty, tab, tableScroll, tabs } from "./ui";
 import { dayLabel } from "./usage";
 
 const number = (n: number) => n.toLocaleString();
@@ -25,13 +25,36 @@ const head = (numeric = false) =>
   );
 // Cells align to the top, so rows with a second line stay level. The time in
 // the first column stays on one line.
+//
+// Below 720px nine columns do not fit, so each request becomes four short
+// lines: the model and the time, the key, the account, and the result with
+// the numbers and their units. Second lines of a cell are left out, except
+// the names of the user and the account.
 const cell = (numeric = false, muted = false) =>
   cx(
     "border-b border-border pt-2.75 pr-4.5 pb-2.75 align-top leading-[1.5] wrap-anywhere group-last:border-b-0 first:whitespace-nowrap first:text-muted last:pr-0",
+    "max-md:block max-md:min-w-0 max-md:border-b-0 max-md:p-0 max-md:text-left max-md:wrap-break-word max-md:after:ml-1 max-md:after:text-muted max-md:after:content-[attr(data-unit)]",
     numeric && "text-right whitespace-nowrap tabular-nums",
     muted ? "text-muted" : "text-subtle",
   );
-const subLine = "block text-[11.5px] text-muted";
+const row =
+  "group max-md:flex max-md:flex-wrap max-md:gap-x-3 max-md:gap-y-0.5 max-md:border-b max-md:border-border max-md:py-2.5 max-md:last:border-b-0";
+// Where each cell goes among those lines. A failure's text gets lines of its
+// own above the numbers.
+const place = {
+  model: "max-md:order-1 max-md:flex-1",
+  time: "max-md:order-2",
+  key: "max-md:order-3 max-md:basis-full",
+  account: "max-md:order-4 max-md:basis-full",
+  result: "max-md:order-5",
+  failed: "max-md:order-5 max-md:basis-full",
+  number: "max-md:order-6",
+};
+const subLine = "block text-[12px] text-muted max-md:hidden";
+// A second line that stays on a phone, beside the first.
+const nameLine = "block text-[12px] text-muted max-md:ml-1.5 max-md:inline";
+// Requests drawn at first, and added by each "Show more".
+const pageSize = 100;
 const outcomes: { value: OutcomeFilter; label: string }[] = [
   { value: "all", label: "All" },
   { value: "error", label: "Errors" },
@@ -59,6 +82,7 @@ export function RequestLog({
 }) {
   const [outcome, setOutcome] = useState<OutcomeFilter>("all");
   const [key, setKey] = useState("");
+  const [limit, setLimit] = useState(pageSize);
   const keyNames = [...new Set(requests.map((r) => keyLabel(r)))].toSorted();
   const selectedKey = keyNames.includes(key) ? key : "";
   const rows = filterRequests(requests, outcome, selectedKey);
@@ -94,8 +118,8 @@ export function RequestLog({
         <p className={cx(empty, "mt-6 mb-1")}>No matching requests</p>
       ) : (
         <div className={tableScroll}>
-          <table className="w-full min-w-[880px] border-collapse text-[12px]">
-            <thead>
+          <table className="w-full min-w-[880px] border-collapse text-[12px] max-md:block max-md:min-w-0">
+            <thead className="max-md:sr-only">
               <tr>
                 <th scope="col" className={head()}>
                   Time
@@ -128,8 +152,8 @@ export function RequestLog({
                 </th>
               </tr>
             </thead>
-            <tbody>
-              {rows.map((r) => (
+            <tbody className="max-md:block">
+              {rows.slice(0, limit).map((r) => (
                 <Row
                   key={r.id}
                   record={r}
@@ -138,6 +162,14 @@ export function RequestLog({
               ))}
             </tbody>
           </table>
+          {rows.length > limit && (
+            <button
+              className={cx(button("secondary"), "mt-3.5")}
+              onClick={() => setLimit(limit + pageSize)}
+            >
+              Show {Math.min(pageSize, rows.length - limit)} more
+            </button>
+          )}
         </div>
       )}
     </>
@@ -146,12 +178,15 @@ export function RequestLog({
 
 function Row({ record: r, user }: { record: RequestRecord; user: string }) {
   return (
-    <tr className="group">
-      <td className={cell()} title={new Date(r.startedAt).toLocaleString()}>
+    <tr className={row}>
+      <td
+        className={cx(cell(), place.time)}
+        title={new Date(r.startedAt).toLocaleString()}
+      >
         {when(r.startedAt)}
       </td>
-      <td className={cell()}>
-        <span className="font-medium text-text">
+      <td className={cx(cell(), place.model)}>
+        <span className="font-medium text-text max-md:text-[13px]">
           {r.model || "Unknown model"}
         </span>
         {r.nativeModel && r.nativeModel !== r.model && (
@@ -159,10 +194,10 @@ function Row({ record: r, user }: { record: RequestRecord; user: string }) {
         )}
         {r.speed && <span className={subLine}>{speedLabel[r.speed]}</span>}
       </td>
-      <td className={cell()}>
+      <td className={cx(cell(), place.key)}>
         {keyLabel(r)}
         {user && (
-          <span className={subLine}>
+          <span className={nameLine}>
             <Private peek>{user}</Private>
           </span>
         )}
@@ -172,18 +207,22 @@ function Row({ record: r, user }: { record: RequestRecord; user: string }) {
       <DurationCell record={r} />
       {r.usageKnown ? (
         <>
-          <td className={cell(true)}>
+          <td className={cx(cell(true), place.number)} data-unit="in">
             {number(r.inputTokens)}
             {r.cachedTokens > 0 && (
               <span className={subLine}>{number(r.cachedTokens)} cached</span>
             )}
           </td>
-          <td className={cell(true)}>{number(r.outputTokens)}</td>
-          <td className={cell(true)}>{number(r.totalTokens)}</td>
+          <td className={cx(cell(true), place.number)} data-unit="out">
+            {number(r.outputTokens)}
+          </td>
+          <td className={cx(cell(true), place.number)} data-unit="total">
+            {number(r.totalTokens)}
+          </td>
         </>
       ) : (
         <td
-          className={cell(true, true)}
+          className={cx(cell(true, true), place.number)}
           colSpan={3}
           title={
             r.usagePartial === true
@@ -202,13 +241,13 @@ function Row({ record: r, user }: { record: RequestRecord; user: string }) {
 
 function AccountCell({ record: r }: { record: RequestRecord }) {
   return (
-    <td className={cell()}>
-      <span className={badgeRow}>
+    <td className={cx(cell(), place.account)}>
+      <span className={cx(badgeRow, "max-md:inline-flex")}>
         {r.provider ? providerLabel(r.provider) : "Not routed"}
         {r.accountScope && <ScopeBadge scope={r.accountScope} />}
       </span>
       {r.accountName !== undefined && r.accountName !== "" && (
-        <span className={subLine}>
+        <span className={nameLine}>
           <Private peek>{r.accountName}</Private>
         </span>
       )}
@@ -224,7 +263,14 @@ const resultTone: Record<RequestRecord["outcome"], string> = {
 
 function ResultCell({ record: r }: { record: RequestRecord }) {
   return (
-    <td className={cell()}>
+    <td
+      className={cx(
+        cell(),
+        r.failure !== undefined && r.failure !== ""
+          ? place.failed
+          : place.result,
+      )}
+    >
       <span
         className={cx("whitespace-nowrap", resultTone[r.outcome])}
         title={r.status ? `HTTP ${r.status}` : undefined}
@@ -233,7 +279,7 @@ function ResultCell({ record: r }: { record: RequestRecord }) {
       </span>
       {r.failure !== undefined && r.failure !== "" && (
         <span
-          className="line-clamp-2 max-w-[260px] text-[11.5px] text-muted"
+          className="line-clamp-2 max-w-[260px] text-[12px] text-muted max-md:max-w-none"
           title={r.failure}
         >
           {r.failure}
@@ -246,7 +292,7 @@ function ResultCell({ record: r }: { record: RequestRecord }) {
 // Streaming is the usual case, so only a buffered response is labelled.
 function DurationCell({ record: r }: { record: RequestRecord }) {
   return (
-    <td className={cell(true)}>
+    <td className={cx(cell(true), place.number)}>
       {formatDuration(r.durationMs)}
       {r.stream ? (
         r.firstOutputMs !== undefined && (

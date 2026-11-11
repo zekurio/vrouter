@@ -7,7 +7,7 @@ const failure = cx(notice({ error: true, inset: true }), "mt-4.5");
 // Each step is numbered in a ring, and a rule joins it to the next. The ring
 // is 24px plus its border, as the old content-box pseudo-element was.
 const step =
-  "relative pb-6 pl-9.5 [counter-increment:step] last:pb-0 before:absolute before:-top-0.75 before:left-0 before:flex before:size-6.5 before:items-center before:justify-center before:rounded-full before:border before:border-line before:text-[11px] before:text-provider before:tabular-nums before:content-[counter(step)] not-last:after:absolute not-last:after:top-6.75 not-last:after:bottom-0.75 not-last:after:left-3 not-last:after:w-px not-last:after:bg-line";
+  "relative pb-6 pl-9.5 [counter-increment:step] last:pb-0 before:absolute before:-top-0.75 before:left-0 before:flex before:size-6.5 before:items-center before:justify-center before:rounded-full before:border before:border-line before:text-[12px] before:text-provider before:tabular-nums before:content-[counter(step)] not-last:after:absolute not-last:after:top-6.75 not-last:after:bottom-0.75 not-last:after:left-3 not-last:after:w-px not-last:after:bg-line";
 const stepTitle = "text-[13px] font-[550]";
 const stepNote = "mt-1.25 text-[12px] leading-[1.6] text-muted";
 
@@ -71,22 +71,26 @@ export function ConnectSteps({
           {/* Keeps the final layout in place until the session is ready. */}
           <p
             className={cx(
-              "mt-2.5 flex items-center gap-2 text-[12px] leading-[1.6] text-subtle tabular-nums",
+              "mt-2.5 flex items-center gap-2 text-[12px] leading-[1.6] text-subtle",
               !ready && "invisible",
             )}
             role={ready ? "status" : undefined}
             inert={!ready}
           >
-            <RefreshCw size={13} className="animate-spin" />
-            {waiting} Link expires in {countdown(session, now)}.
+            <RefreshCw size={13} className="shrink-0 animate-spin" />
+            <span>
+              {waiting} Link expires in{" "}
+              <span className="tabular-nums">{countdown(session, now)}</span>.
+            </span>
           </p>
+          {/* A failed check is not a failed sign-in. The next check may work. */}
+          {error && (
+            <p className="mt-1.5 text-[12px] leading-[1.6] text-amber">
+              Lost contact with vrouter. Still waiting.
+            </p>
+          )}
         </li>
       </ol>
-      {error && (
-        <div className={failure} role="alert">
-          {error}
-        </div>
-      )}
       {!deviceCode && (
         <ManualCallback
           ready={ready}
@@ -119,8 +123,10 @@ function OpenStep({
           : "Opens in a new tab."}
       </p>
       {deviceCode && userCode && (
-        <div className={copyField}>
-          <code>{userCode}</code>
+        <div className={cx(copyField, "mt-2.5 py-2")}>
+          <code className="text-[14px] tracking-[0.5px] select-all">
+            {userCode}
+          </code>
         </div>
       )}
       {ready ? (

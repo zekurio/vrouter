@@ -57,6 +57,9 @@ const cell = (cost = false) =>
     "pt-3.25 pb-2.75 pl-5.5 text-right whitespace-nowrap tabular-nums",
     cost ? "font-[550] text-text" : "text-subtle",
   );
+// A phone has room for the name, the cost and the requests. The share is the
+// bar under the name, and the tokens are in the totals above.
+const wide = "max-sm:hidden";
 
 // One breakdown of the usage, largest cost first, with a bar for each row.
 function GroupTable({
@@ -71,7 +74,7 @@ function GroupTable({
   const peak = Math.max(...groups.map((g) => g.cost), 0);
   return (
     <div className={tableScroll}>
-      <table className="w-full min-w-[560px] border-collapse text-[13px]">
+      <table className="w-full min-w-[560px] border-collapse text-[13px] max-sm:min-w-0">
         <thead>
           <tr>
             <th scope="col" className={head(false)}>
@@ -80,13 +83,13 @@ function GroupTable({
             <th scope="col" className={head(true)}>
               Cost
             </th>
-            <th scope="col" className={head(true)}>
+            <th scope="col" className={cx(head(true), wide)}>
               Share
             </th>
             <th scope="col" className={head(true)}>
               Requests
             </th>
-            <th scope="col" className={head(true)}>
+            <th scope="col" className={cx(head(true), wide)}>
               Tokens
             </th>
           </tr>
@@ -100,7 +103,7 @@ function GroupTable({
             >
               <th
                 scope="row"
-                className="w-[55%] pt-3.25 pb-2.75 text-left font-medium"
+                className="w-[55%] pt-3.25 pb-2.75 text-left font-medium max-sm:w-auto"
               >
                 <span className="flex items-center gap-2 wrap-anywhere">
                   {view === "model" && (
@@ -115,20 +118,25 @@ function GroupTable({
                   />
                 )}
               </th>
+              {/* Two cells either way, so hiding the share on a phone leaves
+                  the columns in place. */}
               {g.measured > 0 && g.unpriced === g.measured ? (
-                <td className={cell()} colSpan={2}>
-                  Unpriced
-                </td>
+                <>
+                  <td className={cell()}>Unpriced</td>
+                  <td className={cx(cell(), wide)} aria-label="No share" />
+                </>
               ) : (
                 <>
                   <td className={cell(true)}>
                     {g.measured > 0 && money(g.cost)}
                   </td>
-                  <td className={cell()}>{share(g.cost, total)}</td>
+                  <td className={cx(cell(), wide)}>{share(g.cost, total)}</td>
                 </>
               )}
               <td className={cell()}>{number(g.requests)}</td>
-              <td className={cell()}>{g.measured > 0 && compact(g.tokens)}</td>
+              <td className={cx(cell(), wide)}>
+                {g.measured > 0 && compact(g.tokens)}
+              </td>
             </tr>
           ))}
         </tbody>

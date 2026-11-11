@@ -60,7 +60,7 @@ export function HelpDialog({
       </div>
       {addresses.map((a, i) => (
         <div className={i > 0 ? "mt-2.5" : ""} key={a.label}>
-          <span className="mb-1.5 block text-[11px] text-muted">{a.label}</span>
+          <span className="mb-1.5 block text-[12px] text-muted">{a.label}</span>
           <div className={copyField}>
             <code className="min-w-0 wrap-anywhere">{a.value}</code>
             <button
@@ -77,11 +77,13 @@ export function HelpDialog({
         {endpoints.map((e) => (
           <li
             key={e.path}
-            className="flex items-center gap-2.5 py-0.5 pl-3 text-[12px]"
+            className="flex items-center gap-2.5 py-0.5 pl-3 text-[12px] max-sm:flex-wrap max-sm:pl-0"
           >
             <span className={`w-8.5 ${endpointMethod}`}>{e.method}</span>
-            <code>/v1{e.path}</code>
-            <span className="min-w-0 flex-1 text-right text-subtle">
+            <code className="max-sm:min-w-0 max-sm:flex-1">/v1{e.path}</code>
+            {/* On a phone the path and its copy button share the line, and the
+                note goes under them. */}
+            <span className="min-w-0 flex-1 text-right text-subtle max-sm:order-last max-sm:-mt-1.5 max-sm:mb-1 max-sm:basis-full max-sm:pl-11 max-sm:text-left">
               {e.note}
             </span>
             <button

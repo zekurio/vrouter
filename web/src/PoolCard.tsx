@@ -105,7 +105,7 @@ export function PoolCard({
         </span>
       </div>
       <div className="mt-5.5 flex items-baseline gap-2.5 leading-none">
-        {known.length === accounts.length ? (
+        {known.length > 0 ? (
           <>
             <span className="text-[46px] font-semibold tracking-[-1.6px] max-sm:text-[40px]">
               {Math.round(remaining)}
@@ -113,9 +113,12 @@ export function PoolCard({
                 %
               </small>
             </span>
-            <span className="text-[14px] text-muted">
-              of {accounts.length * 100}%
-              {accounts.every((a) => a.window === "Weekly window") && " weekly"}
+            <span className="text-[14px] leading-[1.4] text-muted">
+              of {known.length * 100}%
+              {known.every((a) => a.window === "Weekly window") && " weekly"}
+              {/* The sum covers only the accounts that report an allowance. */}
+              {known.length < accounts.length &&
+                ` · ${known.length} of ${accounts.length} accounts report`}
             </span>
           </>
         ) : (

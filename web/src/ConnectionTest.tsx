@@ -12,7 +12,7 @@ const stateColors: Record<string, string> = {
   incomplete: "text-amber",
   failed: "text-danger",
 };
-const note = "mt-1.5 text-[11.5px] leading-[1.6] wrap-anywhere";
+const note = "mt-1.5 text-[12px] leading-[1.6] wrap-anywhere";
 
 const labels: Record<TestOutcome["state"], string> = {
   passed: "Passed",
@@ -157,7 +157,7 @@ function TestResult({
         </strong>
         <code className="text-subtle">POST {path}</code>
         {facts && (
-          <span className="ml-auto text-[11px] text-muted">
+          <span className="ml-auto text-[12px] text-muted">
             {facts.filter(Boolean).join(" · ")}
           </span>
         )}
