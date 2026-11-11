@@ -168,6 +168,9 @@ func (s *server) tryAccounts(w http.ResponseWriter, r *http.Request, attempt *in
 		}
 		attempt.provider, attempt.account = a.Provider, a
 		resp, err := plan.client.Do(req) //nolint:bodyclose // deliver, keep, and fail close it
+		if err == nil {
+			s.observeQuotaHeaders(r.Context(), a, resp)
+		}
 		switch {
 		case err != nil:
 			if r.Context().Err() != nil {

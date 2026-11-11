@@ -56,23 +56,24 @@ type Account struct {
 	// Scope is global for a shared account and personal for the user's own.
 	Scope string `json:"scope"`
 	// Manageable is set when the user may reconnect, disable or remove it.
-	Manageable      bool          `json:"manageable"`
-	Name            string        `json:"name"`
-	Provider        string        `json:"provider"`
-	AuthMode        string        `json:"authMode,omitempty"`
-	Status          string        `json:"status"`
-	Plan            string        `json:"plan"`
-	Remaining       *float64      `json:"remaining"`
-	Window          string        `json:"window"`
-	Email           string        `json:"email,omitempty"`
-	StatusMessage   string        `json:"statusMessage,omitempty"`
-	CreatedAt       *time.Time    `json:"createdAt,omitempty"`
-	Reconnectable   bool          `json:"reconnectable"`
-	Windows         []QuotaWindow `json:"windows,omitempty"`
-	QuotaUpdatedAt  *time.Time    `json:"quotaUpdatedAt,omitempty"`
-	QuotaError      string        `json:"quotaError,omitempty"`
-	QuotaRetryAt    *time.Time    `json:"quotaRetryAt,omitempty"` // next usage read after QuotaError
-	AvailableResets *int          `json:"availableResets,omitempty"`
+	Manageable     bool          `json:"manageable"`
+	Name           string        `json:"name"`
+	Provider       string        `json:"provider"`
+	AuthMode       string        `json:"authMode,omitempty"`
+	Status         string        `json:"status"`
+	Plan           string        `json:"plan"`
+	Remaining      *float64      `json:"remaining"`
+	Window         string        `json:"window"`
+	Email          string        `json:"email,omitempty"`
+	StatusMessage  string        `json:"statusMessage,omitempty"`
+	CreatedAt      *time.Time    `json:"createdAt,omitempty"`
+	Reconnectable  bool          `json:"reconnectable"`
+	Windows        []QuotaWindow `json:"windows,omitempty"`
+	QuotaUpdatedAt *time.Time    `json:"quotaUpdatedAt,omitempty"`
+	QuotaError     string        `json:"quotaError,omitempty"`
+	QuotaRetryAt   *time.Time    `json:"quotaRetryAt,omitempty"` // next usage read after QuotaError
+	// Resets are the usage resets the account holds, usable or not.
+	Resets []AccountReset `json:"resets,omitempty"`
 }
 
 // State is the dashboard snapshot of models and accounts.
@@ -101,12 +102,14 @@ type server struct {
 	quotas       map[string]quotaCache
 	quotaPending map[string]chan struct{}
 	lastQuotas   map[string]quotaCache
-	oauthMu      sync.Mutex
-	oauth        map[string]oauthSession
-	callbacks    map[string][]*http.Server
-	modelMu      sync.Mutex
-	catalogMu    sync.Mutex
-	catalogs     map[string]catalogCache
+	// planChecked holds when each Claude account's profile last named a plan.
+	planChecked map[string]time.Time
+	oauthMu     sync.Mutex
+	oauth       map[string]oauthSession
+	callbacks   map[string][]*http.Server
+	modelMu     sync.Mutex
+	catalogMu   sync.Mutex
+	catalogs    map[string]catalogCache
 	// catalogPending holds a channel per account whose catalog is loading. It
 	// closes when the load ends.
 	catalogPending map[string]chan struct{}
@@ -185,7 +188,7 @@ func New(cfg Config, assets fs.FS) (http.Handler, error) {
 		streamClient: &http.Client{Transport: transport, CheckRedirect: noRedirect},
 		slowClient:   &http.Client{Transport: slowTransport, CheckRedirect: noRedirect},
 		priceClient:  &http.Client{Transport: transport, Timeout: time.Minute},
-		quotas:       map[string]quotaCache{}, lastQuotas: map[string]quotaCache{}, oauth: map[string]oauthSession{},
+		quotas:       map[string]quotaCache{}, lastQuotas: map[string]quotaCache{}, planChecked: map[string]time.Time{}, oauth: map[string]oauthSession{},
 		catalogs: map[string]catalogCache{}, catalogPending: map[string]chan struct{}{}, refreshFailures: map[string]refreshFailure{},
 		trouble: map[string]time.Time{}, rejected: map[string]time.Time{}, windowWatch: map[string]windowWatch{},
 	}
@@ -274,6 +277,7 @@ func (s *server) routes(assets fs.FS) http.Handler {
 		{"PUT /api/model-settings", s.putModelSettings, true},
 		{"PATCH /api/accounts", s.updateAccount, false},
 		{"DELETE /api/accounts", s.removeAccount, false},
+		{"POST /api/accounts/{id}/resets", s.useReset, false},
 		{"POST /api/oauth/{provider}", s.startOAuth, false},
 		{"GET /api/oauth/sessions/{id}", s.oauthStatus, false},
 		{"POST /api/oauth/sessions/{id}/callback", s.oauthCallback, false},

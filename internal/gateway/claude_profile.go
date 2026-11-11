@@ -47,6 +47,15 @@ func (p claudeProfile) plan() string {
 	return ""
 }
 
+// claudePlanDue reports whether the saved plan is unknown or old enough to
+// read the profile again. A plan changes rarely, and every profile read
+// counts against the same rate limit as the usage read beside it.
+func (s *server) claudePlanDue(a storedAccount) bool {
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
+	return a.Plan == "" || time.Since(s.planChecked[a.ID]) >= claudePlanTTL
+}
+
 // Claude's usage response has no subscription type. Fetch it independently so
 // a profile failure never hides valid quota windows. The caller coalesces and
 // caches this alongside the usage request.
@@ -64,6 +73,9 @@ func (s *server) claudePlan(ctx context.Context, a storedAccount) string {
 	if plan == "" {
 		return ""
 	}
+	s.quotaMu.Lock()
+	s.planChecked[a.ID] = time.Now()
+	s.quotaMu.Unlock()
 	if plan == a.Plan {
 		return plan
 	}

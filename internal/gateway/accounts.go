@@ -84,11 +84,9 @@ func applyAccountQuota(account *Account, q quotaCache) {
 	if q.Error != "" && !q.RetryAt.IsZero() {
 		account.QuotaRetryAt = &q.RetryAt
 	}
-	if q.Resets != nil {
-		account.AvailableResets = &q.Resets.Available
-	}
-	if len(q.Windows) > 0 || (q.Error == "" && !q.ObservedAt.IsZero()) {
-		account.QuotaUpdatedAt = &q.ObservedAt
+	account.Resets = q.Resets.view(account.Provider, time.Now())
+	if updated := q.updatedAt(); len(q.Windows) > 0 || (q.Error == "" && !updated.IsZero()) {
+		account.QuotaUpdatedAt = &updated
 	}
 	if q.Plan != "" {
 		account.Plan = planName(account.Provider, q.Plan)
@@ -151,10 +149,7 @@ func (s *server) changeAccount(w http.ResponseWriter, r *http.Request, remove bo
 		return
 	}
 	s.forgetAccountState(body.ID)
-	s.quotaMu.Lock()
-	delete(s.quotas, body.ID)
-	delete(s.lastQuotas, body.ID)
-	s.quotaMu.Unlock()
+	s.forgetQuota(body.ID)
 	if remove {
 		if err := s.store.data.usage.forgetQuota(r.Context(), body.ID); err != nil {
 			slog.Warn("quota history of a removed account kept", "account", body.ID, "error", err)
@@ -167,7 +162,7 @@ func (s *server) changeAccount(w http.ResponseWriter, r *http.Request, remove bo
 
 func (s *server) nativeQuota(ctx context.Context, a storedAccount) quotaCache {
 	s.quotaMu.Lock()
-	if q, ok := s.quotas[a.ID]; ok && quotaFresh(q, time.Now()) {
+	if q, ok := s.quotas[a.ID]; ok && quotaFresh(a, q, time.Now()) {
 		s.quotaMu.Unlock()
 		return q
 	}
@@ -194,10 +189,11 @@ func (s *server) nativeQuota(ctx context.Context, a storedAccount) quotaCache {
 		return q
 	}
 	s.quotaMu.Lock()
-	s.quotas[a.ID] = q
 	if q.Error == "" {
+		q = q.keepingHeaderWindows(s.lastQuotas[a.ID], time.Now())
 		s.lastQuotas[a.ID] = q
 	}
+	s.quotas[a.ID] = q
 	s.quotaMu.Unlock()
 	if q.Error == "" {
 		s.recordQuota(ctx, a.ID, q)
@@ -211,8 +207,12 @@ func (s *server) fetchNativeQuota(ctx context.Context, a storedAccount) quotaCac
 	q := quotaCache{ObservedAt: time.Now().UTC()}
 	var profilePlan chan string
 	if a.Provider == "claude" && a.AuthMode == "oauth" {
-		profilePlan = make(chan string, 1)
-		go func() { profilePlan <- s.claudePlan(ctx, a) }()
+		if s.claudePlanDue(a) {
+			profilePlan = make(chan string, 1)
+			go func() { profilePlan <- s.claudePlan(ctx, a) }()
+		} else {
+			q.Plan = a.Plan
+		}
 	}
 	target := "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1"
 	if a.Provider == "codex" {
@@ -224,7 +224,8 @@ func (s *server) fetchNativeQuota(ctx context.Context, a storedAccount) quotaCac
 		q.Windows, q.Plan, err = parseQuota(a.Provider, raw, q.ObservedAt)
 		q.Allowed, q.Resets = parseResetStatus(a.Provider, raw)
 	}
-	if err == nil && len(q.Windows) == 0 && q.Allowed == nil {
+	// A Claude report without windows is an account that has none to show.
+	if err == nil && a.Provider == "codex" && len(q.Windows) == 0 && q.Allowed == nil {
 		err = errors.New("provider response contained no supported usage windows")
 	}
 	if err != nil {
@@ -245,9 +246,10 @@ func (s *server) fetchNativeQuota(ctx context.Context, a storedAccount) quotaCac
 	return q
 }
 
-// dashboardQuota is the quota shown for an account. When a probe fails it
-// keeps the last reported windows beside the error, so a provider hiccup does
-// not blank the page. Routing and key accounting never read this.
+// dashboardQuota is the quota shown for an account. When a read fails it
+// keeps the last reported windows, so a provider hiccup does not blank the
+// page. The error joins them only once they are old: one missed read is not
+// worth a warning while the next one is already scheduled.
 func (s *server) dashboardQuota(ctx context.Context, a storedAccount) quotaCache {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
@@ -255,17 +257,16 @@ func (s *server) dashboardQuota(ctx context.Context, a storedAccount) quotaCache
 	if q.Error == "" {
 		return q
 	}
-	s.quotaMu.Lock()
-	last, ok := s.lastQuotas[a.ID]
-	s.quotaMu.Unlock()
+	now := time.Now()
+	last, ok := s.knownQuota(a.ID, now)
 	if !ok {
 		return q
 	}
-	last = currentQuota(last, time.Now())
-	if len(last.Windows) == 0 {
-		return q
+	// Responses keep the main windows current, but only a usage read
+	// renews the rest and the resets. Windows beside an error tell the UI
+	// that some of them are old.
+	if now.Sub(last.ObservedAt) >= quotaStaleAfter {
+		last.Error, last.RetryAt = q.Error, q.RetryAt
 	}
-	// Windows beside an error tell the UI they are old.
-	last.Error, last.RetryAt = q.Error, q.RetryAt
 	return last
 }

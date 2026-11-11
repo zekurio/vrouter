@@ -11,11 +11,15 @@ func nativeUsage(a storedAccount) bool {
 	return a.Provider == "codex" && a.AuthMode == "codex" || a.Provider == "claude" && a.AuthMode == "oauth"
 }
 
-func quotaFresh(q quotaCache, now time.Time) bool {
+func quotaFresh(a storedAccount, q quotaCache, now time.Time) bool {
 	if q.Error != "" {
 		return now.Before(q.RetryAt)
 	}
-	if q.ObservedAt.IsZero() || now.Sub(q.ObservedAt) >= time.Minute {
+	ttl := quotaTTL
+	if a.Provider == "claude" {
+		ttl = claudeQuotaTTL
+	}
+	if q.ObservedAt.IsZero() || now.Sub(q.ObservedAt) >= ttl {
 		return false
 	}
 	for _, w := range q.Windows {
@@ -29,11 +33,15 @@ func quotaFresh(q quotaCache, now time.Time) bool {
 func currentQuota(q quotaCache, now time.Time) quotaCache {
 	windows := make([]QuotaWindow, 0, len(q.Windows))
 	for _, w := range q.Windows {
-		if w.ResetAt == nil || now.Before(*w.ResetAt) {
-			windows = append(windows, w)
-		} else {
+		switch {
+		case w.ResetAt != nil && !now.Before(*w.ResetAt):
 			// A previous window cannot authorize an automatic redemption.
 			q.Allowed = nil
+		case !w.seenAt.IsZero() && w.seenAt.Before(q.ObservedAt) && now.Sub(w.seenAt) >= quotaStaleAfter:
+			// Only responses report this window, and none has for a while.
+			// The usage read that carried it over did not confirm it.
+		default:
+			windows = append(windows, w)
 		}
 	}
 	q.Windows = windows
@@ -88,6 +96,10 @@ func quotaWindowScope(a storedAccount, w QuotaWindow) (string, string) {
 	case "opus", "sonnet":
 		if a.Provider == "claude" {
 			return "seven_day_" + w.ID, w.ID
+		}
+	case fableWindow:
+		if a.Provider == "claude" {
+			return claudeFableLimit, fableWindow
 		}
 	}
 	return "", ""
@@ -149,7 +161,7 @@ func (s *server) freshNativeQuota(ctx context.Context, a storedAccount) quotaCac
 		if pending == nil {
 			// A forced read must still respect a failed probe's cooldown,
 			// especially Retry-After from the provider's usage endpoint.
-			if q, ok := s.quotas[a.ID]; ok && q.Error != "" && quotaFresh(q, time.Now()) {
+			if q, ok := s.quotas[a.ID]; ok && q.Error != "" && quotaFresh(a, q, time.Now()) {
 				s.quotaMu.Unlock()
 				return q
 			}
@@ -167,7 +179,21 @@ func (s *server) freshNativeQuota(ctx context.Context, a storedAccount) quotaCac
 	}
 }
 
-func (s *server) poolQuotas(ctx context.Context, pool []storedAccount, fresh bool) []quotaCache {
+// confirmedQuota is the quota a reset is spent on: a report no older than
+// resetProbeAge, or a new read.
+func (s *server) confirmedQuota(ctx context.Context, a storedAccount) quotaCache {
+	s.quotaMu.Lock()
+	q, ok := s.quotas[a.ID]
+	s.quotaMu.Unlock()
+	if now := time.Now(); ok && q.Error == "" && now.Sub(q.ObservedAt) < resetProbeAge && quotaFresh(a, q, now) {
+		return q
+	}
+	return s.freshNativeQuota(ctx, a)
+}
+
+// poolQuotas reads the quota of every subscription account in a pool with
+// read, a few at a time.
+func (s *server) poolQuotas(ctx context.Context, pool []storedAccount, read func(context.Context, storedAccount) quotaCache) []quotaCache {
 	quotas := make([]quotaCache, len(pool))
 	var wg sync.WaitGroup
 	limit := make(chan struct{}, 4)
@@ -184,11 +210,7 @@ func (s *server) poolQuotas(ctx context.Context, pool []storedAccount, fresh boo
 				return
 			}
 			defer func() { <-limit }()
-			if fresh {
-				quotas[i] = s.freshNativeQuota(ctx, a)
-			} else {
-				quotas[i] = s.nativeQuota(ctx, a)
-			}
+			quotas[i] = read(ctx, a)
 		}(i, a)
 	}
 	wg.Wait()
@@ -196,16 +218,18 @@ func (s *server) poolQuotas(ctx context.Context, pool []storedAccount, fresh boo
 }
 
 func (s *server) usableAccounts(ctx context.Context, pool []storedAccount, model string) []storedAccount {
-	quotas := s.poolQuotas(ctx, pool, false)
+	quotas := s.poolQuotas(ctx, pool, s.routingQuota)
 	usable := make([]storedAccount, 0, len(pool))
 	for i, a := range pool {
 		if len(quotaBlockers(a, quotas[i], model, time.Now())) == 0 {
 			usable = append(usable, a)
 			// A delayed reset can first become visible on a later normal request.
-			// Only a probe newer than the attempt can reconcile it.
+			// Only a probe newer than the attempt can reconcile it. A reset the
+			// user asked for works before any limit is reached, so usable quota
+			// does not settle it and it keeps its request ID.
 			if quotaKnownUsableForAllModels(a, quotas[i], time.Now()) {
 				s.resetMu.Lock()
-				if attempt, ok := s.store.snapshot().ResetAttempts[a.ID]; ok && quotas[i].ObservedAt.After(attempt.LastTry) {
+				if attempt, ok := s.store.snapshot().ResetAttempts[a.ID]; ok && !attempt.held(time.Now()) && quotas[i].ObservedAt.After(attempt.LastTry) {
 					_ = s.saveResetAttempt(a.ID, nil)
 				}
 				s.resetMu.Unlock()
