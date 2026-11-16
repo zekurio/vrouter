@@ -18,10 +18,12 @@ export type QuotaWindow = {
 };
 
 // Pace as CodexBar works it out: usage so far against the share of the window
-// that has passed, and when the quota runs out if usage keeps that rate. Null
-// without a length and a reset time, for an empty window, and in the first 3%
-// of a window, which is too little to go on.
-function pace(window: QuotaWindow, now: number) {
+// that has passed, and when the quota runs out. That takes `rate`, in percent
+// per hour, where the caller has one, so the card agrees with its pool, and
+// the average since the reset otherwise. Null without a length and a reset
+// time, for an empty window, and in the first 3% of a window, which is too
+// little to go on.
+function pace(window: QuotaWindow, now: number, rate?: number | null) {
   const { seconds, resetAt } = window;
   if (
     seconds === undefined ||
@@ -37,8 +39,11 @@ function pace(window: QuotaWindow, now: number) {
   const elapsed = length - left;
   if (elapsed < length * 0.03) return null;
   const used = 100 - window.remaining;
-  // Infinite when nothing is used yet.
-  const emptyIn = (window.remaining / used) * elapsed;
+  // Infinite when nothing is spent.
+  const emptyIn =
+    rate === undefined || rate === null
+      ? (window.remaining / used) * elapsed
+      : (window.remaining / rate) * 3600e3;
   return {
     // Remaining with even spending, where the bar marks the pace.
     even: (left / length) * 100,
@@ -65,13 +70,20 @@ export function span(ms: number) {
 
 // Each window as the amount left and the reset, a bar, and the pace. Cells
 // share columns and fill them in order from the first, so every account row
-// starts at the same x.
-export function QuotaWindows({ windows }: { windows: QuotaWindow[] }) {
+// starts at the same x. `rates` holds the spending rate by window id, for the
+// time each runs out.
+export function QuotaWindows({
+  windows,
+  rates,
+}: {
+  windows: QuotaWindow[];
+  rates?: Map<string, number | null> | undefined;
+}) {
   const now = Date.now();
   return (
     <div className="grid grid-cols-[repeat(auto-fill,minmax(min(260px,100%),1fr))] gap-x-7 gap-y-5">
       {windows.map((w) => (
-        <QuotaCell key={w.id} window={w} now={now} />
+        <QuotaCell key={w.id} window={w} now={now} rate={rates?.get(w.id)} />
       ))}
     </div>
   );
@@ -80,8 +92,16 @@ export function QuotaWindows({ windows }: { windows: QuotaWindow[] }) {
 // The mark for even spending, by which side of it usage is.
 const marks = { deficit: "bg-danger", reserve: "bg-green" };
 
-function QuotaCell({ window: w, now }: { window: QuotaWindow; now: number }) {
-  const p = pace(w, now);
+function QuotaCell({
+  window: w,
+  now,
+  rate,
+}: {
+  window: QuotaWindow;
+  now: number;
+  rate: number | null | undefined;
+}) {
+  const p = pace(w, now, rate);
   // Within 2 points of even spending counts as on pace, with no mark.
   const off =
     p && Math.abs(p.delta) > 2 ? (p.delta > 0 ? "deficit" : "reserve") : "";
