@@ -32,7 +32,7 @@ export function Overview({
   // Changes whenever the accounts reload.
   reloadKey: string;
 }) {
-  const { basis, choose, forecasts } = usePoolForecasts(
+  const { basis, choose, forecasts, rates } = usePoolForecasts(
     request,
     reloadKey,
     accounts,
@@ -82,7 +82,7 @@ export function Overview({
           )}
         >
           {visibleAccounts.map((a) => (
-            <AccountCard key={a.id} account={a} />
+            <AccountCard key={a.id} account={a} rates={rates.get(a.id)} />
           ))}
         </section>
       )}
@@ -90,7 +90,14 @@ export function Overview({
   );
 }
 
-function AccountCard({ account: a }: { account: Account }) {
+// `rates` are the account's spending rates by window, on the pools' basis.
+function AccountCard({
+  account: a,
+  rates,
+}: {
+  account: Account;
+  rates: Map<string, number | null> | undefined;
+}) {
   return (
     <article className={card} style={providerStyle(a.provider)}>
       <div className="flex items-start justify-between gap-2.5">
@@ -123,7 +130,7 @@ function AccountCard({ account: a }: { account: Account }) {
       {a.windows !== undefined && a.windows.length > 0 ? (
         // Dimmed like the account's row on the Accounts page.
         <div className={cx("mt-5.5", a.status === "disabled" && "opacity-50")}>
-          <QuotaWindows windows={a.windows} />
+          <QuotaWindows windows={a.windows} rates={rates} />
         </div>
       ) : (
         <p className="mt-5.75 text-[12px] text-muted">

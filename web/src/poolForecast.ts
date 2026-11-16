@@ -163,6 +163,51 @@ function windowRate(w: QuotaWindow, now: number) {
   return ((100 - w.remaining) / elapsed) * HOUR;
 }
 
+type Tracked = { window: QuotaWindow; line: Point[] };
+
+// The rate of each window on the basis, in percent per hour, and the basis
+// actually used. Too little history for any of them falls back to the window
+// average for all, so they stay comparable. Null where even that is too
+// little.
+function basisRates(tracked: Tracked[], basis: Basis, now: number) {
+  if (basis !== "window") {
+    const span = basisSpan[basis];
+    const rates = tracked.map((k) => recentRate(k.line, now - span, now, span));
+    if (rates.every((r) => r !== null)) return { rates, used: basis };
+  }
+  return {
+    rates: tracked.map((k) => windowRate(k.window, now)),
+    used: "window" as Basis,
+  };
+}
+
+const historyOf = (history: QuotaHistory[], account: string, window: string) =>
+  history.find((h) => h.accountId === account && h.window === window)?.runs ??
+  [];
+
+// The rate of each of an account's windows by window id, on the basis and at
+// the time of its pool's forecast. The headline window takes the rate the
+// forecast used, so the account card and the pool agree. Empty without a
+// forecast, which means the pool reports no windows.
+export function accountRates(
+  account: Account,
+  history: QuotaHistory[],
+  pool: PoolForecast | null,
+) {
+  if (!pool) return new Map<string, number | null>();
+  const lead = headline(account);
+  const { basis, now } = pool;
+  return new Map(
+    (account.windows ?? []).map((w): [string, number | null] => {
+      const pooled = pool.rates.get(account.id);
+      if (w === lead && pooled !== undefined) return [w.id, pooled];
+      const line = accountLine(historyOf(history, account.id, w.id), w, now);
+      const [rate] = basisRates([{ window: w, line }], basis, now).rates;
+      return [w.id, rate ?? null];
+    }),
+  );
+}
+
 // A rise of the line at t, to v.
 export type Jump = { t: number; gain: number; v: number };
 export type PoolForecast = {
@@ -178,6 +223,9 @@ export type PoolForecast = {
   // The pool's spending in percent per hour, and what it was measured over.
   rate: number;
   basis: Basis;
+  // Each account's share of the rate, by account id. Null where there was
+  // too little to go on, which the pool counts as nothing.
+  rates: Map<string, number | null>;
   // When the projected pool runs dry, or null if it lasts the chart.
   empty: number | null;
 };
@@ -259,10 +307,8 @@ export function forecast(
   const known = accounts.flatMap((a) => {
     const w = headline(a);
     if (!w) return [];
-    const runs =
-      history.find((h) => h.accountId === a.id && h.window === w.id)?.runs ??
-      [];
-    return [{ window: w, line: accountLine(runs, w, now) }];
+    const runs = historyOf(history, a.id, w.id);
+    return [{ id: a.id, window: w, line: accountLine(runs, w, now) }];
   });
   if (known.length === 0) return null;
   const length = Math.max(...known.map((k) => windowLength(k.window)));
@@ -278,19 +324,7 @@ export function forecast(
     from,
   );
 
-  // The basis falls back to the window average when there is too little
-  // history for it.
-  let used = basis;
-  let rates =
-    basis === "window"
-      ? null
-      : known.map((k) =>
-          recentRate(k.line, now - basisSpan[basis], now, basisSpan[basis]),
-        );
-  if (!rates || rates.some((r) => r === null)) {
-    used = "window";
-    rates = known.map((k) => windowRate(k.window, now));
-  }
+  const { rates, used } = basisRates(known, basis, now);
   const rate = rates.reduce<number>((n, r) => n + (r ?? 0), 0);
 
   const simulated = known.map((k) => ({
@@ -318,6 +352,9 @@ export function forecast(
     top: known.length * 100,
     rate,
     basis: used,
+    rates: new Map(
+      known.map((k, i): [string, number | null] => [k.id, rates[i] ?? null]),
+    ),
     empty,
   };
 }
