@@ -11,7 +11,7 @@ import (
 
 // The Codex catalog gates models by client version. Keep this in sync with
 // the native client protocol supported by the router.
-const codexCatalogClientVersion = "0.160.1"
+const codexCatalogClientVersion = "0.169.0"
 
 type catalogCache struct {
 	Models  []Model
