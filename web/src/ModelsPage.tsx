@@ -38,7 +38,6 @@ export function ModelsPage({
   onSaved,
   onDirty,
   onAddAccount,
-  editable,
 }: {
   models: Model[];
   // What vrouter could not load about the models, such as a provider catalog.
@@ -54,8 +53,6 @@ export function ModelsPage({
   // Reports unsaved drafts, and clears the report when the page unmounts.
   onDirty: (dirty: boolean) => void;
   onAddAccount: () => void;
-  // Model settings apply to everyone, so only admins change them.
-  editable: boolean;
 }) {
   const data = useModelSettings({
     models,
@@ -94,7 +91,7 @@ export function ModelsPage({
   const detail = rows.find((m) => keyOf(m) === selected) ?? null;
   const rowContext: RowContext = {
     view,
-    editable: data.editable && editable,
+    editable: data.editable,
     saving: data.saving,
     copied,
     onCopyID: (id) => void copyID(id),
@@ -111,7 +108,6 @@ export function ModelsPage({
         loadError={data.editable ? "" : data.loadError}
         warning={warnings[0] ?? ""}
         loading={loading}
-        editable={editable}
         onRetry={() => void data.load()}
       />
       <ModelsToolbar
@@ -190,34 +186,25 @@ function ModelsNotices({
   loadError,
   warning,
   loading,
-  editable,
   onRetry,
 }: {
   loadError: string;
   warning: string;
   loading: boolean;
-  editable: boolean;
   onRetry: () => void;
 }) {
-  return (
-    <>
-      {loadError ? (
-        <div className={cx(notice({ error: true }), "my-3.75")} role="alert">
-          {loadError}
-          <button className={noticeAction} disabled={loading} onClick={onRetry}>
-            Try again
-          </button>
-        </div>
-      ) : (
-        warning && <div className={cx(notice(), "my-3.75")}>{warning}</div>
-      )}
-      {!editable && (
-        <p className="mb-3 text-[13px] leading-[1.6] text-muted">
-          Only admins can change model settings.
-        </p>
-      )}
-    </>
-  );
+  if (loadError)
+    return (
+      <div className={cx(notice({ error: true }), "my-3.75")} role="alert">
+        {loadError}
+        <button className={noticeAction} disabled={loading} onClick={onRetry}>
+          Try again
+        </button>
+      </div>
+    );
+  return warning ? (
+    <div className={cx(notice(), "my-3.75")}>{warning}</div>
+  ) : null;
 }
 
 function ModelsToolbar({

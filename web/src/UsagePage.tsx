@@ -2,8 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { errorMessage, isStale, type APIRequest } from "./api";
 import { CostChart, series, seriesKey } from "./CostChart";
-import { OwnerTabs, ownerQuery, type Owner } from "./OwnerTabs";
-import { caption, nextPanel, pageNote, pageToolbar } from "./pageStyles";
+import { caption, nextPanel } from "./pageStyles";
 import { ProviderBrand, providerLabel } from "./ProviderBrand";
 import { Breakdown, CostSplits, type View } from "./UsageGroupTable";
 import {
@@ -26,8 +25,6 @@ import {
 } from "./ui";
 
 type Props = {
-  // Admins can see everyone's usage.
-  admin: boolean;
   request: APIRequest;
   reloadKey: string;
 };
@@ -35,11 +32,9 @@ type Props = {
 const number = (n: number) => n.toLocaleString();
 const plural = (n: number, noun: string) =>
   `${number(n)} ${noun}${n === 1 ? "" : "s"}`;
-// Loads the usage report again whenever reloadKey or the owner changes.
-function useUsage(request: APIRequest, reloadKey: string, owner: Owner) {
+// Loads the usage report again whenever reloadKey changes.
+function useUsage(request: APIRequest, reloadKey: string) {
   const [data, setData] = useState<UsageReport | null>(null);
-  // Whose usage the report holds.
-  const [loaded, setLoaded] = useState<Owner | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const sequence = useRef(0);
@@ -49,13 +44,9 @@ function useUsage(request: APIRequest, reloadKey: string, owner: Owner) {
     setLoading(true);
     try {
       const zone = encodeURIComponent(timeZone());
-      const query = ownerQuery(owner);
-      const result = await request<UsageReport>(
-        `/api/usage?tz=${zone}${query ? `&${query}` : ""}`,
-      );
+      const result = await request<UsageReport>(`/api/usage?tz=${zone}`);
       if (current !== sequence.current) return;
       setData(result);
-      setLoaded(owner);
       setError("");
     } catch (err) {
       if (current !== sequence.current || isStale(err)) return;
@@ -63,18 +54,17 @@ function useUsage(request: APIRequest, reloadKey: string, owner: Owner) {
     } finally {
       if (current === sequence.current) setLoading(false);
     }
-  }, [request, owner]);
+  }, [request]);
   useEffect(() => {
     void load();
   }, [reloadKey, load]);
 
-  // A reload that fails behind a report that is still right needs no message.
-  return { data, loading, error: loaded === owner ? "" : error, load };
+  // A reload that fails behind a report on screen needs no message.
+  return { data, loading, error: data ? "" : error, load };
 }
 
-export function UsagePage({ admin, request, reloadKey }: Props) {
-  const [owner, setOwner] = useState<Owner>("mine");
-  const { data, loading, error, load } = useUsage(request, reloadKey, owner);
+export function UsagePage({ request, reloadKey }: Props) {
+  const { data, loading, error, load } = useUsage(request, reloadKey);
   const [view, setView] = useState<View>("model");
 
   const usage = useMemo(
@@ -85,17 +75,6 @@ export function UsagePage({ admin, request, reloadKey }: Props) {
 
   return (
     <div>
-      {admin && (
-        <div className={pageToolbar}>
-          <OwnerTabs owner={owner} setOwner={setOwner} label="Show usage of" />
-          {owner === "all" && (
-            <p className={pageNote}>
-              Requests other people sent through their personal accounts show no
-              account name.
-            </p>
-          )}
-        </div>
-      )}
       {error && (
         <div className={cx(notice({ error: true }), "my-3.75")} role="alert">
           {error}{" "}
@@ -123,7 +102,6 @@ export function UsagePage({ admin, request, reloadKey }: Props) {
             setView={setView}
             usage={usage}
             requests={data.requests}
-            userNames={data.userNames}
           />
         </>
       )}

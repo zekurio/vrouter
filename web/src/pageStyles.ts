@@ -1,8 +1,8 @@
-// Classes the Keys, Users and Usage pages share: their toolbars, the usage
-// panels, and the key table, which the users list reuses.
+// Classes the Overview, Keys and Usage pages share: their toolbars, the usage
+// panels, and the key table.
 import { cx, panelFrame } from "./ui";
 
-// Mine and Everyone, above an admin's keys and usage, with a note beside.
+// A control above a page's content, with a note beside.
 export const pageToolbar =
   "mb-4.5 flex flex-wrap items-center gap-x-4 gap-y-2.5";
 export const pageNote = "text-[13px] leading-[1.5] text-muted";
@@ -36,8 +36,8 @@ export const keyHead = (a: Align = "left") =>
     "border-b border-border pr-4.5 pb-2.75 text-[12px] font-[450] whitespace-nowrap text-muted last:pr-0",
     align[a],
   );
-// Each key has a tbody of its own; the users share one. Either way a tbody
-// is ruled off from the next. In a list the rows carry the rule.
+// Each key has a tbody of its own, ruled off from the next. In a list the
+// rows carry the rule.
 export const keyBody =
   "border-b border-border last:border-b-0 max-lg:block max-lg:border-b-0";
 export const keyRow =

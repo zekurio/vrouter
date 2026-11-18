@@ -1,5 +1,5 @@
 import { Check, ExternalLink, RefreshCw } from "lucide-react";
-import type { Connection, Scope } from "./ConnectDialog";
+import type { Connection } from "./ConnectDialog";
 import { button, copyField, cx, dialogActions, dialogLead, notice } from "./ui";
 
 const failure = cx(notice({ error: true, inset: true }), "mt-4.5");
@@ -235,21 +235,19 @@ function ManualCallback({
 // The sign-in finished and the account is stored.
 export function ConnectDone({
   name,
-  scope,
   onAnother,
   onClose,
 }: {
   name: string;
-  scope: Scope;
   onAnother: () => void;
   onClose: () => void;
 }) {
   return (
     <>
       <p className={cx(dialogLead, "flex items-center gap-2.25")}>
-        <Check size={16} className="shrink-0 text-green" /> Added to{" "}
-        {scope === "global" ? `the shared ${name}` : `your ${name}`} accounts.
-        vrouter hasn&apos;t sent a test request, so confirm with a client call.
+        <Check size={16} className="shrink-0 text-green" /> Added to the {name}{" "}
+        accounts. vrouter hasn&apos;t sent a test request, so confirm with a
+        client call.
       </p>
       <div className={cx(dialogActions, "mt-6")}>
         <button className={button("secondary")} onClick={onAnother}>

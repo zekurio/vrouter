@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -16,8 +18,7 @@ import (
 const (
 	dataFileName = "vrouter.json"
 	dataMaxBytes = 128 << 20
-	dataVersion  = 2
-	dataV1Backup = "vrouter.v1.json"
+	dataVersion  = 3
 	// defaultGatewayV1 is the only gateway version 1 data could use.
 	defaultGatewayV1 = "default"
 )
@@ -100,10 +101,7 @@ func normalizeData(d *diskData) error {
 		return err
 	}
 	registryNormalize(&d.diskRegistry)
-	if err := registryValidate(d.diskRegistry); err != nil {
-		return err
-	}
-	return validateOwners(d.Accounts, d.Users)
+	return registryValidate(d.diskRegistry)
 }
 
 func (s *dataStore) update(mutate func(*diskData) error) error {
@@ -178,7 +176,9 @@ func (s *dataStore) load() error {
 	case err != nil:
 		return err
 	case dataFileVersion(raw) == 1:
-		return s.upgradeV1(raw)
+		return s.upgrade(raw, 1, upgradeDataV1)
+	case dataFileVersion(raw) == 2:
+		return s.upgrade(raw, 2, upgradeDataV2)
 	case decodeStrict(raw, &s.state) != nil:
 		return errors.New("gateway: data is malformed")
 	}
@@ -210,25 +210,67 @@ func decodeStrict(raw []byte, out any) error {
 	return nil
 }
 
-// upgradeV1 rewrites version 1 data in the current layout. The old file is
-// copied aside first, because a version 1 build cannot read the new one.
-func (s *dataStore) upgradeV1(raw []byte) error {
-	state, err := upgradeDataV1(raw)
+// upgrade rewrites data of an older version in the current layout. The old
+// file is copied aside first, because the build that wrote it cannot read
+// the new one.
+func (s *dataStore) upgrade(raw []byte, version int, convert func([]byte) (diskData, error)) error {
+	state, err := convert(raw)
 	if err != nil {
 		return err
 	}
 	if err := normalizeData(&state); err != nil {
 		return err
 	}
-	if err := atomicWritePrivate(filepath.Join(filepath.Dir(s.path), dataV1Backup), "data backup", raw); err != nil {
+	backup := fmt.Sprintf("vrouter.v%d.json", version)
+	if err := atomicWritePrivate(filepath.Join(filepath.Dir(s.path), backup), "data backup", raw); err != nil {
 		return err
 	}
 	if err := s.write(state); err != nil {
 		return err
 	}
 	s.state = state
-	slog.Info("data upgraded to version 2", "backup", dataV1Backup)
+	slog.Info("data upgraded", "from", version, "to", dataVersion, "backup", backup)
 	return nil
+}
+
+// upgradeDataV2 drops what version 2 kept about users: the users themselves,
+// the owner of each key and account, and the order that chose between shared
+// and personal accounts. Every account now serves every key.
+func upgradeDataV2(raw []byte) (diskData, error) {
+	malformed := errors.New("gateway: version 2 data is malformed")
+	var old map[string]json.RawMessage
+	if json.Unmarshal(raw, &old) != nil {
+		return diskData{}, malformed
+	}
+	delete(old, "users")
+	delete(old, "routing")
+	old["version"] = json.RawMessage(strconv.Itoa(dataVersion))
+	for list, field := range map[string]string{"accounts": "owner_id", "keys": "userId"} {
+		var records []map[string]json.RawMessage
+		if len(old[list]) == 0 {
+			continue
+		}
+		if json.Unmarshal(old[list], &records) != nil {
+			return diskData{}, malformed
+		}
+		for _, record := range records {
+			delete(record, field)
+		}
+		encoded, err := json.Marshal(records)
+		if err != nil {
+			return diskData{}, malformed
+		}
+		old[list] = encoded
+	}
+	current, err := json.Marshal(old)
+	if err != nil {
+		return diskData{}, malformed
+	}
+	var state diskData
+	if decodeStrict(current, &state) != nil {
+		return diskData{}, malformed
+	}
+	return state, nil
 }
 
 // dataV1 is the layout before gateways were removed. Every gateway had its

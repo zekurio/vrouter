@@ -123,7 +123,7 @@ func (s *server) recordQuota(ctx context.Context, accountID string, q quotaCache
 }
 
 // quotaHistoryHandler reports the windows named by ?window= over the last
-// ?days= days, seven by default, for the accounts the user can see.
+// ?days= days, seven by default.
 func (s *server) quotaHistoryHandler(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	windows := query["window"]
@@ -140,12 +140,9 @@ func (s *server) quotaHistoryHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		days = n
 	}
-	user := currentUser(r)
 	var accounts []string
 	for _, a := range s.store.snapshot().Accounts {
-		if accountVisible(a, user.ID) {
-			accounts = append(accounts, a.ID)
-		}
+		accounts = append(accounts, a.ID)
 	}
 	from := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
 	history, err := s.store.data.usage.quotaHistory(r.Context(), accounts, windows, from)

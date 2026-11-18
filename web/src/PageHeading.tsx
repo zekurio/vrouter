@@ -7,7 +7,8 @@ import {
   notice,
   noticeAction,
 } from "./ui";
-import type { Page, State } from "./Workspace";
+import type { Page } from "./router";
+import type { State } from "./Workspace";
 
 const titles: Partial<Record<Page, string>> = {
   Overview: "Account pools",

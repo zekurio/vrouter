@@ -1,19 +1,14 @@
 import { useEffect, useState } from "react";
 import { AccountPool, type RowActions } from "./AccountPool";
-import { ConnectDialog, connectable, type Scope } from "./ConnectDialog";
+import { ConnectDialog, connectable } from "./ConnectDialog";
 import { providerLabel } from "./ProviderBrand";
 import type { QuotaWindow } from "./Quota";
 import { errorMessage, type APIRequest } from "./api";
 import { RemoveAccountDialog } from "./RemoveAccountDialog";
 import type { AccountReset } from "./ResetDialog";
-import { RoutingPanel } from "./RoutingPanel";
 
 export type Account = {
   id: string;
-  // Shared accounts serve everyone; personal ones only their owner.
-  scope: Scope;
-  // Set when this user may reconnect, disable or remove the account.
-  manageable: boolean;
   name: string;
   provider: string;
   status: string;
@@ -36,8 +31,6 @@ export type Account = {
 };
 type Props = {
   accounts: Account[];
-  // Admins manage shared accounts and the routing order.
-  admin: boolean;
   request: APIRequest;
   // null is closed, "" asks which provider, otherwise the provider to sign in to.
   connect: string | null;
@@ -60,7 +53,6 @@ export function accountState(account: Account) {
 
 export function AccountsPage({
   accounts,
-  admin,
   request,
   connect,
   setConnect,
@@ -74,14 +66,9 @@ export function AccountsPage({
   const [removeError, setRemoveError] = useState("");
   // Account being reconnected. Cleared whenever the connect dialog closes.
   const [reauth, setReauth] = useState<Account | null>(null);
-  // Who a new account belongs to. Members only add personal accounts.
-  const [scope, setScope] = useState<Scope>("personal");
   useEffect(() => setSaved({}), [accounts]);
   useEffect(() => {
-    if (connect === null) {
-      setReauth(null);
-      setScope("personal");
-    }
+    if (connect === null) setReauth(null);
   }, [connect]);
 
   const providers = [
@@ -143,23 +130,25 @@ export function AccountsPage({
 
   return (
     <>
-      <RoutingPanel admin={admin} request={request} notify={notify} />
-      {scopes.map((section) => (
-        <ScopeSection
-          key={section.scope}
-          section={section}
-          // Members cannot add shared accounts.
-          locked={section.scope === "global" && !admin}
-          providers={providers}
-          accounts={accounts}
-          actions={actions}
-          onAdd={(provider) => {
-            setReauth(null);
-            setScope(section.scope);
-            setConnect(provider);
-          }}
-        />
-      ))}
+      {/* A pool per provider. */}
+      <div>
+        {providers.map((provider) => (
+          <AccountPool
+            key={provider}
+            provider={provider}
+            pool={accounts.filter((a) => a.provider === provider)}
+            onAdd={
+              connectable.includes(provider)
+                ? () => {
+                    setReauth(null);
+                    setConnect(provider);
+                  }
+                : undefined
+            }
+            actions={actions}
+          />
+        ))}
+      </div>
       <RemoveAccountDialog
         removing={removing}
         busy={busy}
@@ -172,8 +161,6 @@ export function AccountsPage({
           key={reauth?.id ?? "new"}
           provider={connect}
           accountId={reauth?.id}
-          scope={reauth?.scope ?? scope}
-          setScope={admin ? setScope : undefined}
           request={request}
           choose={(next) => {
             setReauth(null);
@@ -189,79 +176,3 @@ export function AccountsPage({
     </>
   );
 }
-
-// The accounts of one scope, a pool per provider.
-function ScopeSection({
-  section,
-  locked,
-  providers,
-  accounts,
-  actions,
-  onAdd,
-}: {
-  section: (typeof scopes)[number];
-  // Admins manage this scope and the user is not one.
-  locked: boolean;
-  providers: string[];
-  accounts: Account[];
-  actions: RowActions;
-  onAdd: (provider: string) => void;
-}) {
-  return (
-    <section className="mt-7.5" aria-labelledby={`section-${section.scope}`}>
-      <SectionHeading
-        id={`section-${section.scope}`}
-        title={section.title}
-        lead={locked ? `${section.lead} Admins manage them.` : section.lead}
-      />
-      {providers.map((provider) => (
-        <AccountPool
-          key={provider}
-          provider={provider}
-          scope={section.scope}
-          pool={accounts.filter(
-            (a) => a.provider === provider && a.scope === section.scope,
-          )}
-          onAdd={
-            locked || !connectable.includes(provider)
-              ? undefined
-              : () => onAdd(provider)
-          }
-          actions={actions}
-        />
-      ))}
-    </section>
-  );
-}
-
-function SectionHeading({
-  id,
-  title,
-  lead,
-}: {
-  id: string;
-  title: string;
-  lead: string;
-}) {
-  return (
-    <div className="mb-3.5 flex flex-wrap items-baseline gap-x-3.5 gap-y-1">
-      <h2 id={id} className="text-[18px] font-semibold tracking-[-0.3px]">
-        {title}
-      </h2>
-      <p className="text-muted">{lead}</p>
-    </div>
-  );
-}
-
-const scopes: { scope: Scope; title: string; lead: string }[] = [
-  {
-    scope: "personal",
-    title: "Your accounts",
-    lead: "Only your API keys use these. Nobody else sees them, admins included.",
-  },
-  {
-    scope: "global",
-    title: "Shared accounts",
-    lead: "Every user's API keys can use these.",
-  },
-];

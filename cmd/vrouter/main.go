@@ -3,6 +3,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -22,13 +24,8 @@ import (
 
 func main() {
 	cfg := gateway.Config{
-		DataDir:   os.Getenv("VROUTER_DATA_DIR"),
-		PublicURL: os.Getenv("VROUTER_PUBLIC_URL"),
-		OIDC: gateway.OIDCConfig{
-			Issuer:   os.Getenv("VROUTER_OIDC_ISSUER"),
-			ClientID: os.Getenv("VROUTER_OIDC_CLIENT_ID"),
-			Name:     os.Getenv("VROUTER_OIDC_NAME"),
-		},
+		DataDir:         os.Getenv("VROUTER_DATA_DIR"),
+		PublicURL:       os.Getenv("VROUTER_PUBLIC_URL"),
 		StartWindows:    true,
 		WindowSkipPlans: os.Getenv("VROUTER_WINDOW_SKIP_PLANS"),
 		PriceCatalog:    os.Getenv("VROUTER_PRICE_CATALOG"),
@@ -58,22 +55,12 @@ func main() {
 		slog.Error("invalid listen address", "error", err)
 		os.Exit(1)
 	}
-	for name, fix := range map[string]string{
-		"VROUTER_ADMIN_TOKEN":   "people now sign in through OpenID Connect. Unset it and set the VROUTER_OIDC_ variables instead.",
-		"VROUTER_EXTERNAL_AUTH": "people now sign in through OpenID Connect. Unset it and set the VROUTER_OIDC_ variables instead.",
-		"VROUTER_OIDC_GROUPS":   "roles now come from the identity provider's vrouter_role claim. Unset it and give each person a vrouter_role of admin or member.",
-	} {
-		if os.Getenv(name) != "" {
-			slog.Error(name + " was removed; " + fix)
-			os.Exit(1)
-		}
-	}
-	secret, err := clientSecret()
+	key, generated, err := adminKey()
 	if err != nil {
 		slog.Error("configuration error", "error", err)
 		os.Exit(1)
 	}
-	cfg.OIDC.ClientSecret = secret
+	cfg.AdminKey = key
 	assets := web.Assets()
 	if _, err := fs.Stat(assets, "index.html"); err != nil {
 		slog.Error("frontend build missing; run pnpm --dir web install --frozen-lockfile and pnpm --dir web build before building Go")
@@ -84,27 +71,40 @@ func main() {
 		slog.Error("configuration error", "error", err)
 		os.Exit(1)
 	}
+	if generated {
+		// Standard error, not the structured log, so the key is easy to spot
+		// and copy.
+		fmt.Fprintf(os.Stderr, "\nNo VROUTER_ADMIN_KEY is set. Sign in to the dashboard with this key, which lasts until vrouter stops:\n\n    %s\n\n", key)
+	}
 	if err := serve(addr, handler); err != nil {
 		slog.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
 }
 
-// clientSecret reads the OIDC client secret from VROUTER_OIDC_CLIENT_SECRET or
-// the file VROUTER_OIDC_CLIENT_SECRET_FILE names. A public client has none.
-func clientSecret() (string, error) {
-	secret, path := os.Getenv("VROUTER_OIDC_CLIENT_SECRET"), os.Getenv("VROUTER_OIDC_CLIENT_SECRET_FILE")
-	if path == "" {
-		return secret, nil
+// adminKey reads the admin key from VROUTER_ADMIN_KEY or the file
+// VROUTER_ADMIN_KEY_FILE names. With neither set it makes a key for this run
+// and reports that it did.
+func adminKey() (string, bool, error) {
+	key, path := os.Getenv("VROUTER_ADMIN_KEY"), os.Getenv("VROUTER_ADMIN_KEY_FILE")
+	if key != "" && path != "" {
+		return "", false, errors.New("set VROUTER_ADMIN_KEY or VROUTER_ADMIN_KEY_FILE, not both")
 	}
-	if secret != "" {
-		return "", errors.New("set VROUTER_OIDC_CLIENT_SECRET or VROUTER_OIDC_CLIENT_SECRET_FILE, not both")
+	if path != "" {
+		data, err := os.ReadFile(path) //nolint:gosec // the operator names the key file
+		if err != nil {
+			return "", false, fmt.Errorf("read VROUTER_ADMIN_KEY_FILE: %w", err)
+		}
+		return strings.TrimSpace(string(data)), false, nil
 	}
-	data, err := os.ReadFile(path) //nolint:gosec // the operator names the secret file
-	if err != nil {
-		return "", fmt.Errorf("read VROUTER_OIDC_CLIENT_SECRET_FILE: %w", err)
+	if key != "" {
+		return key, false, nil
 	}
-	return strings.TrimSpace(string(data)), nil
+	var raw [24]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", false, err
+	}
+	return "vra_" + base64.RawURLEncoding.EncodeToString(raw[:]), true, nil
 }
 
 func serve(addr string, handler http.Handler) error {

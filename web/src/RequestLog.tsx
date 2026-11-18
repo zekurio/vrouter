@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { badgeRow, ScopeBadge } from "./Badge";
 import { sectionToolbar } from "./pageStyles";
 import { Private } from "./Privacy";
 import { providerLabel } from "./ProviderBrand";
@@ -29,7 +28,7 @@ const head = (numeric = false) =>
 // Below 720px nine columns do not fit, so each request becomes four short
 // lines: the model and the time, the key, the account, and the result with
 // the numbers and their units. Second lines of a cell are left out, except
-// the names of the user and the account.
+// the name of the account.
 const cell = (numeric = false, muted = false) =>
   cx(
     "border-b border-border pt-2.75 pr-4.5 pb-2.75 align-top leading-[1.5] wrap-anywhere group-last:border-b-0 first:whitespace-nowrap first:text-muted last:pr-0",
@@ -72,14 +71,7 @@ function when(value: string) {
   return `${dayLabel(date.getTime())}, ${time}`;
 }
 
-export function RequestLog({
-  requests,
-  userNames,
-}: {
-  requests: RequestRecord[];
-  // Names each request's user in a report of everyone.
-  userNames?: Record<string, string> | undefined;
-}) {
+export function RequestLog({ requests }: { requests: RequestRecord[] }) {
   const [outcome, setOutcome] = useState<OutcomeFilter>("all");
   const [key, setKey] = useState("");
   const [limit, setLimit] = useState(pageSize);
@@ -154,11 +146,7 @@ export function RequestLog({
             </thead>
             <tbody className="max-md:block">
               {rows.slice(0, limit).map((r) => (
-                <Row
-                  key={r.id}
-                  record={r}
-                  user={userNames?.[r.userId ?? ""] ?? ""}
-                />
+                <Row key={r.id} record={r} />
               ))}
             </tbody>
           </table>
@@ -176,7 +164,7 @@ export function RequestLog({
   );
 }
 
-function Row({ record: r, user }: { record: RequestRecord; user: string }) {
+function Row({ record: r }: { record: RequestRecord }) {
   return (
     <tr className={row}>
       <td
@@ -194,14 +182,7 @@ function Row({ record: r, user }: { record: RequestRecord; user: string }) {
         )}
         {r.speed && <span className={subLine}>{speedLabel[r.speed]}</span>}
       </td>
-      <td className={cx(cell(), place.key)}>
-        {keyLabel(r)}
-        {user && (
-          <span className={nameLine}>
-            <Private peek>{user}</Private>
-          </span>
-        )}
-      </td>
+      <td className={cx(cell(), place.key)}>{keyLabel(r)}</td>
       <AccountCell record={r} />
       <ResultCell record={r} />
       <DurationCell record={r} />
@@ -242,10 +223,7 @@ function Row({ record: r, user }: { record: RequestRecord; user: string }) {
 function AccountCell({ record: r }: { record: RequestRecord }) {
   return (
     <td className={cx(cell(), place.account)}>
-      <span className={cx(badgeRow, "max-md:inline-flex")}>
-        {r.provider ? providerLabel(r.provider) : "Not routed"}
-        {r.accountScope && <ScopeBadge scope={r.accountScope} />}
-      </span>
+      {r.provider ? providerLabel(r.provider) : "Not routed"}
       {r.accountName !== undefined && r.accountName !== "" && (
         <span className={nameLine}>
           <Private peek>{r.accountName}</Private>

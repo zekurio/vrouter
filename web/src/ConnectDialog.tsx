@@ -4,20 +4,15 @@ import { errorMessage, isStale, statusOf, type APIRequest } from "./api";
 import { ProviderBrand, providerLabel, providerStyle } from "./ProviderBrand";
 import { ConnectDone, ConnectFailed, ConnectSteps } from "./ConnectSteps";
 import {
-  cx,
   dialog as dialogClass,
   dialogHeading,
   dialogLead,
   dialogTitle as titleClass,
   iconButton,
-  tab,
-  tabs,
 } from "./ui";
 
 // Providers vrouter can sign in to. Codex is the pool for OpenAI sign-in.
 export const connectable = ["codex", "claude"];
-// Shared accounts serve everyone; personal ones only their owner.
-export type Scope = "global" | "personal";
 
 export type Connection = {
   id: string;
@@ -34,10 +29,6 @@ type Props = {
   provider: string;
   // Set when renewing a saved account instead of registering a new one.
   accountId?: string | undefined;
-  // Who a new account belongs to.
-  scope: Scope;
-  // Lets an admin choose the scope along with the provider.
-  setScope: ((scope: Scope) => void) | undefined;
   request: APIRequest;
   choose: (provider: string) => void;
   onClose: () => void;
@@ -49,14 +40,12 @@ type Props = {
 function useSignIn({
   provider,
   target,
-  scope,
   attempt,
   request,
   onConnected,
 }: {
   provider: string;
   target: string;
-  scope: Scope;
   // Bumped to start over with the same provider and target.
   attempt: number;
   request: APIRequest;
@@ -84,7 +73,7 @@ function useSignIn({
         const next = await request<Connection>(
           `/api/oauth/${provider}`,
           "POST",
-          target ? { accountId: target } : { scope },
+          target ? { accountId: target } : {},
         );
         if (stopped) {
           cancel(next.id);
@@ -109,7 +98,7 @@ function useSignIn({
       if (pending && new Date(pending.expiresAt).getTime() > Date.now())
         cancel(pending.id);
     };
-  }, [provider, attempt, target, scope, request]);
+  }, [provider, attempt, target, request]);
 
   useEffect(() => {
     if (!session || phase !== "pending") return undefined;
@@ -172,21 +161,16 @@ function useSignIn({
   return { session, phase, error, now, reset };
 }
 
-function dialogTitle(phase: Phase, name: string, target: string, scope: Scope) {
+function dialogTitle(phase: Phase, name: string, target: string) {
   if (!name) return "Add an account";
   if (phase === "connected")
     return target ? `${name} account reconnected` : `${name} sign-in saved`;
-  if (target) return `Reconnect ${name} account`;
-  return scope === "global"
-    ? `Add a shared ${name} account`
-    : `Add a ${name} account`;
+  return target ? `Reconnect ${name} account` : `Add a ${name} account`;
 }
 
 export function ConnectDialog({
   provider,
   accountId,
-  scope,
-  setScope,
   request,
   choose,
   onClose,
@@ -211,7 +195,6 @@ export function ConnectDialog({
   const { session, phase, error, now, reset } = useSignIn({
     provider,
     target,
-    scope,
     attempt,
     request,
     onConnected,
@@ -271,7 +254,7 @@ export function ConnectDialog({
     >
       <div className={dialogHeading}>
         <h2 id="connect-title" className={titleClass}>
-          {dialogTitle(phase, name, target, scope)}
+          {dialogTitle(phase, name, target)}
         </h2>
         {phase !== "connected" && phase !== "error" && (
           <button
@@ -284,11 +267,10 @@ export function ConnectDialog({
         )}
       </div>
       {name === "" ? (
-        <ProviderChoice choose={choose} scope={scope} setScope={setScope} />
+        <ProviderChoice choose={choose} />
       ) : phase === "connected" ? (
         <ConnectDone
           name={name}
-          scope={scope}
           onAnother={() => restart("")}
           onClose={onClose}
         />
@@ -322,46 +304,12 @@ export function ConnectDialog({
   );
 }
 
-const scopeChoices: { value: Scope; label: string }[] = [
-  { value: "personal", label: "Personal" },
-  { value: "global", label: "Shared" },
-];
-
-function ProviderChoice({
-  choose,
-  scope,
-  setScope,
-}: {
-  choose: (provider: string) => void;
-  scope: Scope;
-  setScope: ((scope: Scope) => void) | undefined;
-}) {
+function ProviderChoice({ choose }: { choose: (provider: string) => void }) {
   return (
     <>
       <p className={dialogLead}>
-        Tokens stay on the server and never pass through this browser.{" "}
-        {scope === "global"
-          ? "Every user's API keys can use a shared account."
-          : "Only your API keys use a personal account."}
+        Tokens stay on the server and never pass through this browser.
       </p>
-      {setScope && (
-        <div
-          className={cx(tabs(true), "mt-4.5 w-fit")}
-          role="group"
-          aria-label="Owner"
-        >
-          {scopeChoices.map((c) => (
-            <button
-              key={c.value}
-              aria-pressed={scope === c.value}
-              className={tab(scope === c.value)}
-              onClick={() => setScope(c.value)}
-            >
-              {c.label}
-            </button>
-          ))}
-        </div>
-      )}
       <div className="mt-5 grid grid-cols-2 gap-2.5 max-sm:grid-cols-1">
         {connectable.map((p) => (
           <button

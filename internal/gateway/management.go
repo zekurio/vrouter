@@ -6,8 +6,9 @@ import (
 	"strings"
 )
 
-// staticHandler serves the embedded frontend. Only files are served, and
-// index.html is revalidated on every load so a new build is picked up.
+// staticHandler serves the embedded frontend: its files, and index.html for
+// the dashboard's page addresses. index.html is revalidated on every load so
+// a new build is picked up.
 func staticHandler(assets fs.FS) http.HandlerFunc {
 	files := http.FileServer(http.FS(assets))
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -20,18 +21,19 @@ func staticHandler(assets fs.FS) http.HandlerFunc {
 			path = "index.html"
 		}
 		if info, err := fs.Stat(assets, path); err != nil || info.IsDir() {
-			http.NotFound(w, r)
-			return
+			// A page address such as /usage belongs to the dashboard, which
+			// reads it once loaded. A missing file stays missing.
+			if strings.ContainsAny(path, "./") {
+				http.NotFound(w, r)
+				return
+			}
+			path = "index.html"
+			r = r.Clone(r.Context())
+			r.URL.Path = "/"
 		}
 		if path == "index.html" {
 			w.Header().Set("Cache-Control", "no-cache")
 		}
 		files.ServeHTTP(w, r)
 	}
-}
-
-// authStatus tells the signed-out dashboard where sign-in leads.
-func (s *server) authStatus(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, 200, map[string]string{"publicUrl": s.cfg.PublicURL, "provider": s.oidc.name()})
 }

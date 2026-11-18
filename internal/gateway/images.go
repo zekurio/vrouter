@@ -61,7 +61,7 @@ func (s *server) prepareImages(w http.ResponseWriter, r *http.Request, attempt *
 	attempt.native = native
 	var accounts []storedAccount
 	for _, a := range state.Accounts {
-		if !a.Disabled && a.Provider == "codex" && routableAuth(a) && accountVisible(a, attempt.principal.UserID) {
+		if !a.Disabled && a.Provider == "codex" && routableAuth(a) {
 			accounts = append(accounts, a)
 		}
 	}
@@ -72,7 +72,7 @@ func (s *server) prepareImages(w http.ResponseWriter, r *http.Request, attempt *
 		return nil, invalidRequest(err)
 	}
 	payload["model"] = native
-	p := &preparedInference{provider: "codex", native: native, images: operation, routing: state.Routing, accounts: billingPool(accounts, state.Routing)}
+	p := &preparedInference{provider: "codex", native: native, images: operation, accounts: billingPool(accounts)}
 	// The Codex CLI never sends an end-user ID, so the subscription backend
 	// gets none either.
 	if p.accounts[0].AuthMode == "codex" && payload["user"] != nil {
@@ -280,13 +280,13 @@ func imageReference(value any) bool {
 	return str(ref["image_url"]) != "" || str(ref["file_id"]) != ""
 }
 
-// forwardImages tries each account once, in routing order. Image generation
+// forwardImages tries each account once, in rotation. Image generation
 // has a provider limit of its own, apart from the windows vrouter tracks, so
 // those windows neither skip an account nor start a usage reset. An account
 // that fails on its own, such as with a 429, passes the request to the next
 // one.
 func (s *server) forwardImages(w http.ResponseWriter, r *http.Request, attempt *inferenceAttempt, prepared *preparedInference) {
-	s.tryAccounts(w, r, attempt, routingOrder(prepared.accounts, prepared.routing, s.sequence.Add(1)-1), forwardPlan{
+	s.tryAccounts(w, r, attempt, rotateAccounts(prepared.accounts, s.sequence.Add(1)-1), forwardPlan{
 		client: s.slowClient,
 		request: func(a storedAccount) (*http.Request, error) {
 			return imageRequest(r.Context(), prepared, a, attempt.id)

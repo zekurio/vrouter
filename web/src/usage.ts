@@ -49,12 +49,6 @@ export type UsageReport = {
   providers: Group[];
   models: Group[];
   keys: Group[];
-  // Shared accounts, personal accounts, and requests never routed.
-  scopes: Group[];
-  // Set in an admin's report of everyone, as are the user names of the
-  // logged requests.
-  users?: Group[];
-  userNames?: Record<string, string>;
   // Oldest first. Hours cover the last two days.
   days: Period[];
   hours: Period[];
@@ -73,8 +67,6 @@ export type Usage = {
   providers: Group[];
   models: Group[];
   keys: Group[];
-  scopes: Group[];
-  users: Group[] | undefined;
   series: Record<Interval, Bucket[]>;
   // Less than two days of usage reads better by the hour.
   recent: boolean;
@@ -138,8 +130,6 @@ export function summarize(report: UsageReport, now = Date.now()): Usage {
     providers: report.providers,
     models: report.models,
     keys: report.keys,
-    scopes: report.scopes,
-    users: report.users,
     series: {
       hour: [...series.hour.values()],
       day: [...series.day.values()],

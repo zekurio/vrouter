@@ -6,78 +6,14 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import { Check, CircleHelp, EyeOff, LogOut } from "lucide-react";
-import type { SessionUser } from "./api";
-import { RoleBadge } from "./Badge";
-import { Private } from "./Privacy";
+import { Check, CircleHelp, EyeOff, LogOut, Settings } from "lucide-react";
 import { themeIcons, themeLabels, themes, type Theme } from "./theme";
-import { cx, tab, tabs } from "./ui";
+import { cx, iconButton, tab, tabs } from "./ui";
 
 const itemSelector =
   '[role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"]';
 
-const segmenter = new Intl.Segmenter();
-const firstLetter = (word: string) =>
-  Array.from(segmenter.segment(word), (s) => s.segment)[0] ?? "";
-
-// Up to two letters: the first and last words of the name, or the first
-// letter of the address.
-function initialsOf(label: string) {
-  const words = label.split(/[\s@._-]+/u).filter((w) => w !== "");
-  const last = words.length > 1 && !label.includes("@") ? words.at(-1) : "";
-  return (firstLetter(words[0] ?? "") || "?") + firstLetter(last ?? "");
-}
-
-// The identity provider's profile picture, or initials when there is none or
-// it fails to load. It loads without a referrer, so the provider never learns
-// the dashboard's address.
-export function Avatar({
-  user,
-  size,
-  className = "",
-}: {
-  user: SessionUser;
-  size: number;
-  className?: string;
-}) {
-  const [failed, setFailed] = useState("");
-  const shape = "inline-flex shrink-0 items-center justify-center rounded-full";
-  if (user.picture !== "" && failed !== user.picture) {
-    return (
-      <img
-        // A faint edge keeps white pictures apart from a light background.
-        className={cx(
-          shape,
-          "bg-chip object-cover outline-1 -outline-offset-1 outline-text/12",
-          className,
-        )}
-        style={{ width: size, height: size }}
-        src={user.picture}
-        alt=""
-        width={size}
-        height={size}
-        referrerPolicy="no-referrer"
-        onError={() => setFailed(user.picture)}
-      />
-    );
-  }
-  return (
-    <span
-      className={cx(
-        shape,
-        "bg-[color-mix(in_srgb,var(--color-accent)_16%,var(--color-surface))] font-semibold tracking-[0.2px] text-accent select-none",
-        className,
-      )}
-      style={{ width: size, height: size, fontSize: size * 0.4 }}
-      aria-hidden="true"
-    >
-      {initialsOf(user.name || user.email).toUpperCase()}
-    </span>
-  );
-}
-
-export type UserMenuProps = {
-  user: SessionUser;
+export type SettingsMenuProps = {
   hideEmails: boolean;
   setHideEmails: (hidden: boolean) => void;
   theme: Theme;
@@ -91,8 +27,8 @@ export type UserMenuProps = {
 type Opening = "menu" | "first" | "last";
 
 // Menu button pattern: opening moves focus into the menu, arrow keys move
-// between items, and Escape returns focus to the avatar.
-export function UserMenu(props: UserMenuProps) {
+// between items, and Escape returns focus to the button.
+export function SettingsMenu(props: SettingsMenuProps) {
   const id = useId();
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -119,7 +55,7 @@ export function UserMenu(props: UserMenuProps) {
     setOpen(null);
     trigger.current?.focus();
   };
-  // Focus returns to the avatar before the action, so closing a dialog the
+  // Focus returns to the button before the action, so closing a dialog the
   // action opens lands back here.
   const run = (action: () => void) => {
     dismiss();
@@ -137,8 +73,8 @@ export function UserMenu(props: UserMenuProps) {
       <button
         ref={trigger}
         type="button"
-        className="group flex rounded-full p-0.5"
-        aria-label="Account menu"
+        className={cx(iconButton(), "aria-expanded:bg-hover")}
+        aria-label="Settings"
         aria-haspopup="menu"
         aria-expanded={open !== null}
         aria-controls={`${id}-menu`}
@@ -154,11 +90,7 @@ export function UserMenu(props: UserMenuProps) {
           }
         }}
       >
-        <Avatar
-          user={props.user}
-          size={30}
-          className="group-hover:ring-2 group-hover:ring-line group-aria-expanded:ring-2 group-aria-expanded:ring-line"
-        />
+        <Settings size={17} />
       </button>
       {open !== null && (
         // Keep focus in the menu while the pointer works it. Safari does not
@@ -168,14 +100,13 @@ export function UserMenu(props: UserMenuProps) {
           className="absolute top-[calc(100%+8px)] right-0 z-30 w-70 max-w-[calc(100vw-24px)] animate-select-in rounded-xl border border-line bg-surface p-1.5 shadow-[0_12px_40px_#0008] [--color-well:var(--color-field)] light:shadow-[0_12px_32px_#0000001f]"
           onMouseDown={(e) => e.preventDefault()}
         >
-          <UserCard user={props.user} />
           <div
             ref={menu}
             id={`${id}-menu`}
             role="menu"
             tabIndex={-1}
             className="focus:outline-none"
-            aria-label="Account"
+            aria-label="Settings"
             onKeyDown={(e) => moveFocus(e, dismiss)}
           >
             <MenuItems {...props} run={run} />
@@ -213,31 +144,6 @@ function moveFocus(e: KeyboardEvent<HTMLDivElement>, escape: () => void) {
   items.at(target % items.length)?.focus();
 }
 
-// The role sits beside the name, so the address below gets the full width,
-// and so does its reveal, which stays inside that column.
-function UserCard({ user }: { user: SessionUser }) {
-  return (
-    <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3 px-2 pt-2 pb-3.5">
-      <Avatar user={user} size={40} />
-      <div className="@container">
-        <div className="flex items-center justify-between gap-3">
-          <strong className="truncate text-[13.5px] font-semibold">
-            {user.name || "Signed in"}
-          </strong>
-          <RoleBadge role={user.role} />
-        </div>
-        {user.email !== "" && (
-          // A hidden address has no text to cut short, and clipping would
-          // hide its reveal.
-          <span className="mt-1 block truncate text-[12px] text-muted [--reveal-max:calc(100cqw+12px)] has-[button]:overflow-visible">
-            <Private peek>{user.email}</Private>
-          </span>
-        )}
-      </div>
-    </div>
-  );
-}
-
 const section = "border-t border-border pt-1.5";
 const item =
   "flex h-8.5 w-full items-center gap-2.5 rounded-[7px] px-2.5 text-left text-[13px] text-subtle hover:bg-chip hover:text-text focus-visible:bg-chip focus-visible:text-text focus-visible:outline-none light:hover:bg-control light:focus-visible:bg-control";
@@ -251,10 +157,10 @@ function MenuItems({
   onHelp,
   onSignOut,
   run,
-}: Omit<UserMenuProps, "user"> & { run: (action: () => void) => void }) {
+}: SettingsMenuProps & { run: (action: () => void) => void }) {
   return (
     <>
-      <div className={section} role="none">
+      <div role="none">
         <div
           className="flex items-center justify-between gap-3 pr-1 pb-1 pl-2.5 text-[13px] text-subtle"
           role="group"

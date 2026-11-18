@@ -1,6 +1,5 @@
 import { accountLabel, accountState, type Account } from "./AccountsPage";
 import type { APIRequest } from "./api";
-import { badgeRow, ScopeBadge } from "./Badge";
 import { card, PoolCard, ProjectionBasis } from "./PoolCard";
 import { Private } from "./Privacy";
 import { QuotaIssue, QuotaWindows } from "./Quota";
@@ -108,11 +107,10 @@ function AccountCard({
             </h3>
             <QuotaIssue account={a} />
           </div>
-          <div className={cx(badgeRow, "mt-1.5")}>
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
             <span className="inline-block text-[12px] font-medium text-provider">
               {a.plan || providerLabel(a.provider)}
             </span>
-            <ScopeBadge scope={a.scope} />
             {accountState(a) && (
               <span
                 className={cx(

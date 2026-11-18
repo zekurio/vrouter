@@ -1,20 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AccountsPage, type Account } from "./AccountsPage";
-import {
-  createClient,
-  errorMessage,
-  isStale,
-  statusOf,
-  type Role,
-  type SessionUser,
-} from "./api";
+import { createClient, errorMessage, isStale, statusOf } from "./api";
 import { KeysPage } from "./KeysPage";
 import { ModelsPage } from "./ModelsPage";
 import type { Model } from "./models";
 import { Overview } from "./Overview";
 import { PageHeading, WorkspaceNotices } from "./PageHeading";
+import type { Page } from "./router";
 import { UsagePage } from "./UsagePage";
-import { UsersPage } from "./UsersPage";
 
 export type State = {
   observedAt: string;
@@ -22,23 +15,9 @@ export type State = {
   accounts: Account[];
   warnings: string[];
 };
-export const pages = [
-  "Overview",
-  "Models",
-  "Accounts",
-  "Keys",
-  "Usage",
-  "Users",
-] as const;
-export type Page = (typeof pages)[number];
-// Pages only admins open.
-const adminPages: ReadonlySet<Page> = new Set(["Users"]);
-export const pagesFor = (role: Role) =>
-  pages.filter((p) => role === "admin" || !adminPages.has(p));
 
 type Props = {
   page: Page;
-  user: SessionUser;
   navigate: (page: Page) => void;
   publicUrl: string;
   onUnauthorized: () => void;
@@ -119,7 +98,6 @@ function useWorkspaceState(client: ReturnType<typeof createClient>) {
 // Every page behind sign-in. Signing out unmounts it, which closes its client.
 export function Workspace({
   page,
-  user,
   navigate,
   publicUrl,
   onUnauthorized,
@@ -143,7 +121,6 @@ export function Workspace({
     setConnect("");
   };
   const endpoint = `${publicUrl || location.origin}/v1`;
-  const admin = user.role === "admin";
 
   return (
     <>
@@ -184,7 +161,6 @@ export function Workspace({
             notify={notify}
             onSaved={() => void refresh()}
             onDirty={onDirty}
-            editable={admin}
             onAddAccount={addAccount}
           />
         </div>
@@ -192,7 +168,6 @@ export function Workspace({
       {page === "Accounts" && state && (
         <AccountsPage
           accounts={state.accounts}
-          admin={admin}
           request={client.request}
           connect={connect}
           setConnect={setConnect}
@@ -202,8 +177,6 @@ export function Workspace({
       )}
       {page === "Keys" && state && (
         <KeysPage
-          admin={admin}
-          userId={user.id}
           request={client.request}
           reloadKey={state.observedAt}
           creating={creatingKey}
@@ -214,14 +187,7 @@ export function Workspace({
         />
       )}
       {page === "Usage" && state && (
-        <UsagePage
-          admin={admin}
-          request={client.request}
-          reloadKey={state.observedAt}
-        />
-      )}
-      {page === "Users" && admin && (
-        <UsersPage user={user} request={client.request} notify={notify} />
+        <UsagePage request={client.request} reloadKey={state.observedAt} />
       )}
     </>
   );

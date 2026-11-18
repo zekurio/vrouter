@@ -8,17 +8,8 @@ export type APIRequest = <T>(
   // Milliseconds to wait, for the few requests the server answers slowly.
   timeout?: number,
 ) => Promise<T>;
-// Where sign-in leads: the identity provider's name, or its host.
-export type AuthInfo = { publicUrl: string; provider: string };
-export type Role = "admin" | "member";
-export type SessionUser = {
-  id: string;
-  name: string;
-  email: string;
-  // The identity provider's profile picture URL, or "".
-  picture: string;
-  role: Role;
-};
+// publicUrl is "" when the server has none configured.
+export type AuthInfo = { publicUrl: string; signedIn: boolean };
 
 type Options = {
   onUnauthorized?: () => void;

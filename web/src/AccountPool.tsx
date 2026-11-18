@@ -33,20 +33,18 @@ export type RowActions = {
 
 export function AccountPool({
   provider,
-  scope,
   pool,
   onAdd,
   actions,
 }: {
   provider: string;
-  scope: Account["scope"];
   pool: Account[];
-  // Unset when the user cannot add accounts to this pool.
+  // Unset for a provider vrouter cannot sign in to.
   onAdd: (() => void) | undefined;
   actions: RowActions;
 }) {
-  const id = `pool-${scope}-${provider}`;
-  // Pools after the first in a section stand apart from the one above.
+  const id = `pool-${provider}`;
+  // Pools after the first stand apart from the one above.
   return (
     <section
       className={cx(
@@ -137,8 +135,7 @@ function AccountRow({
         role="switch"
         aria-checked={on}
         aria-label={`Route requests through ${name}`}
-        title={a.manageable ? undefined : "Admins manage shared accounts"}
-        disabled={busy === a.id || !a.manageable}
+        disabled={busy === a.id}
         onClick={flip}
       />
       {/* The name plus one secondary line, matching the quota block, centred
@@ -184,15 +181,13 @@ function AccountRow({
             <LogIn size={14} />
           </button>
         )}
-        {a.manageable && (
-          <button
-            className={iconButton("md", { danger: true })}
-            aria-label={`Remove ${name}`}
-            onClick={() => actions.onRemove(a)}
-          >
-            <Trash2 size={15} />
-          </button>
-        )}
+        <button
+          className={iconButton("md", { danger: true })}
+          aria-label={`Remove ${name}`}
+          onClick={() => actions.onRemove(a)}
+        >
+          <Trash2 size={15} />
+        </button>
       </div>
     </li>
   );
@@ -206,8 +201,8 @@ const rowNote = "mt-1 text-[12px] leading-normal wrap-break-word";
 const plan =
   "inline-block text-[13px] leading-[1.4] font-medium text-provider wrap-anywhere max-md:col-[2/4] max-md:-mt-2 max-md:empty:hidden max-sm:col-[2/3] max-sm:mt-0 max-sm:self-center";
 
-// The resets an account holds, under its name. Whoever manages the account
-// can open them and use one.
+// The resets an account holds, under its name. They open a dialog that uses
+// one.
 function AccountResets({
   account: a,
   actions,
@@ -218,8 +213,6 @@ function AccountResets({
   const [open, setOpen] = useState(false);
   const resets = a.resets ?? [];
   if (resets.length === 0) return null;
-  if (!a.manageable)
-    return <p className={cx(rowNote, "text-muted")}>{resetSummary(resets)}</p>;
   return (
     <>
       <button

@@ -149,8 +149,6 @@ type preparedInference struct {
 	session  string
 	payload  map[string]json.RawMessage
 	accounts []storedAccount
-	// routing names the account tier tried first.
-	routing string
 	// images is the Images API operation, generations or edits, of an image
 	// request. Image requests use none of the protocol fields above.
 	images string
@@ -164,12 +162,11 @@ func (s *server) prepareInference(w http.ResponseWriter, r *http.Request, attemp
 	if ierr != nil {
 		return nil, ierr
 	}
-	routing := s.store.snapshot().Routing
-	channel, native, accounts, ierr := s.inferenceAccountPool(r.Context(), attempt.principal.UserID, model)
+	channel, native, accounts, ierr := s.inferenceAccountPool(r.Context(), model)
 	if ierr != nil {
 		return nil, ierr
 	}
-	p := &preparedInference{client: inferenceProtocol(r.URL.Path), provider: channel, native: native, stream: stream, upstreamStream: stream, routing: routing, accounts: billingPool(accounts, routing)}
+	p := &preparedInference{client: inferenceProtocol(r.URL.Path), provider: channel, native: native, stream: stream, upstreamStream: stream, accounts: billingPool(accounts)}
 	p.includeUsage = object(payload["stream_options"])["include_usage"] == true
 	p.upstream = responsesProtocol
 	if p.provider == "claude" {
@@ -239,10 +236,9 @@ func readInferencePayload(w http.ResponseWriter, r *http.Request) (map[string]an
 	return payload, model, stream, nil
 }
 
-// billingPool keeps a pool within one billing mode, the one of the first
-// account in routing order.
-func billingPool(accounts []storedAccount, routing string) []storedAccount {
-	accounts = routingOrder(accounts, routing, 0)
+// billingPool keeps a pool within one billing mode, the one of its first
+// account.
+func billingPool(accounts []storedAccount) []storedAccount {
 	var pool []storedAccount
 	for _, a := range accounts {
 		if a.AuthMode == accounts[0].AuthMode {
@@ -253,16 +249,15 @@ func billingPool(accounts []storedAccount, routing string) []storedAccount {
 }
 
 // inferenceAccountPool returns the one provider channel that advertises the
-// public model to the user, its native model ID and the accounts that serve
-// it: the shared accounts and the user's own.
-func (s *server) inferenceAccountPool(ctx context.Context, userID, model string) (string, string, []storedAccount, *inferenceError) {
+// public model, its native model ID and the accounts that serve it.
+func (s *server) inferenceAccountPool(ctx context.Context, model string) (string, string, []storedAccount, *inferenceError) {
 	state := s.store.snapshot()
 	byProvider := map[string][]storedAccount{}
 	natives := map[string]string{}
 	failed := false
 	for _, a := range state.Accounts {
 		channel := a.Provider
-		if a.Disabled || !routableAuth(a) || !accountVisible(a, userID) || (channel != "claude" && channel != "codex") {
+		if a.Disabled || !routableAuth(a) || (channel != "claude" && channel != "codex") {
 			continue
 		}
 		native, ok := inferenceNativeModel(state.Policy, channel, model)
