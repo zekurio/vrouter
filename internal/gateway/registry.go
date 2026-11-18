@@ -20,10 +20,9 @@ var (
 	keyHashPattern  = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
-// diskRegistry holds the users and their client keys in the data file.
+// diskRegistry holds the client keys in the data file.
 type diskRegistry struct {
-	Users []userRecord `json:"users"`
-	Keys  []keyRecord  `json:"keys"`
+	Keys []keyRecord `json:"keys"`
 }
 
 // registryStore is the key view of the same data store as the accounts. It
@@ -46,9 +45,6 @@ func (r *registryStore) update(mutate func(*diskRegistry) error) error {
 // registryNormalize makes nil collections concrete and drops counters older
 // builds kept on each key. SQLite owns accounting.
 func registryNormalize(state *diskRegistry) {
-	if state.Users == nil {
-		state.Users = []userRecord{}
-	}
 	if state.Keys == nil {
 		state.Keys = []keyRecord{}
 	}
@@ -60,13 +56,9 @@ func registryNormalize(state *diskRegistry) {
 	}
 }
 
-// registryValidate enforces the invariants of the user and key records.
-// Errors name the field and position, never stored values.
+// registryValidate enforces the invariants of the key records. Errors name
+// the field and position, never stored values.
 func registryValidate(state diskRegistry) error {
-	users, err := registryValidateUsers(state.Users)
-	if err != nil {
-		return err
-	}
 	seen := make(map[string]struct{}, len(state.Keys))
 	for i := range state.Keys {
 		key := &state.Keys[i]
@@ -77,9 +69,6 @@ func registryValidate(state diskRegistry) error {
 			return errors.New("gateway: key IDs must be unique")
 		}
 		seen[key.ID] = struct{}{}
-		if _, exists := users[key.UserID]; key.UserID != "" && !exists {
-			return fmt.Errorf("gateway: key %d belongs to an unknown user", i)
-		}
 		if err := registryKeyFieldsError(i, key); err != nil {
 			return err
 		}
@@ -109,14 +98,7 @@ func registryKeyFieldsError(i int, key *keyRecord) error {
 // registryClone deep-copies a registry so no caller can alias memory owned by
 // the store.
 func registryClone(state diskRegistry) diskRegistry {
-	out := diskRegistry{Users: make([]userRecord, len(state.Users)), Keys: make([]keyRecord, len(state.Keys))}
-	for i, user := range state.Users {
-		out.Users[i] = user
-		if user.DisabledAt != nil {
-			disabled := *user.DisabledAt
-			out.Users[i].DisabledAt = &disabled
-		}
-	}
+	out := diskRegistry{Keys: make([]keyRecord, len(state.Keys))}
 	for i, key := range state.Keys {
 		out.Keys[i] = key
 		if key.RevokedAt != nil {

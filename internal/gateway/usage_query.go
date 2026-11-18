@@ -59,13 +59,6 @@ type (
 		Providers []usageGroup `json:"providers"`
 		Models    []usageGroup `json:"models"`
 		Keys      []usageGroup `json:"keys"`
-		// Scopes splits requests between shared and personal accounts.
-		Scopes []usageGroup `json:"scopes"`
-		// Users is set in an admin's report of everyone.
-		Users []usageGroup `json:"users,omitempty"`
-		// UserNames names the users of the logged requests in a report of
-		// everyone.
-		UserNames map[string]string `json:"userNames,omitempty"`
 		// Oldest first. Hours cover the last two days.
 		Days  []usagePeriod `json:"days"`
 		Hours []usagePeriod `json:"hours"`
@@ -130,25 +123,23 @@ type (
 	usageRow struct {
 		usageSum
 
-		bucket                                                int64
-		userID, provider, model, keyID, speed, scope, keyName string
+		bucket                                 int64
+		provider, model, keyID, speed, keyName string
 	}
 	// usageFold builds a report from rows read oldest first, the way the page
 	// once summed the request log.
 	usageFold struct {
 		loc *time.Location
 		// Buckets from here on also count toward an hour.
-		hourly, dayEnd, first                  int64
-		total                                  usageSum
-		tiers                                  map[string]map[string]int64
-		providers, models, keys, scopes, users map[string]*usageGroupSum
-		days, hours                            []usagePeriodSum
-		// labels names users; nil leaves out the per-user breakdown.
-		labels map[string]string
+		hourly, dayEnd, first   int64
+		total                   usageSum
+		tiers                   map[string]map[string]int64
+		providers, models, keys map[string]*usageGroupSum
+		days, hours             []usagePeriodSum
 	}
 )
 
-func newUsageFold(loc *time.Location, labels map[string]string) *usageFold {
+func newUsageFold(loc *time.Location) *usageFold {
 	return &usageFold{
 		loc:       loc,
 		hourly:    time.Now().Add(-usageHourlySpan).Unix(),
@@ -156,30 +147,7 @@ func newUsageFold(loc *time.Location, labels map[string]string) *usageFold {
 		providers: map[string]*usageGroupSum{},
 		models:    map[string]*usageGroupSum{},
 		keys:      map[string]*usageGroupSum{},
-		scopes:    map[string]*usageGroupSum{},
-		users:     map[string]*usageGroupSum{},
-		labels:    labels,
 	}
-}
-
-func usageUserLabel(labels map[string]string, id string) string {
-	if id == "" {
-		return "No owner"
-	}
-	if label, ok := labels[id]; ok {
-		return label
-	}
-	return "Unknown user"
-}
-
-func usageScopeLabel(scope string) string {
-	switch scope {
-	case scopeGlobal:
-		return "Shared accounts"
-	case scopePersonal:
-		return "Personal accounts"
-	}
-	return "Not routed"
 }
 
 // usageGroupFor finds or starts a group. A model keeps the first provider
@@ -233,10 +201,6 @@ func (f *usageFold) add(r usageRow) {
 	usageGroupFor(f.models, model, model, r.provider).add(r.usageSum)
 	// Rows arrive oldest first, so a key ends up with its latest name.
 	usageGroupFor(f.keys, r.keyID, usageKeyLabel(r.keyID, r.keyName), "").add(r.usageSum)
-	usageGroupFor(f.scopes, r.scope, usageScopeLabel(r.scope), "").add(r.usageSum)
-	if f.labels != nil {
-		usageGroupFor(f.users, r.userID, usageUserLabel(f.labels, r.userID), "").add(r.usageSum)
-	}
 	f.addPeriods(r, cost)
 }
 
@@ -312,62 +276,47 @@ func (f *usageFold) report() usageReport {
 	for tier, costs := range f.tiers {
 		total.ByTier[tier] = usageCosts(costs)
 	}
-	report := usageReport{
+	return usageReport{
 		Total:          total,
 		Providers:      usageRanked(f.providers),
 		Models:         usageRanked(f.models),
 		Keys:           usageRanked(f.keys),
-		Scopes:         usageRanked(f.scopes),
 		Days:           usagePeriods(f.days),
 		Hours:          usagePeriods(f.hours),
 		First:          f.first,
 		RetentionLimit: usageRequestRetention,
 	}
-	if f.labels != nil {
-		report.Users = usageRanked(f.users)
-	}
-	return report
 }
 
-// usageFilter picks whose requests a report covers: one user's, or everyone's.
-type usageFilter struct {
-	userID string
-	all    bool
-}
-
-// report totals every request vrouter has finished for the filter. The totals
-// never shrink: they come from the buckets, not from the bounded request log.
-// A report of everyone breaks the totals down by user, named by labels.
-func (s *usageStore) report(ctx context.Context, loc *time.Location, filter usageFilter, labels map[string]string) (usageReport, error) {
+// report totals every request vrouter has finished. The totals never shrink:
+// they come from the buckets, not from the bounded request log.
+func (s *usageStore) report(ctx context.Context, loc *time.Location) (usageReport, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return usageReport{}, err
 	}
 	defer tx.Rollback() //nolint:errcheck // read-only transaction
-	if !filter.all {
-		labels = nil
-	}
-	fold := newUsageFold(loc, labels)
-	if err := readUsageRows(ctx, tx, fold, filter); err != nil {
+	fold := newUsageFold(loc)
+	if err := readUsageRows(ctx, tx, fold); err != nil {
 		return usageReport{}, err
 	}
 	report := fold.report()
-	if report.Requests, err = readUsageRequests(ctx, tx, filter); err != nil {
+	if report.Requests, err = readUsageRequests(ctx, tx); err != nil {
 		return usageReport{}, err
 	}
 	return report, tx.Commit()
 }
 
-func readUsageRows(ctx context.Context, tx *sql.Tx, fold *usageFold, filter usageFilter) error {
+func readUsageRows(ctx context.Context, tx *sql.Tx, fold *usageFold) error {
 	//nolint:gosec // usageColumns holds only fixed schema columns.
-	rows, err := tx.QueryContext(ctx, `SELECT bucket,user_id,provider,model,key_id,speed,scope,key_name,`+strings.Join(usageColumns(), ",")+` FROM usage_buckets WHERE ? OR user_id=? ORDER BY bucket`, filter.all, filter.userID)
+	rows, err := tx.QueryContext(ctx, `SELECT bucket,provider,model,key_id,speed,key_name,`+strings.Join(usageColumns(), ",")+` FROM usage_buckets ORDER BY bucket`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var row usageRow
-		fields := append([]any{&row.bucket, &row.userID, &row.provider, &row.model, &row.keyID, &row.speed, &row.scope, &row.keyName}, row.scanFields()...)
+		fields := append([]any{&row.bucket, &row.provider, &row.model, &row.keyID, &row.speed, &row.keyName}, row.scanFields()...)
 		if err := rows.Scan(fields...); err != nil {
 			return err
 		}
@@ -376,25 +325,22 @@ func readUsageRows(ctx context.Context, tx *sql.Tx, fold *usageFold, filter usag
 	return rows.Err()
 }
 
-func readUsageRequests(ctx context.Context, tx *sql.Tx, filter usageFilter) ([]telemetryRecord, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT user_id,record FROM usage_requests WHERE ? OR user_id=? ORDER BY finished DESC,id DESC LIMIT ?`, filter.all, filter.userID, usageRequestRetention)
+func readUsageRequests(ctx context.Context, tx *sql.Tx) ([]telemetryRecord, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT record FROM usage_requests ORDER BY finished DESC,id DESC LIMIT ?`, usageRequestRetention)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	records := []telemetryRecord{}
 	for rows.Next() {
-		var userID, raw string
+		var raw string
 		var record telemetryRecord
-		if err := rows.Scan(&userID, &raw); err != nil {
+		if err := rows.Scan(&raw); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(raw), &record); err != nil {
 			return nil, err
 		}
-		// The column names the owner. A request logged before its key had
-		// one was adopted there, not in the stored record.
-		record.UserID = userID
 		records = append(records, record)
 	}
 	return records, rows.Err()
@@ -413,17 +359,8 @@ func usageZone(name string) *time.Location {
 	return loc
 }
 
-// usageHandler reports the user's usage. With ?owner=all an admin sees
-// everyone's, though never which personal account served another user.
 func (s *server) usageHandler(w http.ResponseWriter, r *http.Request) {
-	user := currentUser(r)
-	filter := usageFilter{userID: user.ID, all: r.URL.Query().Get("owner") == "all"}
-	if filter.all && !user.admin() {
-		writeJSON(w, 403, map[string]string{"error": "Only admins can see everyone's usage"})
-		return
-	}
-	labels := s.userLabels()
-	report, err := s.store.data.usage.report(r.Context(), usageZone(r.URL.Query().Get("tz")), filter, labels)
+	report, err := s.store.data.usage.report(r.Context(), usageZone(r.URL.Query().Get("tz")))
 	if err != nil {
 		writeJSON(w, 503, map[string]string{"error": "Usage accounting is unavailable. Try again shortly."})
 		return
@@ -433,18 +370,9 @@ func (s *server) usageHandler(w http.ResponseWriter, r *http.Request) {
 	for _, a := range s.store.snapshot().Accounts {
 		names[a.ID] = telemetryAccountName(a)
 	}
-	if filter.all {
-		report.UserNames = map[string]string{}
-	}
 	for i := range report.Requests {
-		record := &report.Requests[i]
-		if record.AccountScope == scopePersonal && record.UserID != user.ID {
-			record.AccountID, record.AccountName = "", "Personal account"
-		} else if record.AccountName == "" {
+		if record := &report.Requests[i]; record.AccountName == "" {
 			record.AccountName = names[record.AccountID]
-		}
-		if filter.all {
-			report.UserNames[record.UserID] = usageUserLabel(labels, record.UserID)
 		}
 	}
 	writeJSON(w, 200, report)

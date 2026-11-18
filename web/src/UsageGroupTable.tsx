@@ -1,5 +1,5 @@
 // The usage page's breakdowns: cost split by type and by tier, and the panel
-// that groups usage by model, key, user or account, or lists requests.
+// that groups usage by model or key, or lists requests.
 import type { CSSProperties } from "react";
 import { series } from "./CostChart";
 import {
@@ -8,7 +8,6 @@ import {
   sectionHeading,
   sectionToolbar,
 } from "./pageStyles";
-import { Private } from "./Privacy";
 import { ProviderBrand, providerLabel } from "./ProviderBrand";
 import { RequestLog } from "./RequestLog";
 import { speedLabel, speeds, type RequestRecord } from "./telemetry";
@@ -25,12 +24,10 @@ import {
 } from "./usage";
 
 // What a breakdown table groups the usage by.
-export type GroupView = "model" | "key" | "scope" | "user";
+export type GroupView = "model" | "key";
 const groupHeading: Record<GroupView, string> = {
   model: "Model",
   key: "Key",
-  user: "User",
-  scope: "Account type",
 };
 
 export type View = GroupView | "requests";
@@ -41,8 +38,6 @@ const plural = (n: number, noun: string) =>
 const views: { value: View; label: string }[] = [
   { value: "model", label: "Model" },
   { value: "key", label: "Key" },
-  { value: "user", label: "User" },
-  { value: "scope", label: "Account" },
   { value: "requests", label: "Requests" },
 ];
 
@@ -109,7 +104,7 @@ function GroupTable({
                   {view === "model" && (
                     <ProviderBrand provider={g.provider} small />
                   )}
-                  {view === "user" ? <Private peek>{g.name}</Private> : g.name}
+                  {g.name}
                 </span>
                 {peak > 0 && g.cost > 0 && (
                   <span
@@ -146,28 +141,19 @@ function GroupTable({
 }
 
 export function Breakdown({
-  view: chosen,
+  view,
   setView,
   usage,
   requests,
-  userNames,
 }: {
   view: View;
   setView: (view: View) => void;
   usage: Usage;
   requests: RequestRecord[];
-  userNames: Record<string, string> | undefined;
 }) {
-  // Only a report of everyone breaks down by user.
-  const shown = views.filter(
-    (v) => v.value !== "user" || usage.users !== undefined,
-  );
-  const view = shown.some((v) => v.value === chosen) ? chosen : "model";
   const groups: Record<GroupView, Group[]> = {
     model: usage.models,
     key: usage.keys,
-    user: usage.users ?? [],
-    scope: usage.scopes,
   };
   return (
     // Phones narrow the sides and top, but the table keeps its short bottom.
@@ -177,7 +163,7 @@ export function Breakdown({
       <div className={cx(sectionToolbar, "mb-4")}>
         <h2 className={sectionHeading}>Breakdown</h2>
         <div className={tabs(true)} role="group" aria-label="Break down by">
-          {shown.map((v) => (
+          {views.map((v) => (
             <button
               key={v.value}
               aria-pressed={view === v.value}
@@ -191,7 +177,7 @@ export function Breakdown({
       </div>
       {view === "requests" ? (
         <>
-          <RequestLog requests={requests} userNames={userNames} />
+          <RequestLog requests={requests} />
           {/* The totals cover every request. The log keeps only the newest. */}
           {usage.total.requests > requests.length && (
             <p className={cx(caption, "mt-3 mb-2")}>

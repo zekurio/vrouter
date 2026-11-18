@@ -5,59 +5,22 @@ import {
   useState,
   type RefObject,
 } from "react";
-import {
-  errorMessage,
-  statusOf,
-  type AuthInfo,
-  type createClient,
-  type SessionUser,
-} from "./api";
-
-// Why the server sent the browser back from a sign-in, keyed by ?signin=.
-const signInErrors: Record<string, string> = {
-  unavailable:
-    "vrouter could not reach the identity provider. Try again in a moment.",
-  expired:
-    "The sign-in expired or was opened in another browser. Start it again.",
-  cancelled: "Sign-in was cancelled.",
-  failed:
-    "Sign-in failed. Try again, or ask an admin to check the vrouter log.",
-  denied: "Your account has no vrouter role. Ask an admin for access.",
-  disabled: "Your vrouter access is disabled. Ask an admin to enable it.",
-};
-
-// Reads and removes the reason a sign-in came back without a session.
-function returnedSignInError() {
-  const params = new URLSearchParams(location.search);
-  const reason = params.get("signin");
-  if (reason === null) return "";
-  params.delete("signin");
-  const query = params.toString();
-  history.replaceState(
-    null,
-    "",
-    `${location.pathname}${query ? `?${query}` : ""}${location.hash}`,
-  );
-  return signInErrors[reason] ?? signInErrors["failed"] ?? "";
-}
-
-// The server sends the browser to the identity provider and back.
-const signIn = () => location.assign("/api/auth/login");
+import { createClient, errorMessage, type AuthInfo } from "./api";
 
 // Management sign-in. "login" covers every signed-out state, "ready" every
 // signed-in one.
 export function useSession(
-  client: ReturnType<typeof createClient>,
   // Set by the workspace while it has unsaved model drafts.
   unsaved: RefObject<boolean>,
 ) {
+  // Sign-in only. The workspace has its own client, which closes on sign-out.
+  const [client] = useState(() => createClient({}));
   const [phase, setPhase] = useState<"loading" | "login" | "ready" | "error">(
     "loading",
   );
   const [auth, setAuth] = useState<AuthInfo | null>(null);
-  const [user, setUser] = useState<SessionUser | null>(null);
   const [error, setError] = useState("");
-  const [loginError, setLoginError] = useState(returnedSignInError);
+  const [loginError, setLoginError] = useState("");
   const sequence = useRef(0);
   // Several requests can report the same expired session.
   const ending = useRef(false);
@@ -68,27 +31,17 @@ export function useSession(
     const current = ++sequence.current;
     setPhase("loading");
     setError("");
-    let info: AuthInfo | null = null;
     try {
-      info = await client.request<AuthInfo>("/api/auth");
-      if (current !== sequence.current) return;
-      const session = await client.request<{ user: SessionUser }>(
-        "/api/auth/session",
-      );
+      const info = await client.request<AuthInfo>("/api/auth");
       if (current !== sequence.current) return;
       setAuth(info);
-      setUser(session.user);
-      setLoginError("");
-      ending.current = false;
-      setPhase("ready");
+      if (info.signedIn) {
+        setLoginError("");
+        ending.current = false;
+      }
+      setPhase(info.signedIn ? "ready" : "login");
     } catch (err) {
       if (current !== sequence.current) return;
-      if (info && statusOf(err) === 401) {
-        setAuth(info);
-        setUser(null);
-        setPhase("login");
-        return;
-      }
       setError(errorMessage(err, "Could not load vrouter."));
       setPhase("error");
     }
@@ -97,6 +50,21 @@ export function useSession(
     void load();
   }, [load]);
 
+  // The key is sent once and never kept: the server answers with the cookie.
+  async function signIn(key: string) {
+    const current = ++sequence.current;
+    setLoginError("");
+    setPhase("loading");
+    try {
+      await client.request("/api/auth/session", "POST", { key });
+    } catch (err) {
+      if (current !== sequence.current) return;
+      setLoginError(errorMessage(err, "Could not sign in."));
+      setPhase("login");
+      return;
+    }
+    if (current === sequence.current) void load();
+  }
   async function signOut() {
     if (
       unsaved.current &&
@@ -121,7 +89,6 @@ export function useSession(
   return {
     phase,
     auth,
-    user,
     error,
     loginError,
     load,

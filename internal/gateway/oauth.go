@@ -15,9 +15,6 @@ import (
 )
 
 type oauthSession struct {
-	// UserID started the sign-in. OwnerID receives the account, or is empty
-	// when it becomes a shared account.
-	UserID, OwnerID                                                                      string
 	Provider, State, Return, Verifier, Nonce, RedirectURI, ClientID, AccountID, AuthMode string
 	Expires                                                                              time.Time
 	Submitted, Completed                                                                 bool
@@ -43,8 +40,7 @@ func (s *server) startOAuth(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "Choose Codex or Claude"})
 		return
 	}
-	user := currentUser(r)
-	accountID, ownerID, ok := oauthStartAccount(w, r, p, user)
+	accountID, ok := oauthStartAccount(w, r, p)
 	if !ok {
 		return
 	}
@@ -55,10 +51,10 @@ func (s *server) startOAuth(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 429, map[string]string{"error": "Too many sign-in sessions. Cancel one or wait for expiry."})
 		return
 	}
-	session, endpoint, scope := newOAuthSession(p, user.ID, ownerID)
+	session, endpoint, scope := newOAuthSession(p)
 	query := url.Values{}
 	if accountID != "" {
-		if status, message := s.bindOAuthReconnect(p, accountID, user, &session, query); status != 0 {
+		if status, message := s.bindOAuthReconnect(p, accountID, &session, query); status != 0 {
 			writeJSON(w, status, map[string]string{"error": message})
 			return
 		}
@@ -70,8 +66,8 @@ func (s *server) startOAuth(w http.ResponseWriter, r *http.Request) {
 		query.Set("originator", codexNativeOriginator)
 	}
 	id := randomToken()
-	session.Return = s.cfg.PublicURL + "/#accounts"
-	if s.hostedOAuth() && p == "codex" {
+	session.Return = s.appURL(r) + "/accounts"
+	if s.hostedOAuth(r) && p == "codex" {
 		if err := s.startDeviceOAuth(r.Context(), &session); err != nil {
 			writeJSON(w, 502, map[string]string{"error": err.Error()})
 			return
@@ -83,7 +79,7 @@ func (s *server) startOAuth(w http.ResponseWriter, r *http.Request) {
 	session.Flow = "loopback"
 	var uri string
 	var err error
-	if s.hostedOAuth() && p == "claude" {
+	if s.hostedOAuth(r) && p == "claude" {
 		session.Flow = "code"
 		uri = claudeManualRedirectURL
 	} else {
@@ -108,8 +104,8 @@ func (s *server) startOAuth(w http.ResponseWriter, r *http.Request) {
 
 // newOAuthSession returns the state of a new provider sign-in with the
 // provider's authorize endpoint and scopes.
-func newOAuthSession(p, userID, ownerID string) (oauthSession, string, string) {
-	session := oauthSession{UserID: userID, OwnerID: ownerID, Provider: p, State: randomToken(), Verifier: randomToken(), Nonce: randomToken(), Expires: time.Now().Add(5 * time.Minute), ClientID: codexNativeClientID, AuthMode: "codex"}
+func newOAuthSession(p string) (oauthSession, string, string) {
+	session := oauthSession{Provider: p, State: randomToken(), Verifier: randomToken(), Nonce: randomToken(), Expires: time.Now().Add(5 * time.Minute), ClientID: codexNativeClientID, AuthMode: "codex"}
 	if p == "claude" {
 		session.ClientID = claudeClientID
 		session.AuthMode = "oauth"
@@ -119,60 +115,37 @@ func newOAuthSession(p, userID, ownerID string) (oauthSession, string, string) {
 }
 
 // oauthStartAccount decodes a sign-in request and returns the saved account
-// it reconnects, if any, and the owner a new account gets, empty for a shared
-// one. Only native Codex sign-in may be named explicitly.
-func oauthStartAccount(w http.ResponseWriter, r *http.Request, p string, user userRecord) (string, string, bool) {
+// it reconnects, if any. Only native Codex sign-in may be named explicitly.
+func oauthStartAccount(w http.ResponseWriter, r *http.Request, p string) (string, bool) {
 	var input struct {
 		AccountID string `json:"accountId"`
 		AuthMode  string `json:"authMode"`
-		Scope     string `json:"scope"`
 	}
 	if r.Body != nil {
 		err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&input)
 		if err != nil && err != io.EOF {
 			writeJSON(w, 400, map[string]string{"error": "Invalid sign-in request"})
-			return "", "", false
+			return "", false
 		}
 	}
 	requested := strings.ToLower(strings.TrimSpace(input.AuthMode))
 	if requested != "" {
 		if p != "codex" {
 			writeJSON(w, 400, map[string]string{"error": "This sign-in method is not supported for Claude"})
-			return "", "", false
+			return "", false
 		}
 		if requested != "codex" {
 			writeJSON(w, 400, map[string]string{"error": "Unsupported sign-in method. Use Codex sign-in."})
-			return "", "", false
+			return "", false
 		}
 	}
-	ownerID, refusal := oauthOwner(input.Scope, user)
-	if refusal != "" {
-		writeJSON(w, 400, map[string]string{"error": refusal})
-		return "", "", false
-	}
-	return input.AccountID, ownerID, true
+	return input.AccountID, true
 }
 
-// oauthOwner returns the owner of an account added with a scope, or the
-// message of a refusal. Accounts are personal unless an admin shares them.
-func oauthOwner(scope string, user userRecord) (string, string) {
-	switch scope {
-	case "", scopePersonal:
-		return user.ID, ""
-	case scopeGlobal:
-		if !user.admin() {
-			return "", "Only admins can add shared accounts"
-		}
-		return "", ""
-	}
-	return "", "Choose a personal or shared account"
-}
-
-// bindOAuthReconnect binds a sign-in to the saved account it renews, which
-// keeps its owner. It returns the HTTP status and message of a refusal, or 0.
-// Accounts the user may not manage are reported as missing.
-func (s *server) bindOAuthReconnect(p, accountID string, user userRecord, session *oauthSession, query url.Values) (int, string) {
-	selected := s.manageableAccount(accountID, p, user)
+// bindOAuthReconnect binds a sign-in to the saved account it renews. It
+// returns the HTTP status and message of a refusal, or 0.
+func (s *server) bindOAuthReconnect(p, accountID string, session *oauthSession, query url.Values) (int, string) {
+	selected := s.savedAccount(accountID, p)
 	if selected == nil {
 		missing := "Saved Claude registration not found"
 		if p == "codex" {
@@ -180,7 +153,6 @@ func (s *server) bindOAuthReconnect(p, accountID string, user userRecord, sessio
 		}
 		return 404, missing
 	}
-	session.OwnerID = selected.OwnerID
 	switch p {
 	case "claude":
 		if selected.AuthMode != "oauth" {
@@ -214,11 +186,10 @@ func (s *server) bindOAuthReconnect(p, accountID string, user userRecord, sessio
 	return 0, ""
 }
 
-// manageableAccount finds a saved account of the provider that the user may
-// manage.
-func (s *server) manageableAccount(id, p string, user userRecord) *storedAccount {
+// savedAccount finds a saved account of the provider.
+func (s *server) savedAccount(id, p string) *storedAccount {
 	for _, a := range s.store.snapshot().Accounts {
-		if a.ID == id && a.Provider == p && accountManageable(a, user) {
+		if a.ID == id && a.Provider == p {
 			return &a
 		}
 	}
@@ -241,11 +212,10 @@ func (s *server) saveOAuthSession(id string, session oauthSession) {
 	time.AfterFunc(time.Until(session.Expires)+time.Second, func() { s.oauthMu.Lock(); defer s.oauthMu.Unlock(); s.sweepOAuth() })
 }
 
-// session returns the pending sign-in a request names. Another user's
-// sign-in is reported as expired.
+// session returns the pending sign-in a request names.
 func (s *server) session(w http.ResponseWriter, r *http.Request) (oauthSession, bool) {
 	session, ok := s.oauth[r.PathValue("id")]
-	if !ok || time.Now().After(session.Expires) || session.UserID != currentUser(r).ID {
+	if !ok || time.Now().After(session.Expires) {
 		s.sweepOAuth()
 		writeJSON(w, 410, map[string]string{"error": "Sign-in expired. Start a new connection."})
 		return oauthSession{}, false
@@ -362,11 +332,7 @@ func (s *server) completeOAuth(ctx context.Context, id string, q url.Values) err
 	if refusal != "" {
 		return fail(refusal)
 	}
-	a.OwnerID = session.OwnerID
 	a, err = s.saveOAuthAccount(session.AccountID, a)
-	if errors.Is(err, errAccountOwned) {
-		return fail("This provider account is already connected to vrouter under another owner. Remove that connection first.")
-	}
 	if err != nil {
 		return fail("Could not save the verified connection")
 	}
@@ -467,8 +433,8 @@ func (s *server) codexOAuthIdentity(ctx context.Context, session oauthSession, i
 }
 
 // saveOAuthAccount stores a verified sign-in and returns the saved record. A
-// provider account connects once: signing in again under another owner is
-// refused, since both records would rotate the same refresh token.
+// provider account connects once: signing in again replaces its record, since
+// two records would rotate the same refresh token.
 func (s *server) saveOAuthAccount(selectedID string, a storedAccount) (storedAccount, error) {
 	err := s.store.update(func(d *diskState) error {
 		selected, same := -1, -1
@@ -497,9 +463,6 @@ func (s *server) saveOAuthAccount(selectedID string, a storedAccount) (storedAcc
 			return nil
 		}
 		if same >= 0 {
-			if d.Accounts[same].OwnerID != a.OwnerID {
-				return errAccountOwned
-			}
 			a = oauthReplacement(d.Accounts[same], a)
 			d.Accounts[same] = a
 			return nil
@@ -573,11 +536,10 @@ func claudeIdentityMatch(old, fresh storedAccount) bool {
 	return old.Email != "" && fresh.Email != "" && strings.EqualFold(old.Email, fresh.Email)
 }
 
-// oauthReplacement keeps the record's identity, owner, creation time,
-// disabled state, and user-chosen label while adopting the new credentials.
+// oauthReplacement keeps the record's identity, creation time, disabled
+// state, and user-chosen label while adopting the new credentials.
 func oauthReplacement(old, fresh storedAccount) storedAccount {
 	fresh.ID = old.ID
-	fresh.OwnerID = old.OwnerID
 	fresh.CreatedAt = old.CreatedAt
 	fresh.Disabled = old.Disabled
 	if old.Label != "" {
@@ -589,9 +551,7 @@ func oauthReplacement(old, fresh storedAccount) storedAccount {
 func (s *server) cancelOAuth(w http.ResponseWriter, r *http.Request) {
 	s.oauthMu.Lock()
 	defer s.oauthMu.Unlock()
-	if session, ok := s.oauth[r.PathValue("id")]; ok && session.UserID == currentUser(r).ID {
-		delete(s.oauth, r.PathValue("id"))
-	}
+	delete(s.oauth, r.PathValue("id"))
 	s.sweepOAuth()
 	writeJSON(w, 200, map[string]string{"status": "cancelled"})
 }

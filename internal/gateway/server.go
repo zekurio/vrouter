@@ -4,13 +4,10 @@ package gateway
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io/fs"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,11 +19,11 @@ import (
 // Config configures a gateway.
 type Config struct {
 	DataDir string
-	// PublicURL is the browser-facing HTTP(S) origin, without a path. Sign-in
-	// returns to it, so it is required.
+	// AdminKey opens the dashboard and the management API. It is required.
+	AdminKey string
+	// PublicURL is the browser-facing HTTP(S) origin, without a path. Empty
+	// trusts the origin each browser names, which suits a local instance.
 	PublicURL string
-	// OIDC is the identity provider people sign in with.
-	OIDC OIDCConfig
 	// StartWindows keeps a 5-hour window running on subscription accounts.
 	StartWindows bool
 	// WindowSkipPlans lists plans that never get a window trigger, as
@@ -52,11 +49,7 @@ type Model struct {
 
 // Account is a provider account as shown in the UI.
 type Account struct {
-	ID string `json:"id"`
-	// Scope is global for a shared account and personal for the user's own.
-	Scope string `json:"scope"`
-	// Manageable is set when the user may reconnect, disable or remove it.
-	Manageable     bool          `json:"manageable"`
+	ID             string        `json:"id"`
 	Name           string        `json:"name"`
 	Provider       string        `json:"provider"`
 	AuthMode       string        `json:"authMode,omitempty"`
@@ -89,7 +82,6 @@ type server struct {
 	handler      http.Handler
 	store        *accountStore
 	registry     *registryStore
-	oidc         *oidcClient
 	client       *http.Client
 	streamClient *http.Client
 	// slowClient waits longer for response headers. A buffered response, an
@@ -152,6 +144,9 @@ func DefaultDataDir() string {
 
 // New opens the data directory and returns the gateway handler.
 func New(cfg Config, assets fs.FS) (http.Handler, error) {
+	if err := validateAdminKey(cfg.AdminKey); err != nil {
+		return nil, err
+	}
 	publicURL, err := parsePublicURL(cfg.PublicURL)
 	if err != nil {
 		return nil, err
@@ -164,10 +159,6 @@ func New(cfg Config, assets fs.FS) (http.Handler, error) {
 	base, _ := http.DefaultTransport.(*http.Transport)
 	transport := base.Clone()
 	transport.ResponseHeaderTimeout = 60 * time.Second
-	signIn, err := newOIDCClient(cfg.OIDC, cfg.PublicURL, &http.Client{Transport: transport, Timeout: 15 * time.Second})
-	if err != nil {
-		return nil, err
-	}
 	if cfg.DataDir == "" {
 		cfg.DataDir = DefaultDataDir()
 		if cfg.DataDir == "" {
@@ -183,7 +174,7 @@ func New(cfg Config, assets fs.FS) (http.Handler, error) {
 	// Anthropic serves a buffered response for up to ten minutes.
 	slowTransport.ResponseHeaderTimeout = 10 * time.Minute
 	s := &server{
-		cfg: cfg, store: store, registry: &registryStore{data: store.data}, oidc: signIn,
+		cfg: cfg, store: store, registry: &registryStore{data: store.data},
 		client:       &http.Client{Transport: transport, Timeout: 12 * time.Second, CheckRedirect: noRedirect},
 		streamClient: &http.Client{Transport: transport, CheckRedirect: noRedirect},
 		slowClient:   &http.Client{Transport: slowTransport, CheckRedirect: noRedirect},
@@ -261,38 +252,31 @@ func (s *server) routes(assets fs.FS) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("GET /api/auth", s.authStatus)
-	mux.HandleFunc("GET /api/auth/login", s.startLogin)
-	mux.HandleFunc("GET /api/auth/callback", s.finishLogin)
+	mux.HandleFunc("POST /api/auth/session", s.startSession)
 	mux.HandleFunc("DELETE /api/auth/session", s.endSession)
 	management := []struct {
 		pattern string
 		handler http.HandlerFunc
-		admin   bool
 	}{
-		{"GET /api/auth/session", s.sessionStatus, false},
-		{"GET /api/state", s.state, false},
-		{"GET /api/settings", s.getSettings, false},
-		{"PUT /api/settings", s.putSettings, true},
-		{"GET /api/model-settings", s.getModelSettings, false},
-		{"PUT /api/model-settings", s.putModelSettings, true},
-		{"PATCH /api/accounts", s.updateAccount, false},
-		{"DELETE /api/accounts", s.removeAccount, false},
-		{"POST /api/accounts/{id}/resets", s.useReset, false},
-		{"POST /api/oauth/{provider}", s.startOAuth, false},
-		{"GET /api/oauth/sessions/{id}", s.oauthStatus, false},
-		{"POST /api/oauth/sessions/{id}/callback", s.oauthCallback, false},
-		{"DELETE /api/oauth/sessions/{id}", s.cancelOAuth, false},
-		{"GET /api/keys", s.listKeys, false},
-		{"POST /api/keys", s.createKey, false},
-		{"PATCH /api/keys/{id}", s.patchKey, false},
-		{"DELETE /api/keys/{id}", s.deleteKey, false},
-		{"GET /api/usage", s.usageHandler, false},
-		{"GET /api/quota-history", s.quotaHistoryHandler, false},
-		{"GET /api/users", s.listUsers, true},
-		{"PATCH /api/users/{id}", s.patchUser, true},
+		{"GET /api/state", s.state},
+		{"GET /api/model-settings", s.getModelSettings},
+		{"PUT /api/model-settings", s.putModelSettings},
+		{"PATCH /api/accounts", s.updateAccount},
+		{"DELETE /api/accounts", s.removeAccount},
+		{"POST /api/accounts/{id}/resets", s.useReset},
+		{"POST /api/oauth/{provider}", s.startOAuth},
+		{"GET /api/oauth/sessions/{id}", s.oauthStatus},
+		{"POST /api/oauth/sessions/{id}/callback", s.oauthCallback},
+		{"DELETE /api/oauth/sessions/{id}", s.cancelOAuth},
+		{"GET /api/keys", s.listKeys},
+		{"POST /api/keys", s.createKey},
+		{"PATCH /api/keys/{id}", s.patchKey},
+		{"DELETE /api/keys/{id}", s.deleteKey},
+		{"GET /api/usage", s.usageHandler},
+		{"GET /api/quota-history", s.quotaHistoryHandler},
 	}
 	for _, route := range management {
-		mux.HandleFunc(route.pattern, s.authorize(route.handler, route.admin))
+		mux.HandleFunc(route.pattern, s.authorize(route.handler))
 	}
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 404, map[string]string{"error": "Unknown management endpoint"})
@@ -305,49 +289,6 @@ func (s *server) routes(assets fs.FS) http.Handler {
 	return mux
 }
 
-func tokenEqual(a, b string) bool {
-	x, y := sha256.Sum256([]byte(a)), sha256.Sum256([]byte(b))
-	return subtle.ConstantTimeCompare(x[:], y[:]) == 1
-}
-
-// sameOrigin rejects writes a browser sent from another origin.
-func (s *server) sameOrigin(r *http.Request) bool {
-	if r.Method == http.MethodGet || r.Method == http.MethodHead {
-		return true
-	}
-	header := r.Header.Get("Origin")
-	if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
-		return false
-	}
-	if header == "" {
-		return true
-	}
-	origin, err := url.Parse(header)
-	return err == nil && origin.Host == r.Host && (origin.Scheme == "http" || origin.Scheme == "https") && header == s.cfg.PublicURL
-}
-
-// authorize admits signed-in users, and only admins when admin is set. The
-// handler finds the user with currentUser.
-func (s *server) authorize(next http.HandlerFunc, admin bool) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		if !s.sameOrigin(r) {
-			writeJSON(w, 403, map[string]string{"error": "Cross-origin management requests are not allowed"})
-			return
-		}
-		user, ok := s.sessionUser(r)
-		if !ok {
-			writeJSON(w, 401, map[string]string{"error": "Sign in to continue"})
-			return
-		}
-		if admin && !user.admin() {
-			writeJSON(w, 403, map[string]string{"error": "Only admins can do this"})
-			return
-		}
-		next(w, r.WithContext(context.WithValue(r.Context(), userContextKey{}, user)))
-	}
-}
-
 func (s *server) state(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
@@ -355,9 +296,8 @@ func (s *server) state(w http.ResponseWriter, r *http.Request) {
 	var err error
 	var wg sync.WaitGroup
 	wg.Add(2)
-	user := currentUser(r)
-	go func() { defer wg.Done(); state.Models, err = s.models(ctx, user.ID) }()
-	go func() { defer wg.Done(); state.Accounts = s.accounts(ctx, user) }()
+	go func() { defer wg.Done(); state.Models, err = s.models(ctx) }()
+	go func() { defer wg.Done(); state.Accounts = s.accounts(ctx) }()
 	wg.Wait()
 	if err != nil {
 		state.Warnings = append(state.Warnings, "Some provider model catalogs could not be loaded. Reconnect expired accounts or refresh to retry.")

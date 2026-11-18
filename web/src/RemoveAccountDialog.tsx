@@ -53,9 +53,8 @@ export function RemoveAccountDialog({
           </h2>
           <p className={dialogLead}>
             vrouter deletes the stored {providerLabel(removing.provider)}{" "}
-            sign-in and stops routing requests to it
-            {removing.scope === "global" ? " for everyone" : ""}. To use the
-            account again, sign in from Add account.
+            sign-in and stops routing requests to it. To use the account again,
+            sign in from Add account.
           </p>
           {error && (
             <div

@@ -29,7 +29,7 @@ func usageCounts(r telemetryRecord, prices *usagePrices) []any {
 }
 
 func usageUpsert() string {
-	return `INSERT INTO usage_buckets VALUES (?,?,?,?,?,?,?,?` + strings.Repeat(",?", len(usageColumns())) + `) ` + usageMerge()
+	return `INSERT INTO usage_buckets VALUES (?,?,?,?,?,?` + strings.Repeat(",?", len(usageColumns())) + `) ` + usageMerge()
 }
 
 // usageMerge adds a row to the bucket it lands in. The key's name follows its
@@ -40,7 +40,7 @@ func usageMerge() string {
 	for _, column := range usageColumns() {
 		updates = append(updates, column+"=MIN("+column+"+excluded."+column+","+usageCounterCap+")")
 	}
-	return `ON CONFLICT(user_id,bucket,provider,model,key_id,speed,scope) DO UPDATE SET ` + strings.Join(updates, ",")
+	return `ON CONFLICT(bucket,provider,model,key_id,speed) DO UPDATE SET ` + strings.Join(updates, ",")
 }
 
 // Delete the pending row in the same transaction as adding the totals. A
@@ -66,7 +66,7 @@ func (s *usageStore) settle(ctx context.Context, r telemetryRecord, accepted boo
 		return nil
 	}
 	now := time.Now().UTC()
-	bucket := []any{r.UserID, now.Unix() / usageBucketSeconds * usageBucketSeconds, r.Provider, r.Model, r.KeyID, r.Speed, r.AccountScope, r.KeyName}
+	bucket := []any{now.Unix() / usageBucketSeconds * usageBucketSeconds, r.Provider, r.Model, r.KeyID, r.Speed, r.KeyName}
 	if _, err := tx.ExecContext(ctx, usageUpsert(), append(bucket, usageCounts(r, s.prices)...)...); err != nil {
 		return err
 	}
@@ -81,18 +81,17 @@ func (s *usageStore) settle(ctx context.Context, r telemetryRecord, accepted boo
 	return tx.Commit()
 }
 
-// logRequest keeps the request for the Requests view and drops the user's
-// oldest beyond the retention limit, so one busy user cannot push everyone
-// else's requests out. The totals already hold what it added.
+// logRequest keeps the request for the Requests view and drops the oldest
+// beyond the retention limit. The totals already hold what it added.
 func logRequest(ctx context.Context, tx *sql.Tx, r telemetryRecord, now time.Time) error {
 	raw, err := json.Marshal(r)
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO usage_requests VALUES (?,?,?,?)`, r.ID, r.UserID, now.UnixMilli(), string(raw)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO usage_requests VALUES (?,?,?)`, r.ID, now.UnixMilli(), string(raw)); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `DELETE FROM usage_requests WHERE user_id=? AND id NOT IN (SELECT id FROM usage_requests WHERE user_id=? ORDER BY finished DESC,id DESC LIMIT ?)`, r.UserID, r.UserID, usageRequestRetention)
+	_, err = tx.ExecContext(ctx, usageRequestTrim, usageRequestRetention)
 	return err
 }
 

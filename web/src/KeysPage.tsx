@@ -9,7 +9,6 @@ import {
   type APIKey,
   type KeyUpdate,
 } from "./keys";
-import { OwnerTabs, ownerQuery, type Owner } from "./OwnerTabs";
 import {
   keyBody,
   keyCell,
@@ -20,11 +19,8 @@ import {
   keyRow,
   keyStatus,
   keyTable,
-  pageNote,
-  pageToolbar,
   rowActions,
 } from "./pageStyles";
-import { Private } from "./Privacy";
 import {
   cx,
   empty,
@@ -37,9 +33,6 @@ import {
 } from "./ui";
 
 type Props = {
-  // Admins can list, revoke and delete everyone's keys.
-  admin: boolean;
-  userId: string;
   request: APIRequest;
   reloadKey: string;
   // The page heading owns the create button.
@@ -66,11 +59,9 @@ const moment = (value: string) =>
     minute: "2-digit",
   });
 
-// Loads the key list again whenever reloadKey or the owner changes.
-function useKeys(request: APIRequest, reloadKey: string, owner: Owner) {
+// Loads the key list again whenever reloadKey changes.
+function useKeys(request: APIRequest, reloadKey: string) {
   const [keys, setKeys] = useState<APIKey[] | null>(null);
-  // Whose keys the list holds.
-  const [loaded, setLoaded] = useState<Owner | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const sequence = useRef(0);
@@ -79,13 +70,9 @@ function useKeys(request: APIRequest, reloadKey: string, owner: Owner) {
     const current = ++sequence.current;
     setLoading(true);
     try {
-      const query = ownerQuery(owner);
-      const result = await request<{ keys: APIKey[] | null }>(
-        `/api/keys${query ? `?${query}` : ""}`,
-      );
+      const result = await request<{ keys: APIKey[] | null }>("/api/keys");
       if (current !== sequence.current) return;
       setKeys(result.keys ?? []);
-      setLoaded(owner);
       setError("");
     } catch (err) {
       if (current !== sequence.current || isStale(err)) return;
@@ -93,18 +80,16 @@ function useKeys(request: APIRequest, reloadKey: string, owner: Owner) {
     } finally {
       if (current === sequence.current) setLoading(false);
     }
-  }, [request, owner]);
+  }, [request]);
   useEffect(() => {
     void load();
   }, [reloadKey, load]);
 
-  // A reload that fails behind a list that is still right needs no message.
-  return { keys, setKeys, loading, error: loaded === owner ? "" : error, load };
+  // A reload that fails behind a list on screen needs no message.
+  return { keys, setKeys, loading, error: keys ? "" : error, load };
 }
 
 export function KeysPage({
-  admin,
-  userId,
   request,
   reloadKey,
   creating,
@@ -113,22 +98,16 @@ export function KeysPage({
   copy,
   notify,
 }: Props) {
-  const [owner, setOwner] = useState<Owner>("mine");
-  const { keys, setKeys, loading, error, load } = useKeys(
-    request,
-    reloadKey,
-    owner,
-  );
+  const { keys, setKeys, loading, error, load } = useKeys(request, reloadKey);
   const [editing, setEditing] = useState<APIKey | null>(null);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmError, setConfirmError] = useState("");
 
-  // A saved key keeps the owner the list showed for it.
   const put = (key: APIKey) =>
     setKeys((list) =>
       list !== null && list.some((k) => k.id === key.id)
-        ? list.map((k) => (k.id === key.id ? { ...key, owner: k.owner } : k))
+        ? list.map((k) => (k.id === key.id ? key : k))
         : [key, ...(list ?? [])],
     );
 
@@ -174,7 +153,6 @@ export function KeysPage({
 
   return (
     <div>
-      {admin && <KeysToolbar owner={owner} setOwner={setOwner} />}
       {keys?.length === 0 && (
         <p className={cx(empty, "mt-6 mb-1")}>No keys yet</p>
       )}
@@ -192,13 +170,7 @@ export function KeysPage({
         </div>
       )}
       {keys !== null && keys.length > 0 && (
-        <KeyTable
-          keys={keys}
-          userId={userId}
-          showOwner={owner === "all"}
-          onEdit={setEditing}
-          onConfirm={setConfirm}
-        />
+        <KeyTable keys={keys} onEdit={setEditing} onConfirm={setConfirm} />
       )}
       {keys !== null && keys.length > 0 && (
         <p className="mt-3.5 max-w-[68ch] text-[13px] leading-[1.6] text-muted">
@@ -234,29 +206,8 @@ export function KeysPage({
   );
 }
 
-function KeysToolbar({
-  owner,
-  setOwner,
-}: {
-  owner: Owner;
-  setOwner: (owner: Owner) => void;
-}) {
-  return (
-    <div className={pageToolbar}>
-      <OwnerTabs owner={owner} setOwner={setOwner} label="Show keys of" />
-      {owner === "all" && (
-        <p className={pageNote}>
-          You can revoke or delete anyone&apos;s key. Only its owner can edit
-          it.
-        </p>
-      )}
-    </div>
-  );
-}
-
 const columns = [
   "Key",
-  "Owner",
   "Prefix",
   "Status",
   "Requests",
@@ -268,14 +219,10 @@ const numeric = new Set(["Requests", "Tokens"]);
 
 function KeyTable({
   keys,
-  userId,
-  showOwner,
   onEdit,
   onConfirm,
 }: {
   keys: APIKey[];
-  userId: string;
-  showOwner: boolean;
   onEdit: (key: APIKey) => void;
   onConfirm: (confirm: Confirm) => void;
 }) {
@@ -290,17 +237,15 @@ function KeyTable({
       <table className={keyTable}>
         <thead className={keyHeader}>
           <tr>
-            {columns
-              .filter((c) => showOwner || c !== "Owner")
-              .map((c) => (
-                <th
-                  key={c}
-                  scope="col"
-                  className={keyHead(numeric.has(c) ? "numeric" : "left")}
-                >
-                  {c}
-                </th>
-              ))}
+            {columns.map((c) => (
+              <th
+                key={c}
+                scope="col"
+                className={keyHead(numeric.has(c) ? "numeric" : "left")}
+              >
+                {c}
+              </th>
+            ))}
             <th scope="col" className={keyHead()}>
               <span className="sr-only">Actions</span>
             </th>
@@ -310,9 +255,6 @@ function KeyTable({
           <KeyRow
             key={key.id}
             apiKey={key}
-            showOwner={showOwner}
-            // Admins see everyone's keys but edit only their own.
-            editable={!key.owner || key.owner.id === userId}
             onEdit={onEdit}
             onConfirm={onConfirm}
           />
@@ -324,14 +266,10 @@ function KeyTable({
 
 function KeyRow({
   apiKey: key,
-  showOwner,
-  editable,
   onEdit,
   onConfirm,
 }: {
   apiKey: APIKey;
-  showOwner: boolean;
-  editable: boolean;
   onEdit: (key: APIKey) => void;
   onConfirm: (confirm: Confirm) => void;
 }) {
@@ -345,11 +283,6 @@ function KeyRow({
         <th scope="row" className={keyRowHead(off)}>
           {label}
         </th>
-        {showOwner && (
-          <td className={keyCell("left", off)} data-label="Owner">
-            <Private peek>{key.owner?.name ?? ""}</Private>
-          </td>
-        )}
         <td className={keyCell("left", off)} data-label="Prefix">
           <code className="text-muted">{key.prefix}…</code>
         </td>
@@ -385,12 +318,8 @@ function KeyRow({
             <button
               className={iconButton()}
               aria-label={`Edit ${label}`}
-              title={
-                editable
-                  ? "Edit name and expiry"
-                  : "Only the key's owner can edit it"
-              }
-              disabled={dead || !editable}
+              title="Edit name and expiry"
+              disabled={dead}
               onClick={() => onEdit(key)}
             >
               <Pencil size={14} />

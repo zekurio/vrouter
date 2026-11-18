@@ -290,7 +290,7 @@ func (s *usageStore) reprice(ctx context.Context, native func(provider, model st
 	}
 	for _, u := range updates {
 		values := append([]any{u.cost.input, u.cost.read, u.cost.write, u.cost.output, u.cost.saved}, u.key...)
-		if _, err := tx.ExecContext(ctx, `UPDATE usage_buckets SET unpriced=0,cost_input=?,cost_read=?,cost_write=?,cost_output=?,cost_saved=? WHERE user_id=? AND bucket=? AND provider=? AND model=? AND key_id=? AND speed=? AND scope=?`, values...); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE usage_buckets SET unpriced=0,cost_input=?,cost_read=?,cost_write=?,cost_output=?,cost_saved=? WHERE bucket=? AND provider=? AND model=? AND key_id=? AND speed=?`, values...); err != nil {
 			return 0, err
 		}
 	}
@@ -305,20 +305,20 @@ type repricedBucket struct {
 
 // unpricedBuckets prices the buckets without a price whose model has one.
 func (s *usageStore) unpricedBuckets(ctx context.Context, tx *sql.Tx, native func(provider, model string) string) ([]repricedBucket, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT user_id,bucket,provider,model,key_id,speed,scope,input_tokens,output_tokens,cached_tokens FROM usage_buckets WHERE measured>0 AND unpriced=measured`)
+	rows, err := tx.QueryContext(ctx, `SELECT bucket,provider,model,key_id,speed,input_tokens,output_tokens,cached_tokens FROM usage_buckets WHERE measured>0 AND unpriced=measured`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var updates []repricedBucket
 	for rows.Next() {
-		var userID, provider, model, keyID, speed, scope string
+		var provider, model, keyID, speed string
 		var bucket, input, output, cached int64
-		if err := rows.Scan(&userID, &bucket, &provider, &model, &keyID, &speed, &scope, &input, &output, &cached); err != nil {
+		if err := rows.Scan(&bucket, &provider, &model, &keyID, &speed, &input, &output, &cached); err != nil {
 			return nil, err
 		}
 		if price, ok := s.prices.lookup(provider, native(provider, model)); ok {
-			updates = append(updates, repricedBucket{key: []any{userID, bucket, provider, model, keyID, speed, scope}, cost: price.cost(input, cached, 0, output, speed, false)})
+			updates = append(updates, repricedBucket{key: []any{bucket, provider, model, keyID, speed}, cost: price.cost(input, cached, 0, output, speed, false)})
 		}
 	}
 	return updates, rows.Err()

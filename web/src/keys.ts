@@ -2,8 +2,6 @@
 
 export type APIKey = {
   id: string;
-  // Set in an admin's list of everyone's keys.
-  owner?: { id: string; name: string } | undefined;
   name: string;
   prefix: string;
   createdAt: string;

@@ -198,3 +198,14 @@ func (s *server) tryAccounts(w http.ResponseWriter, r *http.Request, attempt *in
 	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "No usable account remains. Reconnect or enable an account."})
 	return nil
 }
+
+// rotateAccounts lists accounts starting at the turn's slot, so load spreads
+// across them.
+func rotateAccounts(accounts []storedAccount, turn uint64) []storedAccount {
+	if len(accounts) == 0 {
+		return nil
+	}
+	start := int(turn % uint64(len(accounts))) //nolint:gosec // the remainder is below len(accounts)
+	out := make([]storedAccount, 0, len(accounts))
+	return append(append(out, accounts[start:]...), accounts[:start]...)
+}

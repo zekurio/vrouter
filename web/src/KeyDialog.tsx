@@ -15,12 +15,10 @@ import {
   cx,
   dialogActions,
   dialogLead,
+  fieldLabel as label,
+  input,
   notice,
 } from "./ui";
-
-const label = "mb-1.75 block text-[12px] text-subtle";
-const input =
-  "h-8.5 w-full rounded-lg border border-line bg-well px-2.5 text-[13px] text-text placeholder:text-muted focus:border-accent focus:outline-none aria-[invalid=true]:border-danger";
 
 export type Confirm = { action: "revoke" | "delete"; key: APIKey };
 

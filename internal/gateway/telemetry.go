@@ -18,19 +18,14 @@ import (
 // persisted. A failed request keeps a short error summary that has been
 // through the same redaction as the error sent to the client.
 type telemetryRecord struct {
-	ID        string    `json:"id"`
-	StartedAt time.Time `json:"startedAt"`
-	// UserID owns the key. Empty for a key no user owns.
-	UserID      string `json:"userId,omitempty"`
-	KeyID       string `json:"keyId"`
-	KeyName     string `json:"keyName"`
-	Model       string `json:"model"`
-	NativeModel string `json:"nativeModel"`
-	Provider    string `json:"provider"`
-	AccountID   string `json:"accountId"`
-	// AccountScope says whether a shared or a personal account served the
-	// request. Empty when no account did.
-	AccountScope string `json:"accountScope,omitempty"`
+	ID          string    `json:"id"`
+	StartedAt   time.Time `json:"startedAt"`
+	KeyID       string    `json:"keyId"`
+	KeyName     string    `json:"keyName"`
+	Model       string    `json:"model"`
+	NativeModel string    `json:"nativeModel"`
+	Provider    string    `json:"provider"`
+	AccountID   string    `json:"accountId"`
 	// AccountName is the account's email or label when the request finished,
 	// so the log still names an account after it is removed.
 	AccountName string `json:"accountName,omitempty"`
@@ -83,7 +78,7 @@ const (
 )
 
 func validateTelemetryRecord(record telemetryRecord) error {
-	if len(record.ID) > 64 || len(record.UserID) > 64 || len(record.KeyID) > 64 {
+	if len(record.ID) > 64 || len(record.KeyID) > 64 {
 		return errors.New("gateway: telemetry record has an oversized identifier")
 	}
 	if err := validateTelemetryText(record); err != nil {
@@ -123,11 +118,6 @@ func validateTelemetryLabels(record telemetryRecord) error {
 	default:
 		return errors.New("gateway: telemetry record has an unknown outcome")
 	}
-	switch record.AccountScope {
-	case "", scopeGlobal, scopePersonal:
-	default:
-		return errors.New("gateway: telemetry record has an unknown account scope")
-	}
 	switch record.Speed {
 	case "", speedFast, speedUltrafast:
 	default:
@@ -150,7 +140,6 @@ const keyExpiredMessage = "This vrouter client API key has expired"
 // validation to the forwarding engine.
 type inferenceKey struct {
 	Provider string
-	UserID   string
 	KeyID    string
 	KeyName  string
 }

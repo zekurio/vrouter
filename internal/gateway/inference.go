@@ -41,12 +41,7 @@ func (s *server) authorizeInference(w http.ResponseWriter, r *http.Request) (inf
 			writeJSON(w, 401, map[string]string{"error": keyExpiredMessage})
 			return inferenceKey{}, false
 		}
-		// A disabled user's keys stop with them.
-		if _, active := s.activeUser(record.UserID); record.UserID != "" && !active {
-			writeJSON(w, 401, map[string]string{"error": "This API key's owner is disabled in vrouter"})
-			return inferenceKey{}, false
-		}
-		return inferenceKey{UserID: record.UserID, KeyID: record.ID, KeyName: record.Name}, true
+		return inferenceKey{KeyID: record.ID, KeyName: record.Name}, true
 	}
 	if !s.hasAnyKeys() {
 		writeJSON(w, 503, map[string]string{"error": "Create a vrouter API key to enable client requests"})
@@ -60,7 +55,7 @@ func (s *server) authorizeInference(w http.ResponseWriter, r *http.Request) (inf
 // Each supported POST settles usage aggregates, including failed requests.
 func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request, principal inferenceKey) {
 	if r.Method != http.MethodPost || inferenceProtocol(r.URL.Path) == "" && imageOperation(r.URL.Path) == "" {
-		s.inference(w, r, principal.UserID)
+		s.inference(w, r)
 		return
 	}
 	prepare, forward := s.prepareInference, s.forwardInference
@@ -75,7 +70,7 @@ func (s *server) serveInferenceAuthorized(w http.ResponseWriter, r *http.Request
 		return
 	}
 	attempt.id = id
-	pending := telemetryRecord{ID: id, UserID: principal.UserID, KeyID: principal.KeyID, KeyName: principal.KeyName, StartedAt: attempt.startedAt}
+	pending := telemetryRecord{ID: id, KeyID: principal.KeyID, KeyName: principal.KeyName, StartedAt: attempt.startedAt}
 	if err := s.store.data.usage.begin(r.Context(), pending); err != nil {
 		writeJSON(w, 503, map[string]string{"error": "Usage accounting is unavailable. Try again shortly."})
 		return
@@ -153,14 +148,12 @@ func (s *server) finishAttempt(attempt *inferenceAttempt, recorder *attemptWrite
 	record := telemetryRecord{
 		ID:               attempt.id,
 		StartedAt:        attempt.startedAt,
-		UserID:           attempt.principal.UserID,
 		KeyID:            attempt.principal.KeyID,
 		KeyName:          boundedField(attempt.principal.KeyName),
 		Model:            boundedField(attempt.model),
 		NativeModel:      boundedField(attempt.native),
 		Provider:         boundedField(attempt.provider),
 		AccountID:        boundedField(attempt.account.ID),
-		AccountScope:     attempt.accountScope(),
 		AccountName:      telemetryAccountName(attempt.account),
 		Status:           status,
 		DurationMs:       attempt.durationMs,
@@ -181,11 +174,10 @@ func (s *server) finishAttempt(attempt *inferenceAttempt, recorder *attemptWrite
 	s.settle(record, usageAccepted)
 }
 
-// inference answers every /v1 request that is not a supported POST. The
-// model list is the one the key's owner can use.
-func (s *server) inference(w http.ResponseWriter, r *http.Request, userID string) {
+// inference answers every /v1 request that is not a supported POST.
+func (s *server) inference(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
-		models, err := s.models(r.Context(), userID)
+		models, err := s.models(r.Context())
 		if err != nil && len(models) == 0 {
 			writeJSON(w, 502, map[string]string{"error": "Provider catalogs unavailable"})
 			return
@@ -237,9 +229,8 @@ func (s *server) forwardInference(w http.ResponseWriter, r *http.Request, attemp
 	}
 }
 
-// forwardRotation tries each candidate once, in routing order: the preferred
-// tier first, each tier starting at its next rotation slot, with accounts that
-// just failed last. It returns the accounts a usage reset recovered when the
+// forwardRotation tries each candidate once, starting at the next rotation
+// slot, with accounts that just failed last. It returns the accounts a usage reset recovered when the
 // request should be retried with them; otherwise the response has been
 // written.
 func (s *server) forwardRotation(w http.ResponseWriter, r *http.Request, attempt *inferenceAttempt, prepared *preparedInference, candidates []storedAccount, resetTried *bool) []storedAccount {
@@ -247,7 +238,7 @@ func (s *server) forwardRotation(w http.ResponseWriter, r *http.Request, attempt
 	if !prepared.upstreamStream {
 		client = s.slowClient
 	}
-	return s.tryAccounts(w, r, attempt, routingOrder(candidates, prepared.routing, s.sequence.Add(1)-1), forwardPlan{
+	return s.tryAccounts(w, r, attempt, rotateAccounts(candidates, s.sequence.Add(1)-1), forwardPlan{
 		client:  client,
 		request: func(a storedAccount) (*http.Request, error) { return forwardRequest(r, prepared, a) },
 		invalid: "Invalid inference request",

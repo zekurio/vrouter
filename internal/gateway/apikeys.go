@@ -20,10 +20,7 @@ import (
 type keyRecord struct {
 	legacyKeyFields
 
-	ID string `json:"id"`
-	// UserID owns the key. Keys from before users existed have none until
-	// the first admin signs in and adopts them.
-	UserID    string     `json:"userId,omitempty"`
+	ID        string     `json:"id"`
 	Name      string     `json:"name"`
 	Prefix    string     `json:"prefix"`
 	Hash      string     `json:"hash"`
@@ -53,9 +50,7 @@ func (k keyRecord) expired(now time.Time) bool {
 
 // keyView is the public metadata shape. It never contains the hash or secret.
 type keyView struct {
-	ID string `json:"id"`
-	// Owner names the key's user in an admin's list of everyone's keys.
-	Owner        *keyOwner  `json:"owner,omitempty"`
+	ID           string     `json:"id"`
 	Name         string     `json:"name"`
 	Prefix       string     `json:"prefix"`
 	CreatedAt    time.Time  `json:"createdAt"`
@@ -63,11 +58,6 @@ type keyView struct {
 	ExpiresAt    *time.Time `json:"expiresAt,omitempty"`
 	UsedRequests int64      `json:"usedRequests"`
 	UsedTokens   int64      `json:"usedTokens"`
-}
-
-type keyOwner struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
 }
 
 func (k keyRecord) view(usage keyUsage) keyView {
@@ -104,34 +94,15 @@ func keyPrefix(secret string) string {
 	return secret
 }
 
-// listKeys lists the user's keys. With ?owner=all an admin sees everyone's,
-// each naming its owner.
 func (s *server) listKeys(w http.ResponseWriter, r *http.Request) {
-	user := currentUser(r)
-	all := r.URL.Query().Get("owner") == "all"
-	if all && !user.admin() {
-		writeJSON(w, 403, map[string]string{"error": "Only admins can list everyone's keys"})
-		return
-	}
 	counts, err := s.store.data.usage.keys(r.Context())
 	if err != nil {
 		writeJSON(w, 503, map[string]string{"error": "Key usage is unavailable"})
 		return
 	}
-	labels := s.userLabels()
 	keys := []keyView{}
 	for _, key := range s.registry.snapshot().Keys {
-		if !all && key.UserID != user.ID {
-			continue
-		}
-		view := key.view(counts[key.ID])
-		if all {
-			view.Owner = &keyOwner{ID: key.UserID, Name: labels[key.UserID]}
-			if key.UserID == "" {
-				view.Owner.Name = "No owner"
-			}
-		}
-		keys = append(keys, view)
+		keys = append(keys, key.view(counts[key.ID]))
 	}
 	sort.SliceStable(keys, func(i, j int) bool {
 		if keys[i].CreatedAt.Equal(keys[j].CreatedAt) {
@@ -176,7 +147,7 @@ func (s *server) createKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": "Secure random source unavailable"})
 		return
 	}
-	key := keyRecord{ID: id, UserID: currentUser(r).ID, Name: name, Prefix: keyPrefix(secret), Hash: hash, CreatedAt: now, ExpiresAt: expiresAt}
+	key := keyRecord{ID: id, Name: name, Prefix: keyPrefix(secret), Hash: hash, CreatedAt: now, ExpiresAt: expiresAt}
 	err = s.registry.update(func(registry *diskRegistry) error {
 		registry.Keys = append(registry.Keys, key)
 		return nil
@@ -195,16 +166,11 @@ func (s *server) patchKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
-	user := currentUser(r)
 	var updated keyRecord
 	err := s.registry.update(func(registry *diskRegistry) error {
 		key := findKey(registry, r.PathValue("id"))
-		if key == nil || (key.UserID != user.ID && !user.admin()) {
+		if key == nil {
 			return errKeyNotFound
-		}
-		// Admins may revoke anyone's key, but only owners edit theirs.
-		if key.UserID != user.ID && !patch.revoked {
-			return errKeyNotOwned
 		}
 		if err := patch.apply(key, now); err != nil {
 			return err
@@ -219,10 +185,6 @@ func (s *server) patchKey(w http.ResponseWriter, r *http.Request) {
 		}
 		if errors.Is(err, errKeyNotFound) {
 			writeJSON(w, 404, map[string]string{"error": "Key not found"})
-			return
-		}
-		if errors.Is(err, errKeyNotOwned) {
-			writeJSON(w, 403, map[string]string{"error": "You can revoke or delete another user's key, but not edit it"})
 			return
 		}
 		writeJSON(w, 500, map[string]string{"error": "Could not save the key"})
@@ -298,12 +260,10 @@ func (p keyPatch) apply(key *keyRecord, now time.Time) error {
 	return nil
 }
 
-// deleteKey deletes one of the user's keys, or anyone's for an admin.
 func (s *server) deleteKey(w http.ResponseWriter, r *http.Request) {
-	user := currentUser(r)
 	err := s.registry.update(func(registry *diskRegistry) error {
 		for i := range registry.Keys {
-			if registry.Keys[i].ID == r.PathValue("id") && (registry.Keys[i].UserID == user.ID || user.admin()) {
+			if registry.Keys[i].ID == r.PathValue("id") {
 				registry.Keys = append(registry.Keys[:i], registry.Keys[i+1:]...)
 				return nil
 			}
@@ -347,10 +307,7 @@ func sameExpiry(a, b *time.Time) bool {
 	return a.Equal(*b)
 }
 
-var (
-	errKeyExpiryPast = errors.New("key expiry is in the past")
-	errKeyNotOwned   = errors.New("key belongs to another user")
-)
+var errKeyExpiryPast = errors.New("key expiry is in the past")
 
 func decodeKeyInput(w http.ResponseWriter, r *http.Request, out any) error {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))

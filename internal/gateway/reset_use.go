@@ -162,7 +162,7 @@ func resetRefusal(provider, detail string) string {
 // seconds for a claim.
 const resetRequestTimeout = 40 * time.Second
 
-// useReset spends one usage reset on an account the user manages. The
+// useReset spends one usage reset on an account. The
 // provider decides whether the reset applies; vrouter only checks that the
 // account still holds it.
 func (s *server) useReset(w http.ResponseWriter, r *http.Request) {
@@ -173,7 +173,7 @@ func (s *server) useReset(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "Choose a reset to use"})
 		return
 	}
-	account, ok := s.resetAccount(r.PathValue("id"), currentUser(r))
+	account, ok := s.resetAccount(r.PathValue("id"))
 	if !ok {
 		writeJSON(w, 404, map[string]string{"error": "Account not found"})
 		return
@@ -203,10 +203,10 @@ func (s *server) useReset(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"id": account.ID, "status": "reset"})
 }
 
-// resetAccount finds a subscription account the user may manage.
-func (s *server) resetAccount(id string, user userRecord) (storedAccount, bool) {
+// resetAccount finds a subscription account.
+func (s *server) resetAccount(id string) (storedAccount, bool) {
 	for _, a := range s.store.snapshot().Accounts {
-		if a.ID == id && accountManageable(a, user) && nativeUsage(a) {
+		if a.ID == id && nativeUsage(a) {
 			return a, true
 		}
 	}

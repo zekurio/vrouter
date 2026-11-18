@@ -23,9 +23,6 @@ type storedAccount struct {
 	Email           string    `json:"email,omitempty"`
 	Plan            string    `json:"plan,omitempty"`
 	AccountID       string    `json:"account_id,omitempty"`
-	// OwnerID is the user a personal account belongs to. Empty means the
-	// account is shared by everyone.
-	OwnerID string `json:"owner_id,omitempty"`
 	// Subject is the verified ID-token subject of a native Codex sign-in. It
 	// binds a saved record to one user, so reconnecting a workspace shared by
 	// several users can never silently switch accounts. Imports have no
@@ -47,8 +44,6 @@ type diskState struct {
 	Accounts      []storedAccount         `json:"accounts"`
 	Policy        modelPolicy             `json:"policy"`
 	ResetAttempts map[string]resetAttempt `json:"reset_attempts,omitempty"`
-	// Routing names the account tier requests try first.
-	Routing string `json:"routing"`
 }
 
 var (
@@ -182,9 +177,6 @@ func storeNormalize(state *diskState) {
 	if state.Policy.Aliases == nil {
 		state.Policy.Aliases = map[string][]modelAlias{}
 	}
-	if state.Routing == "" {
-		state.Routing = routingPersonalFirst
-	}
 	for i := range state.Accounts {
 		state.Accounts[i].Provider = strings.ToLower(strings.TrimSpace(state.Accounts[i].Provider))
 		state.Accounts[i].AuthMode = strings.ToLower(strings.TrimSpace(state.Accounts[i].AuthMode))
@@ -194,9 +186,6 @@ func storeNormalize(state *diskState) {
 // storeValidate enforces the invariants of the credential vocabulary. Errors
 // name the field and position, never the stored values.
 func storeValidate(state diskState) error {
-	if state.Routing != routingPersonalFirst && state.Routing != routingGlobalFirst {
-		return errors.New("gateway: routing order is not supported")
-	}
 	seen := make(map[string]struct{}, len(state.Accounts))
 	for i := range state.Accounts {
 		account := &state.Accounts[i]

@@ -10,9 +10,9 @@ let
 in
 {
   imports = [
-    (lib.mkRemovedOptionModule [ "services" "vrouter" "oidc" "groups" ] ''
-      Roles now come from the identity provider's vrouter_role claim. Give each
-      person a vrouter_role of admin or member instead.
+    (lib.mkRemovedOptionModule [ "services" "vrouter" "oidc" ] ''
+      vrouter no longer signs people in through OpenID Connect. Set
+      services.vrouter.adminKeyFile instead.
     '')
   ];
 
@@ -35,43 +35,26 @@ in
       description = "HTTP listen port. The module does not open the firewall.";
     };
     publicUrl = lib.mkOption {
-      type = lib.types.str;
+      type = lib.types.nullOr lib.types.str;
+      default = null;
       example = "https://vrouter.example.com";
       description = ''
-        Browser-facing origin for sign-in redirects, links, and management
-        origin checks. Subpaths are unsupported. The OIDC client's callback URL
-        is this origin followed by /api/auth/callback.
+        Browser-facing origin for links, provider sign-in, and management
+        origin checks. Subpaths are unsupported. Set it whenever vrouter sits
+        behind a reverse proxy.
       '';
     };
-    oidc = {
-      issuer = lib.mkOption {
-        type = lib.types.str;
-        example = "https://id.example.com";
-        description = "Issuer URL of the OpenID Connect provider, such as Pocket ID.";
-      };
-      clientId = lib.mkOption {
-        type = lib.types.str;
-        description = "Client ID of the OIDC client registered for vrouter.";
-      };
-      name = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        example = "Pocket ID";
-        description = ''
-          Name of the identity provider on the sign-in page. Null shows the
-          issuer's host.
-        '';
-      };
-      clientSecretFile = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        example = "/run/secrets/vrouter_oidc_secret";
-        description = ''
-          File holding the OIDC client secret. systemd passes it to the service
-          as a credential, so it can stay readable by root alone. Leave it null
-          for a public client. Use a runtime path, never a Nix store file.
-        '';
-      };
+    adminKeyFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "/run/secrets/vrouter_admin_key";
+      description = ''
+        File holding the admin key, which opens the dashboard and the
+        management API. It must be at least 16 characters. systemd passes it
+        to the service as a credential, so it can stay readable by root alone.
+        Use a runtime path, never a Nix store file. With null, vrouter makes a
+        new key at every start and prints it to the journal.
+      '';
     };
     windowSkipPlans = lib.mkOption {
       type = lib.types.listOf lib.types.str;
@@ -108,24 +91,19 @@ in
         # systemd resolves WorkingDirectory before launch. With DynamicUser,
         # /var/lib/vrouter can be a symlink, which the data store refuses.
         VROUTER_DATA_DIR = ".";
-        VROUTER_PUBLIC_URL = cfg.publicUrl;
-        VROUTER_OIDC_ISSUER = cfg.oidc.issuer;
-        VROUTER_OIDC_CLIENT_ID = cfg.oidc.clientId;
         VROUTER_WINDOW_SKIP_PLANS = lib.concatStringsSep "," cfg.windowSkipPlans;
       }
-      // lib.optionalAttrs (cfg.oidc.name != null) {
-        VROUTER_OIDC_NAME = cfg.oidc.name;
+      // lib.optionalAttrs (cfg.publicUrl != null) {
+        VROUTER_PUBLIC_URL = cfg.publicUrl;
       }
-      // lib.optionalAttrs (cfg.oidc.clientSecretFile != null) {
+      // lib.optionalAttrs (cfg.adminKeyFile != null) {
         # systemd expands %d to the service's credentials directory.
-        VROUTER_OIDC_CLIENT_SECRET_FILE = "%d/oidc-client-secret";
+        VROUTER_ADMIN_KEY_FILE = "%d/admin-key";
       };
       serviceConfig = {
         ExecStart = lib.getExe cfg.package;
         EnvironmentFile = lib.optional (cfg.environmentFile != null) cfg.environmentFile;
-        LoadCredential = lib.optional (
-          cfg.oidc.clientSecretFile != null
-        ) "oidc-client-secret:${cfg.oidc.clientSecretFile}";
+        LoadCredential = lib.optional (cfg.adminKeyFile != null) "admin-key:${cfg.adminKeyFile}";
         DynamicUser = true;
         StateDirectory = "vrouter";
         StateDirectoryMode = "0700";

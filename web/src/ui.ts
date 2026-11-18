@@ -78,6 +78,11 @@ export const tab = (selected: boolean, size: "md" | "sm" = "md") =>
     selected ? lifted : "text-muted hover:text-text",
   );
 
+// A text field in a recess, and the label above it.
+export const fieldLabel = "mb-1.75 block text-[12px] text-subtle";
+export const input =
+  "h-8.5 w-full rounded-lg border border-line bg-well px-2.5 text-[13px] text-text placeholder:text-muted focus:border-accent focus:outline-none aria-[invalid=true]:border-danger max-sm:h-10";
+
 // A message above or inside the content. Callers set the margin.
 export const notice = ({ error = false, inset = false } = {}) =>
   cx(
