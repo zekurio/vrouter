@@ -165,6 +165,8 @@ OpenAI-compatible clients use `https://your-host/v1` as the base URL. Anthropic 
 
 vrouter serves `/v1/models`, `/v1/responses`, `/v1/messages`, `/v1/chat/completions`, `/v1/images/generations`, and `/v1/images/edits`. `/v1beta` is unsupported.
 
+`/v1/models` answers in OpenAI's and Anthropic's list formats at once, so Claude Code's gateway model discovery (`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`) reads it too. Each row has `id` and `display_name` from the provider's catalog. When the catalog has them, it also has `description`, `created` and `created_at`, `context_window` and `max_input_tokens`, `max_output_tokens` and `max_tokens`, `input_modalities`, and the reasoning efforts in `supported_reasoning_levels` and `default_reasoning_level`. Claude rows also carry Anthropic's `capabilities` tree unchanged. As in Anthropic's API, `max_tokens` is the output limit, not the context size.
+
 The model ID picks the provider and the endpoint picks the client protocol. When they differ, vrouter converts text, images, tools, tool results, and streaming events to the provider's format. It returns HTTP 400 for anything it cannot convert.
 
 vrouter never moves a request from a subscription account to a paid API-key account.

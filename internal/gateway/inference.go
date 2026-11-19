@@ -182,15 +182,17 @@ func (s *server) inference(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 502, map[string]string{"error": "Provider catalogs unavailable"})
 			return
 		}
-		data := make([]map[string]any, 0, len(models))
+		data := make([]listedModel, 0, len(models))
 		for _, m := range models {
-			row := map[string]any{"id": m.ID, "object": "model", "owned_by": strings.ToLower(m.Provider), "created": m.Created}
-			if m.Context > 0 {
-				row["context_window"] = m.Context
-			}
-			data = append(data, row)
+			data = append(data, listModel(m))
 		}
-		writeJSON(w, 200, map[string]any{"object": "list", "data": data})
+		// object is OpenAI's list marker. has_more, first_id and last_id are
+		// Anthropic's paging fields: the list is always one complete page.
+		list := map[string]any{"object": "list", "data": data, "has_more": false, "first_id": nil, "last_id": nil}
+		if len(data) > 0 {
+			list["first_id"], list["last_id"] = data[0].ID, data[len(data)-1].ID
+		}
+		writeJSON(w, 200, list)
 		return
 	}
 	if inferenceProtocol(r.URL.Path) == "" && imageOperation(r.URL.Path) == "" {

@@ -38,13 +38,18 @@ type Config struct {
 type Model struct {
 	ID                 string   `json:"id"`
 	Name               string   `json:"name"`
+	Description        string   `json:"description,omitempty"`
 	Provider           string   `json:"provider"`
 	Context            int      `json:"context"`
 	MaxOutput          int      `json:"maxOutput,omitempty"`
 	Created            int64    `json:"created,omitempty"`
 	Inputs             []string `json:"inputs,omitempty"`
 	Reasoning          []string `json:"reasoning,omitempty"`
+	DefaultReasoning   string   `json:"defaultReasoning,omitempty"`
 	ReasoningSupported bool     `json:"reasoningSupported,omitempty"`
+	// Capabilities is Anthropic's capability tree for a Claude model, passed
+	// on as-is in /v1/models.
+	Capabilities json.RawMessage `json:"-"`
 }
 
 // Account is a provider account as shown in the UI.

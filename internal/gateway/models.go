@@ -2,9 +2,12 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -51,16 +54,96 @@ type providerModel struct {
 	ReasoningLevels []struct {
 		Effort string `json:"effort"`
 	} `json:"supported_reasoning_levels"`
-	ID            string   `json:"id"`
-	Slug          string   `json:"slug"`
-	Name          string   `json:"display_name"`
-	Visibility    string   `json:"visibility"`
-	Context       int      `json:"context_window"`
-	ContextLength int      `json:"context_length"`
-	MaxInput      int      `json:"max_input_tokens"`
-	MaxOutput     int      `json:"max_output_tokens"`
-	MaxTokens     int      `json:"max_tokens"`
-	Inputs        []string `json:"input_modalities"`
+	ID               string   `json:"id"`
+	Slug             string   `json:"slug"`
+	Name             string   `json:"display_name"`
+	Description      string   `json:"description"`
+	DefaultReasoning string   `json:"default_reasoning_level"`
+	Visibility       string   `json:"visibility"`
+	Context          int      `json:"context_window"`
+	ContextLength    int      `json:"context_length"`
+	MaxInput         int      `json:"max_input_tokens"`
+	MaxOutput        int      `json:"max_output_tokens"`
+	MaxTokens        int      `json:"max_tokens"`
+	Inputs           []string `json:"input_modalities"`
+	// OpenAI sends created as Unix seconds and Anthropic sends created_at as
+	// RFC 3339. Both stay raw so an odd value cannot fail the whole catalog.
+	Created      json.RawMessage `json:"created"`
+	CreatedAt    json.RawMessage `json:"created_at"`
+	Capabilities json.RawMessage `json:"capabilities"`
+}
+
+// claudeCapabilities is the part of Anthropic's capability tree that vrouter
+// reads. Each effort level is an object with its own supported flag, next to
+// the effort tree's top-level supported boolean.
+type claudeCapabilities struct {
+	Effort     map[string]json.RawMessage `json:"effort"`
+	ImageInput struct {
+		Supported bool `json:"supported"`
+	} `json:"image_input"`
+	Thinking struct {
+		Supported bool `json:"supported"`
+	} `json:"thinking"`
+}
+
+// efforts returns the supported effort levels from least to most effort.
+// Levels Anthropic adds later follow in name order.
+func (c claudeCapabilities) efforts() []string {
+	order := []string{"low", "medium", "high", "xhigh", "max"}
+	rank := func(level string) int {
+		if i := slices.Index(order, level); i >= 0 {
+			return i
+		}
+		return len(order)
+	}
+	levels := []string{}
+	for level, raw := range c.Effort {
+		var leaf struct {
+			Supported bool `json:"supported"`
+		}
+		if level != "supported" && json.Unmarshal(raw, &leaf) == nil && leaf.Supported {
+			levels = append(levels, level)
+		}
+	}
+	sort.Slice(levels, func(i, j int) bool {
+		if a, b := rank(levels[i]), rank(levels[j]); a != b {
+			return a < b
+		}
+		return levels[i] < levels[j]
+	})
+	return levels
+}
+
+// apply fills in what a Claude catalog row says only through its capability
+// tree: reasoning levels and image input. It keeps the tree for /v1/models.
+func (c claudeCapabilities) apply(m *Model, raw json.RawMessage) {
+	m.Capabilities = raw
+	if len(m.Reasoning) == 0 {
+		m.Reasoning = c.efforts()
+	}
+	m.ReasoningSupported = m.ReasoningSupported || c.Thinking.Supported || len(m.Reasoning) > 0
+	if len(m.Inputs) == 0 {
+		m.Inputs = []string{"text"}
+		if c.ImageInput.Supported {
+			m.Inputs = append(m.Inputs, "image")
+		}
+	}
+}
+
+// created returns when the provider released the model, in Unix seconds, or
+// 0 when the catalog does not say.
+func (m providerModel) created() int64 {
+	var seconds int64
+	if json.Unmarshal(m.Created, &seconds) == nil && seconds > 0 {
+		return seconds
+	}
+	var stamp string
+	if json.Unmarshal(m.CreatedAt, &stamp) == nil {
+		if t, err := time.Parse(time.RFC3339, stamp); err == nil && t.Unix() > 0 {
+			return t.Unix()
+		}
+	}
+	return 0
 }
 
 // accountModels returns an account's catalog. One load per account runs at a
@@ -225,7 +308,12 @@ func (m providerModel) gatewayModel(a storedAccount, id string) Model {
 	for _, level := range m.ReasoningLevels {
 		reasoning = append(reasoning, level.Effort)
 	}
-	return Model{Reasoning: reasoning, ReasoningSupported: len(reasoning) > 0, ID: id, Name: m.Name, Provider: provider(a.Provider), Context: m.Context, MaxOutput: m.MaxOutput, Inputs: m.Inputs}
+	result := Model{Reasoning: reasoning, ReasoningSupported: len(reasoning) > 0, DefaultReasoning: m.DefaultReasoning, ID: id, Name: m.Name, Description: m.Description, Provider: provider(a.Provider), Context: m.Context, MaxOutput: m.MaxOutput, Created: m.created(), Inputs: m.Inputs}
+	var caps claudeCapabilities
+	if a.Provider == "claude" && len(m.Capabilities) > 0 && m.Capabilities[0] == '{' && json.Unmarshal(m.Capabilities, &caps) == nil {
+		caps.apply(&result, m.Capabilities)
+	}
+	return result
 }
 
 // rawModels lists the native models of the usable accounts, before model
@@ -297,4 +385,50 @@ func (s *server) models(ctx context.Context) ([]Model, error) {
 		result = append(result, m)
 	}
 	return result, err
+}
+
+// listedModel is one /v1/models row. It carries the fields of OpenAI's and
+// Anthropic's model lists side by side, so clients of either API can read it.
+// The limits and reasoning levels come from the provider catalogs; a field
+// the catalog leaves out is omitted rather than guessed.
+type listedModel struct {
+	ReasoningLevels []listedReasoningLevel `json:"supported_reasoning_levels,omitempty"`
+	ID              string                 `json:"id"`
+	Object          string                 `json:"object"`
+	Type            string                 `json:"type"`
+	OwnedBy         string                 `json:"owned_by"`
+	CreatedAt       string                 `json:"created_at,omitempty"`
+	DisplayName     string                 `json:"display_name"`
+	Description     string                 `json:"description,omitempty"`
+	DefaultLevel    string                 `json:"default_reasoning_level,omitempty"`
+	InputModalities []string               `json:"input_modalities,omitempty"`
+	Capabilities    json.RawMessage        `json:"capabilities,omitempty"`
+	Created         int64                  `json:"created"`
+	// context_window is the Codex catalog's name for the context size and
+	// max_input_tokens is Anthropic's. max_output_tokens is OpenAI's name for
+	// the output limit and max_tokens is Anthropic's.
+	ContextWindow   int `json:"context_window,omitempty"`
+	MaxInputTokens  int `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+	MaxTokens       int `json:"max_tokens,omitempty"`
+}
+
+type listedReasoningLevel struct {
+	Effort string `json:"effort"`
+}
+
+func listModel(m Model) listedModel {
+	row := listedModel{
+		ID: m.ID, Object: "model", Type: "model", OwnedBy: strings.ToLower(m.Provider), Created: m.Created,
+		DisplayName: m.Name, Description: m.Description, DefaultLevel: m.DefaultReasoning,
+		InputModalities: m.Inputs, Capabilities: m.Capabilities,
+		ContextWindow: m.Context, MaxInputTokens: m.Context, MaxOutputTokens: m.MaxOutput, MaxTokens: m.MaxOutput,
+	}
+	if m.Created > 0 {
+		row.CreatedAt = time.Unix(m.Created, 0).UTC().Format(time.RFC3339)
+	}
+	for _, effort := range m.Reasoning {
+		row.ReasoningLevels = append(row.ReasoningLevels, listedReasoningLevel{Effort: effort})
+	}
+	return row
 }

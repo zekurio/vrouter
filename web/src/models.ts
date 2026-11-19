@@ -5,12 +5,14 @@ import { providerName } from "./ProviderBrand";
 export type Model = {
   id: string;
   name: string;
+  description?: string;
   provider: string;
   context: number;
   maxOutput?: number;
   created?: number;
   inputs?: string[];
   reasoning?: string[];
+  defaultReasoning?: string;
   reasoningSupported?: boolean;
 };
 export type ManagedModel = Model & {

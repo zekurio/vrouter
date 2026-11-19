@@ -117,6 +117,11 @@ function ModelDetail({
           )}
         </button>
       </div>
+      {detail.description !== undefined && detail.description !== "" && (
+        <p className="mt-3.5 text-[12px] leading-normal text-muted">
+          {detail.description}
+        </p>
+      )}
       <ModelFacts detail={detail} exposed={exposedID(detail)} />
       <div className={protocolChoice}>
         <span>Client protocol</span>
@@ -193,6 +198,9 @@ function ModelFacts({
             {detail.reasoning !== undefined && detail.reasoning.length > 0
               ? detail.reasoning.join(", ")
               : "Supported"}
+            {detail.defaultReasoning !== undefined &&
+              detail.defaultReasoning !== "" &&
+              ` (default ${detail.defaultReasoning})`}
           </dd>
         </div>
       )}
