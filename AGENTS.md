@@ -4,7 +4,7 @@ vrouter is a Go model gateway (`internal/gateway`) with a React UI (`web`) embed
 
 ## Commands
 
-- Run tools through `devenv shell <command>`, or install Go 1.26+, Node 22.12+, pnpm and just yourself.
+- Run tools through `nix develop -c <command>`, or install Go 1.26+, Node 22.12+, pnpm and just yourself.
 - `just build` builds the UI and then `bin/vrouter`. `just dev` runs Go on `:8080` and Vite on `:5173`. Restart it after Go changes.
 - Run `just check` before you finish. It runs golangci-lint (gofumpt, goimports, go vet, staticcheck, gosec, and more), `tsc` (TypeScript 7, the Go-native compiler), oxlint, and oxfmt without writing files. `just fmt` formats Go and the UI. Lint rules live in `.golangci.yml` and `web/.oxlintrc.json`. Both are strict and treat warnings as errors. Fix findings instead of silencing them. When a finding is wrong, use a `//nolint:<linter> // reason` or `// oxlint-disable-next-line <rule> -- reason` comment on that one line.
 - The repository has no automated tests. Don't add any.

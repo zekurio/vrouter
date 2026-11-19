@@ -4,7 +4,7 @@ A Go model gateway with a React management UI, built into one binary for Linux a
 
 ## Quick start
 
-Install [Nix and devenv](https://devenv.sh/getting-started/) and run `devenv shell`. Or install Go 1.26+, Node 22.12+ or 24, pnpm, and just yourself. Only the build needs Node.
+With Nix, run `nix develop`. Or install Go 1.26+, Node 22.12+ or 24, pnpm, and just yourself. Only the build needs Node.
 
 Build and start vrouter:
 
@@ -102,9 +102,7 @@ With a localhost public URL, or none, vrouter keeps the automatic loopback callb
 
 ## NixOS
 
-`nix build` produces `result/bin/vrouter` with the UI embedded. The flake supports x86-64 and ARM64 Linux and Apple Silicon macOS. It provides `packages.<system>.default`, `packages.<system>.vrouter`, and `nixosModules.default`.
-
-The flake is for packaging and deployment. Development still uses `devenv shell`. The flake's nixpkgs pin starts at the same revision as `devenv.lock`, and you can update it independently.
+`nix build` produces `result/bin/vrouter` with the UI embedded. The flake supports x86-64 and ARM64 Linux and Apple Silicon macOS. It provides `packages.<system>.default`, `packages.<system>.vrouter`, `nixosModules.default`, and the development shell, `devShells.<system>.default`.
 
 Add the input and import the module in the host configuration:
 
@@ -336,7 +334,7 @@ curl -H "Authorization: Bearer $VROUTER_ADMIN_KEY" https://your-host/api/keys
 
 ## Development
 
-`devenv shell` enters the environment, and `devenv shell just build` runs one command in it. With direnv hooked into your shell, run `direnv allow` once and the environment activates when you enter the repo.
+`nix develop` enters the environment, and `nix develop -c just build` runs one command in it. With direnv hooked into your shell, run `direnv allow` once and the environment activates when you enter the repo.
 
 ```sh
 just dev                    # Go server on :8080, Vite on :5173

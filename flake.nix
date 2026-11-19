@@ -25,6 +25,27 @@
         }
       );
 
+      devShells = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          default = pkgs.mkShellNoCC {
+            packages = with pkgs; [
+              go_1_26
+              gopls
+              golangci-lint
+              nodejs_24
+              pnpm
+              just
+              # rsvg-convert for scripts/build-icons.mjs
+              librsvg
+            ];
+          };
+        }
+      );
+
       nixosModules.vrouter = import ./nix/module.nix;
       nixosModules.default = self.nixosModules.vrouter;
 
